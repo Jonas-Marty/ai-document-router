@@ -7,6 +7,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "pydantic-settings>=2.6",
+    "sqlmodel>=0.0.39",
+    "alembic>=1.19.1",
+    "cryptography>=50.0.0",
 ]
 
 [dependency-groups]
@@ -31,6 +34,7 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.12"
 strict = true
 mypy_path = "."
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

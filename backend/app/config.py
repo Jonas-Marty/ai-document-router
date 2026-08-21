@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", extra="ignore")
 
+    database_url: str = "sqlite:///./data/app.db"
+    secret_key: str
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
     log_level: str = "INFO"
 
