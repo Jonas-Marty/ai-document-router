@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# SQLite
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.swp
