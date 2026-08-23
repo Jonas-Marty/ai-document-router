@@ -116,3 +116,40 @@ meaningful. One line of "why" each; not a full ADR log.
   the evident intent is "don't force TLS on a local/home-network LLM server" and a literal
   `localhost` (not an IP) would otherwise be rejected despite being the most common local-LLM
   case (e.g. Ollama on the same machine).
+- **One timezone convention, converted explicitly at both boundaries.** webdav4 returns
+  tz-aware UTC (verified against the real server), but SQLite silently drops `tzinfo`, so an
+  aware value written comes back naive. `services/times.py` converts to naive UTC on write
+  and re-attaches UTC on read, and the API serialises with an offset. Two concrete bugs this
+  prevents: the poller's partial-write guard raised `TypeError` subtracting a naive
+  `datetime.now()` from an aware value, and a naive timestamp serialised without a marker
+  would have been read by the frontend as local time -- hours wrong, and invisible to tests
+  that only compare instants.
+- **The AI "no extension" check asks whether the trailing segment is a *recognised*
+  extension, not whether the name contains a dot.** The naive dot check rejected
+  `2026.05.18 Reka Kartenersatz` -- i.e. this user's entire filing convention, which is
+  `YYYY.MM.DD Sender Description`. Every mocked test used hyphens, so only real data caught
+  it. `mimetypes.guess_type` cleanly separates `invoice.pdf` (reject) from a dotted date
+  (allow).
+- **Null-ish date *strings* are treated as absent rather than as an error.** llama3.1
+  returned the string `"null"` against a real document; failing the whole proposal over it
+  would discard an otherwise correct filename and folder. SPEC 6.3 wants "date parses or is
+  null", and a model writing `"null"` plainly means null.
+- **`_folder_context` descends the tree instead of listing only the roots.** SPEC 6.3 asks
+  for filenames "sampled from across those folders". A setup that files everything into a
+  subfolder (here `/Test-Outbox/2026`) has no files at the root, so sampling only there sent
+  the model an empty list and lost the naming convention entirely.
+- **The poller caps both phases per tick and carries ingested bytes into the proposal step.**
+  Ingesting 51 real scans took 658s where a single file downloads in 0.18s, so sustained
+  round trips dominate and a first run must not attempt everything at once. Ingest already
+  reads each file to hash and extract it, so the proposal step in the same tick reuses that
+  rather than downloading again; only carried-over documents and regenerate re-read.
+- **`/documents/{id}/regenerate` is asynchronous.** It resets `proposal_status=pending` and
+  lets the poller pick the document up. SPEC 8.8 already specifies a "Waiting for the AI
+  proposal" skeleton, so the UI is built to wait, and this keeps the request off a call that
+  can take 60s with its retry. The cost is that "Try again" can feel idle for up to one poll
+  interval.
+- **The queue's status ordering is an explicit `CASE`.** Ordering on the status column
+  happens to put `pending` before `skipped` only because of alphabetical luck; SPEC 5's rule
+  that "a skipped document never reappears before an unskipped one" deserves to be stated.
+  `/health`'s `queue_depth` imports the same definition as `/queue`'s `total_pending`, so the
+  outage banner and the queue screen cannot disagree about how much work is waiting.

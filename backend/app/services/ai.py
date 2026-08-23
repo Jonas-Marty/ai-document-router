@@ -7,6 +7,7 @@ put a wrong folder in front of the user pre-filled and pre-trusted.
 
 import json
 import logging
+import mimetypes
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -227,9 +228,13 @@ def _validate_name(value: object) -> str:
         raise ProposalRejected("The model's filename contained '..'.")
     if name != name.strip(". -"):
         raise ProposalRejected("The model's filename started or ended with a dot, space, or dash.")
-    if "." in name:
-        # SPEC 4.1: suggested_name is stored *without* an extension; the real one is carried
-        # over from the source file. A model that appends ".pdf" would produce "x.pdf.pdf".
+    # SPEC 4.1: suggested_name is stored *without* an extension; the real one is carried
+    # over from the source file, so a model that appends ".pdf" would produce "x.pdf.pdf".
+    # Detected by asking whether the trailing segment is a *recognised* extension rather
+    # than by looking for a dot: a real filing convention here is
+    # "YYYY.MM.DD Sender Description", where the dots are date separators.
+    guessed, _ = mimetypes.guess_type(name)
+    if guessed is not None:
         raise ProposalRejected("The model included a file extension in the name.")
     return name
 
@@ -249,11 +254,17 @@ def _validate_folder(value: object, allowed_roots: list[str]) -> str:
     return folder
 
 
+# Models frequently express "no date" as a word rather than JSON null.
+_NULLISH = {"", "null", "none", "n/a", "na", "-", "unknown", "undefined"}
+
+
 def _validate_date(value: object) -> date | None:
-    if value is None or value == "":
+    if value is None:
         return None
     if not isinstance(value, str):
         raise ProposalRejected("The model returned a document date that wasn't text.")
+    if value.strip().lower() in _NULLISH:
+        return None
     try:
         return datetime.strptime(value.strip(), "%Y-%m-%d").date()
     except ValueError as exc:

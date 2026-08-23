@@ -58,6 +58,13 @@ class TestValidReply:
     def test_accepts_a_null_date(self) -> None:
         assert call({**VALID_REPLY, "document_date": None}).document_date is None
 
+    @pytest.mark.parametrize("value", ["null", "none", "None", "N/A", "n/a", "-", "  "])
+    def test_treats_nullish_strings_as_no_date(self, value: str) -> None:
+        """Smaller models routinely emit the *string* "null" rather than JSON null.
+        Observed from llama3.1 against real documents; failing the whole proposal over it
+        would discard an otherwise perfectly good filename and folder."""
+        assert call({**VALID_REPLY, "document_date": value}).document_date is None
+
     def test_clamps_confidence_rather_than_rejecting(self) -> None:
         # SPEC 6.3 says clamp: a model saying 1.2 is confident, not broken.
         assert call({**VALID_REPLY, "confidence_score": 1.2}).confidence_score == 1.0
@@ -96,11 +103,27 @@ class TestRejectsBadOutput:
         trims it; a trailing dot or hyphen is still a rejection."""
         assert call({**VALID_REPLY, "suggested_name": "  Invoice  "}).suggested_name == "Invoice"
 
-    def test_rejects_a_name_carrying_an_extension(self) -> None:
+    @pytest.mark.parametrize("name", ["invoice.pdf", "scan.PDF", "photo.png", "backup.tar.gz"])
+    def test_rejects_a_name_carrying_an_extension(self, name: str) -> None:
         """The real extension is carried from the source file; accepting one here would
         produce 'invoice.pdf.pdf' after the move."""
         with pytest.raises(ProposalRejected, match="extension"):
-            call({**VALID_REPLY, "suggested_name": "invoice.pdf"})
+            call({**VALID_REPLY, "suggested_name": name})
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "2026.05.18 Reka Kartenersatz",
+            "2026.01.13 Green Rechnung 01.01.2026 - 31.01.2026 9004761",
+            "2026.02.01 SAC Schweizer Alpen-Club Spendenbescheinigung 2025",
+            "2026.03.26 Microsoft Learn Credentials MartyJonas-7379",
+        ],
+    )
+    def test_allows_dots_used_as_date_separators(self, name: str) -> None:
+        """A real filing convention here is 'YYYY.MM.DD Sender Description'. Treating any
+        dot as an extension rejected every proposal this user's model produced -- the
+        mocked cases all used hyphens, so nothing caught it until real data did."""
+        assert call({**VALID_REPLY, "suggested_name": name}).suggested_name == name
 
     @pytest.mark.parametrize(
         "folder",
