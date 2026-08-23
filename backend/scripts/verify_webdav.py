@@ -108,7 +108,8 @@ def main() -> int:
             print(f"{BAD} read_stream({files[0].path}): [{exc.code}] {exc.message}")
 
     if args.write:
-        failures += _verify_writes(service, args.write)
+        source = files[0].path if files else None
+        failures += _verify_writes(service, args.write, source)
 
     print()
     if failures:
@@ -120,9 +121,11 @@ def main() -> int:
     return 0
 
 
-def _verify_writes(service: WebDavService, root: str) -> int:
-    """Exercise mkdir_p and the no-overwrite guarantee in a scratch folder."""
+def _verify_writes(service: WebDavService, root: str, source: str | None) -> int:
+    """Exercise mkdir_p, move, and the no-overwrite guarantee in a scratch folder."""
     from datetime import datetime
+
+    from app.services.errors import WebDAVConflict
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     scratch = f"{root}/_router-verify-{stamp}"
@@ -144,6 +147,42 @@ def _verify_writes(service: WebDavService, root: str) -> int:
     except AppError as exc:
         failures += 1
         print(f"{BAD} mkdir_p not idempotent: [{exc.code}] {exc.message}")
+
+    if source is None:
+        print(f"{INFO} no source file available; skipped move checks")
+        return failures
+
+    # Set up via the raw client: the app itself never copies, so this is harness-only.
+    raw = build_client()
+    first = f"{scratch}/moved-once.pdf"
+    second = f"{scratch}/nested/moved-twice.pdf"
+    try:
+        raw.copy(source.lstrip("/"), first.lstrip("/"))
+        print(f"{OK} staged a copy of {source}")
+    except Exception as exc:  # noqa: BLE001 - harness setup
+        print(f"{BAD} could not stage a copy: {exc}")
+        return failures + 1
+
+    try:
+        service.move(first, second)
+        print(f"{OK} move({first} -> {second})")
+    except AppError as exc:
+        failures += 1
+        print(f"{BAD} move: [{exc.code}] {exc.message}")
+        return failures
+
+    # The check that matters most for M5: an occupied destination must never be clobbered.
+    try:
+        raw.copy(source.lstrip("/"), first.lstrip("/"))
+        service.move(first, second)
+    except WebDAVConflict:
+        print(f"{OK} move onto an occupied destination refused (no overwrite)")
+    except AppError as exc:
+        failures += 1
+        print(f"{BAD} expected a conflict, got [{exc.code}] {exc.message}")
+    else:
+        failures += 1
+        print(f"{BAD} move OVERWROTE an existing file -- CLAUDE.md rule 2 violated")
 
     print(f"{INFO} scratch folder left in place for you to inspect and remove:")
     print(f"{INFO}   {scratch}")
