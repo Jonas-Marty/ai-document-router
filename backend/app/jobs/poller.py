@@ -19,6 +19,7 @@ from app.models import AppSettings, Document, DocumentStatus, Proposal, Proposal
 from app.services import ai, extraction
 from app.services import settings as settings_service
 from app.services.errors import AppError
+from app.services.extraction import ExtractedDocument
 from app.services.times import to_storage, utc_now
 from app.services.webdav import WebDavEntry, WebDavService, build_client
 
@@ -69,8 +70,10 @@ def run_once() -> None:
                 logger.warning("Settings row missing; skipping tick.")
                 return
             service = build_service(app_settings)
-            ingest(session, service, app_settings)
-            generate_proposals(session, service, app_settings)
+            # Carry the bytes we just read straight into the proposal step, so a document
+            # ingested this tick is not downloaded a second time to extract the same text.
+            fresh = ingest(session, service, app_settings)
+            generate_proposals(session, service, app_settings, fresh)
     except Exception:
         logger.exception("Poller tick failed.")
 
@@ -79,27 +82,35 @@ def build_service(app_settings: AppSettings) -> WebDavService:
     return WebDavService(build_client(), settings_service.permitted_roots(app_settings))
 
 
-def ingest(session: Session, service: WebDavService, app_settings: AppSettings) -> int:
-    """Record new files in the watch folder. Returns how many were added."""
+def ingest(
+    session: Session, service: WebDavService, app_settings: AppSettings
+) -> dict[str, ExtractedDocument]:
+    """Record new files in the watch folder.
+
+    Returns what was extracted from each newly ingested document, keyed by document id, so
+    the proposal step in the same tick can reuse it instead of re-downloading.
+    """
     watch_folder = config.webdav_watch_folder
     try:
         entries = service.list_dir(watch_folder)
     except AppError as exc:
         logger.warning("Could not list %s: %s", watch_folder, exc.message)
-        return 0
+        return {}
 
-    added = 0
+    extracted: dict[str, ExtractedDocument] = {}
     for entry in entries:
-        if added >= config.poller_ingest_batch:
+        if len(extracted) >= config.poller_ingest_batch:
             logger.info("Ingest cap reached; remaining files wait for the next tick.")
             break
         if not _is_ready(entry):
             continue
         if session.exec(select(Document).where(Document.webdav_path == entry.path)).first():
             continue
-        if _record(session, service, entry):
-            added += 1
-    return added
+        recorded = _record(session, service, entry)
+        if recorded is not None:
+            document, document_text = recorded
+            extracted[document.id] = document_text
+    return extracted
 
 
 def _is_ready(entry: WebDavEntry) -> bool:
@@ -118,13 +129,15 @@ def _is_ready(entry: WebDavEntry) -> bool:
     return True
 
 
-def _record(session: Session, service: WebDavService, entry: WebDavEntry) -> bool:
+def _record(
+    session: Session, service: WebDavService, entry: WebDavEntry
+) -> tuple[Document, ExtractedDocument] | None:
     """Download once and derive everything from those bytes."""
     try:
         data = b"".join(service.read_stream(entry.path))
     except AppError as exc:
         logger.warning("Could not read %s: %s", entry.path, exc.message)
-        return False
+        return None
 
     extracted = extraction.extract(data, entry.name, entry.content_type)
 
@@ -137,7 +150,7 @@ def _record(session: Session, service: WebDavService, entry: WebDavEntry) -> boo
     ).first()
     if duplicate is not None:
         logger.info("Skipping %s: same content as %s.", entry.path, duplicate.webdav_path)
-        return False
+        return None
 
     now = utc_now()
     document = Document(
@@ -160,10 +173,15 @@ def _record(session: Session, service: WebDavService, entry: WebDavEntry) -> boo
     session.add(document)
     session.commit()
     logger.info("Ingested %s (%d bytes).", entry.path, extracted.file_size_bytes)
-    return True
+    return document, extracted
 
 
-def generate_proposals(session: Session, service: WebDavService, app_settings: AppSettings) -> int:
+def generate_proposals(
+    session: Session,
+    service: WebDavService,
+    app_settings: AppSettings,
+    already_extracted: dict[str, ExtractedDocument] | None = None,
+) -> int:
     """Produce a proposal for documents still waiting for one."""
     pending = session.exec(
         select(Document)
@@ -172,9 +190,10 @@ def generate_proposals(session: Session, service: WebDavService, app_settings: A
         .limit(config.poller_proposal_batch)
     ).all()
 
+    cache = already_extracted or {}
     done = 0
     for document in pending:
-        if propose_for(session, service, app_settings, document):
+        if propose_for(session, service, app_settings, document, cache.get(document.id)):
             done += 1
     return done
 
@@ -184,6 +203,7 @@ def propose_for(
     service: WebDavService,
     app_settings: AppSettings,
     document: Document,
+    already_extracted: ExtractedDocument | None = None,
 ) -> bool:
     """Generate and store one proposal. Returns True when a proposal was stored.
 
@@ -194,13 +214,17 @@ def propose_for(
         _fail(session, document, "No allowed folders are configured yet — set them in Settings.")
         return False
 
-    try:
-        data = b"".join(service.read_stream(document.webdav_path))
-    except AppError as exc:
-        _fail(session, document, f"Couldn't read the file: {exc.message}")
-        return False
+    extracted = already_extracted
+    if extracted is None:
+        # Only re-download when we did not just read this file (regenerate, or a document
+        # carried over from an earlier tick).
+        try:
+            data = b"".join(service.read_stream(document.webdav_path))
+        except AppError as exc:
+            _fail(session, document, f"Couldn't read the file: {exc.message}")
+            return False
+        extracted = extraction.extract(data, document.original_filename, document.mime_type)
 
-    extracted = extraction.extract(data, document.original_filename, document.mime_type)
     if extracted.text_error is not None:
         _fail(session, document, extracted.text_error)
         return False

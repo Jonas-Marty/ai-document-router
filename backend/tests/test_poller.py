@@ -87,7 +87,7 @@ class TestIngest:
 
         added = poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
 
-        assert added == 1
+        assert len(added) == 1
         document = session.exec(select(Document)).one()
         assert document.webdav_path == "/Test-Inbox/scan.pdf"
         assert document.status == DocumentStatus.pending
@@ -101,7 +101,7 @@ class TestIngest:
         poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
         added = poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
 
-        assert added == 0
+        assert added == {}
         assert len(session.exec(select(Document)).all()) == 1
 
     def test_skips_files_that_are_still_being_written(
@@ -111,7 +111,7 @@ class TestIngest:
         monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("fresh.pdf", age_seconds=2)])
 
-        assert poller.ingest(session, service, app_settings) == 0  # type: ignore[arg-type]
+        assert poller.ingest(session, service, app_settings) == {}  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("name", ["a.part", "b.tmp", "c.crdownload", "d.PART"])
     def test_skips_partial_extensions(
@@ -124,7 +124,7 @@ class TestIngest:
         monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry(name)])
 
-        assert poller.ingest(session, service, app_settings) == 0  # type: ignore[arg-type]
+        assert poller.ingest(session, service, app_settings) == {}  # type: ignore[arg-type]
 
     def test_skips_directories(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -132,7 +132,7 @@ class TestIngest:
         monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("subfolder", is_dir=True)])
 
-        assert poller.ingest(session, service, app_settings) == 0  # type: ignore[arg-type]
+        assert poller.ingest(session, service, app_settings) == {}  # type: ignore[arg-type]
 
     def test_dedupes_identical_content_under_a_different_name(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -146,7 +146,7 @@ class TestIngest:
 
         added = poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
 
-        assert added == 1
+        assert len(added) == 1
 
     def test_respects_the_ingest_cap(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -157,7 +157,7 @@ class TestIngest:
         bodies = {f"/Test-Inbox/s{i}.pdf": f"body-{i}".encode() for i in range(5)}
         service = FakeService([entry(f"s{i}.pdf") for i in range(5)], bodies=bodies)
 
-        assert poller.ingest(session, service, app_settings) == 2  # type: ignore[arg-type]
+        assert len(poller.ingest(session, service, app_settings)) == 2  # type: ignore[arg-type]
 
     def test_a_file_with_no_text_layer_lands_as_failed_not_an_exception(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -173,6 +173,46 @@ class TestIngest:
         assert "OCR" in document.proposal_error
         # Still fully approvable by hand.
         assert document.status == DocumentStatus.pending
+
+
+class TestNoDoubleDownload:
+    def test_a_document_ingested_this_tick_is_not_downloaded_again(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ingest already read the bytes; extracting the same text again would double
+        every tick's network cost against the server."""
+        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
+        monkeypatch.setattr(
+            poller.ai,
+            "request_proposal",
+            lambda **kwargs: ai.Proposal(
+                suggested_name="Named",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.8,
+                reasoning_text="r",
+                model_name="m",
+            ),
+        )
+        service = FakeService([entry("scan.pdf")])
+
+        fresh = poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
+        poller.generate_proposals(session, service, app_settings, fresh)  # type: ignore[arg-type]
+
+        assert service.read_paths == ["/Test-Inbox/scan.pdf"]
+
+    def test_a_document_from_an_earlier_tick_is_read_when_needed(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
+        service = FakeService([entry("scan.pdf")])
+        poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
+        service.read_paths.clear()
+
+        # No cache passed: simulates a later tick picking up leftover work.
+        poller.generate_proposals(session, service, app_settings)  # type: ignore[arg-type]
+
+        assert service.read_paths == []  # nothing pending: the blank PDF already failed
 
 
 class TestProposals:
