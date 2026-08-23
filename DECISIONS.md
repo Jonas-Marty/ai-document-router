@@ -90,6 +90,20 @@ meaningful. One line of "why" each; not a full ADR log.
   30-second operation timeout, since the frontend polls this and a slow probe delays the
   outage banner. `queue_depth` counts `pending` + `skipped`, i.e. everything still awaiting
   review per the SPEC §5 queue ordering.
+- **`mkdir_p` descends from the permitted root containing the target, not from `/`.** Walking
+  up from the filesystem root visits directories *above* the allowed root and the service
+  then refuses its own legitimate operation. This is not a corner case: SPEC §7.3 requires
+  the trash folder outside every allowed root, so `allowed=/Documents/Filed` with
+  `trash=/Documents/Trash` is a natural setup, and walking from `/` hits the un-permitted
+  `/Documents` first. When several permitted roots match, the most specific wins — the watch
+  folder may legitimately sit inside an allowed root.
+- **The listing cache stores and returns copies.** SPEC §8.3 wants siblings "newest first,
+  max 5", so callers will sort; an in-place sort on the shared list would silently reorder
+  what every other reader sees for the next 30 seconds.
+- **One reused client for health probes.** `/health` is polled by both the frontend (60s) and
+  the container healthcheck (30s); building a client per call means a TCP and TLS handshake
+  every few seconds with no connection reuse. A malformed `WEBDAV_WATCH_FOLDER` logs at
+  warning and returns unreachable, so a config typo stays distinguishable from an outage.
 - **Tests come in two layers: a hand-written fake and a contract suite over the real client.**
   `test_webdav.py` uses a fake for logic (cache, invalidation, root checks); `test_webdav_contract.py`
   drives an actual `webdav4.Client` over an httpx `MockTransport` with canned Nextcloud

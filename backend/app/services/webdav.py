@@ -36,10 +36,11 @@ from app.config import settings as config
 from app.services.errors import (
     AppError,
     NotFoundError,
+    OutsideAllowedRootsError,
     WebDAVConflict,
     WebDAVUnreachable,
 )
-from app.services.paths import assert_within_allowed_roots, normalize_path
+from app.services.paths import assert_within_allowed_roots, is_within, normalize_path
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,9 @@ CACHE_TTL_SECONDS = 30.0
 # across threads and needs the lock.
 _cache_lock = threading.Lock()
 _listing_cache: dict[str, tuple[float, list["WebDavEntry"]]] = {}
+
+_probe_client_lock = threading.Lock()
+_probe_client_instance: "Client | None" = None
 
 
 class WebDAVError(AppError):
@@ -99,13 +103,42 @@ def probe_reachable() -> bool:
     """
     if not config.webdav_base_url:
         return False
+
     try:
-        client = build_client(timeout=config.webdav_health_timeout_seconds)
-        client.exists(normalize_path(config.webdav_watch_folder).lstrip("/"))
+        watch_folder = normalize_path(config.webdav_watch_folder).lstrip("/")
+    except ValueError:
+        # A malformed WEBDAV_WATCH_FOLDER is a configuration mistake, not an outage.
+        # Logged at warning so it is distinguishable from a server that is simply down.
+        logger.warning("WEBDAV_WATCH_FOLDER is not a valid path: %r", config.webdav_watch_folder)
+        return False
+
+    try:
+        _probe_client().exists(watch_folder)
     except Exception as exc:  # noqa: BLE001 - a health probe must never propagate
         logger.debug("WebDAV health probe failed: %s", exc)
         return False
     return True
+
+
+def _probe_client() -> Client:
+    """One reused client for health probes.
+
+    /health is polled by both the frontend and the container healthcheck, so building a
+    fresh connection pool each time would mean a TCP and TLS handshake every few seconds
+    with no connection reuse.
+    """
+    global _probe_client_instance
+    with _probe_client_lock:
+        if _probe_client_instance is None:
+            _probe_client_instance = build_client(timeout=config.webdav_health_timeout_seconds)
+        return _probe_client_instance
+
+
+def reset_probe_client() -> None:
+    """Drop the cached probe client. Used by tests."""
+    global _probe_client_instance
+    with _probe_client_lock:
+        _probe_client_instance = None
 
 
 def clear_cache() -> None:
@@ -230,24 +263,46 @@ class WebDavService:
         invalidate(parent_of(normalized))
 
     def mkdir_p(self, path: str) -> None:
-        """Create a directory and any missing parents. No-op if it already exists."""
-        normalized = self._check(path)
+        """Create a directory and any missing parents. No-op if it already exists.
 
-        segments = [segment for segment in normalized.split("/") if segment]
-        current = ""
-        for segment in segments:
+        Descends from the permitted root that contains the target rather than from '/'.
+        Walking up from the filesystem root would visit directories above the root -- for a
+        nested configuration like allowed=/Documents/Filed, that means '/Documents', which
+        is outside the permitted set and would refuse its own legitimate operation.
+        """
+        target = self._check(path)
+        root = self._containing_root(target)
+
+        remainder = target[len(root) :] if root != "/" else target
+        current = root
+        pending = [root]
+        for segment in (part for part in remainder.split("/") if part):
             # Rebuild through normalize_path so a separator smuggled into a single segment
             # cannot widen the path we are about to create.
             current = normalize_path(f"{current}/{segment}")
-            if self.exists(current):
+            pending.append(current)
+
+        for directory in pending:
+            if self.exists(directory):
                 continue
             try:
                 with _translate_errors():
-                    self._client.mkdir(self._wire(current))
+                    self._client.mkdir(self._wire(directory))
             except WebDAVConflict:
                 # Raced with someone else creating it; that is the state we wanted anyway.
                 continue
-            invalidate(parent_of(current))
+            invalidate(parent_of(directory))
+
+    def _containing_root(self, normalized: str) -> str:
+        """The most specific permitted root containing `normalized`.
+
+        Most specific, not first: the watch folder may legitimately sit inside an allowed
+        root, and starting from the deeper one creates the fewest directories.
+        """
+        matches = [root for root in self._permitted_roots if is_within(root, normalized)]
+        if not matches:
+            raise OutsideAllowedRootsError(f"'{normalized}' is outside the allowed folders.")
+        return max(matches, key=len)
 
     # -- internals ------------------------------------------------------------------
 
@@ -268,11 +323,15 @@ class WebDavService:
             if self._clock() - stored_at >= CACHE_TTL_SECONDS:
                 del _listing_cache[normalized]
                 return None
-            return entries
+            # A copy: callers sort listings (SPEC 8.3 wants siblings newest-first) and an
+            # in-place sort would reorder the shared cache for everyone else.
+            return list(entries)
 
     def _cache_put(self, normalized: str, entries: list[WebDavEntry]) -> None:
         with _cache_lock:
-            _listing_cache[normalized] = (self._clock(), entries)
+            # Store a copy too, so the list handed back on a cache *miss* is the caller's
+            # own and mutating it cannot corrupt what the next reader sees.
+            _listing_cache[normalized] = (self._clock(), list(entries))
 
     def _to_entry(self, item: Any, exclude: str | None = None) -> WebDavEntry | None:
         """Convert one webdav4 dict to a WebDavEntry, or None if its path is unusable.

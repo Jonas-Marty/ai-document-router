@@ -13,6 +13,8 @@ import httpx
 import pytest
 from webdav4.client import ResourceAlreadyExists, ResourceNotFound
 
+from app.config import settings as config
+from app.services import webdav
 from app.services.errors import (
     NotFoundError,
     OutsideAllowedRootsError,
@@ -24,6 +26,7 @@ from app.services.webdav import (
     WebDavService,
     parent_of,
 )
+from app.services.webdav import probe_reachable as real_probe_reachable
 
 ROOTS = ["/Documents", "/Trash"]
 
@@ -248,6 +251,22 @@ class TestCache:
         service.list_dir("/Documents")
         assert fake.ls_calls == ["Documents", "Documents"]
 
+    def test_callers_cannot_mutate_the_shared_cached_listing(
+        self, service: WebDavService, fake: FakeClient
+    ) -> None:
+        """SPEC 8.3 wants siblings sorted newest-first; sorting in place would otherwise
+        reorder the cache for every other caller for the next 30 seconds."""
+        fake.listings["Documents"] = [
+            _entry("Documents/a.pdf", "file"),
+            _entry("Documents/b.pdf", "file"),
+        ]
+
+        first = service.list_dir("/Documents")
+        first.reverse()
+        first.append(first[0])
+
+        assert [e.name for e in service.list_dir("/Documents")] == ["a.pdf", "b.pdf"]
+
     def test_unrelated_directories_stay_cached_across_a_write(
         self, service: WebDavService, fake: FakeClient
     ) -> None:
@@ -343,6 +362,37 @@ class TestMkdirP:
 
         assert fake.mkdir_calls == []
 
+    def test_works_when_the_allowed_root_is_itself_nested(self, fake: FakeClient) -> None:
+        """Walking up from '/' would hit '/Documents', which is outside the permitted set.
+
+        This configuration is not exotic: SPEC 7.3 requires the trash folder to sit outside
+        every allowed root, so an allowed root and a sibling trash folder under a shared
+        parent is a natural way to set the app up.
+        """
+        service = WebDavService(fake, ["/Documents/Filed", "/Documents/Trash"])
+        fake.existing.add("Documents/Filed")
+
+        service.mkdir_p("/Documents/Filed/2026/Q1")
+
+        # Never attempts the un-permitted '/Documents' above the root.
+        assert fake.mkdir_calls == ["Documents/Filed/2026", "Documents/Filed/2026/Q1"]
+
+    def test_creates_the_allowed_root_itself_when_missing(self, fake: FakeClient) -> None:
+        service = WebDavService(fake, ["/Documents/Filed"])
+
+        service.mkdir_p("/Documents/Filed/2026")
+
+        assert fake.mkdir_calls == ["Documents/Filed", "Documents/Filed/2026"]
+
+    def test_starts_from_the_most_specific_permitted_root(self, fake: FakeClient) -> None:
+        # The watch folder may legitimately sit inside an allowed root.
+        service = WebDavService(fake, ["/Documents", "/Documents/Inbox"])
+        fake.existing.update({"Documents", "Documents/Inbox"})
+
+        service.mkdir_p("/Documents/Inbox/Sub")
+
+        assert fake.mkdir_calls == ["Documents/Inbox/Sub"]
+
 
 class TestErrorMapping:
     def test_connection_failure_maps_to_unreachable(
@@ -425,6 +475,53 @@ class TestPermittedRoots:
             service.mkdir_p("/etc/evil")
 
         assert fake.mkdir_calls == []
+
+
+class TestProbe:
+    """The autouse fixture in conftest stubs webdav.probe_reachable to keep the suite off
+    the network; these tests hold a reference to the real function taken at import time."""
+
+    def test_returns_false_when_no_server_is_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(config, "webdav_base_url", "")
+
+        assert real_probe_reachable() is False
+
+    def test_treats_a_malformed_watch_folder_as_unreachable_and_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(config, "webdav_base_url", "https://cloud.example.com")
+        monkeypatch.setattr(config, "webdav_watch_folder", "not-absolute")
+
+        with caplog.at_level("WARNING"):
+            assert real_probe_reachable() is False
+
+        # A config typo must be distinguishable from a server being down.
+        assert "WEBDAV_WATCH_FOLDER" in caplog.text
+
+    def test_reuses_one_client_across_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        webdav.reset_probe_client()
+        monkeypatch.setattr(config, "webdav_base_url", "https://cloud.example.com")
+        monkeypatch.setattr(config, "webdav_watch_folder", "/Scans/Inbox")
+
+        built: list[FakeClient] = []
+
+        def fake_build(timeout: float | None = None) -> FakeClient:
+            client = FakeClient()
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(webdav, "build_client", fake_build)
+        try:
+            real_probe_reachable()
+            real_probe_reachable()
+            real_probe_reachable()
+        finally:
+            webdav.reset_probe_client()
+
+        # One connection pool, not one per health check.
+        assert len(built) == 1
 
 
 class TestNoDeletePath:
