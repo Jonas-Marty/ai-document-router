@@ -49,6 +49,53 @@ meaningful. One line of "why" each; not a full ADR log.
   break container orchestration once real auth lands. Liveness probes are conventionally
   exempt from application auth; treating `/health` as the one exception matches that and
   keeps the Docker healthcheck working unchanged in M10.
+- **`normalize_path()` checks Unicode and percent-encoding but never rewrites the path.**
+  Verified against webdav4: `Documents/../../../../etc/passwd` on a base of
+  `https://host/remote.php/dav/files/jonas` resolves to `https://host/remote.php/etc/passwd`,
+  so `..` rejection is the real boundary. Three additions beyond literal `..`: a
+  percent-decode-to-fixpoint check (a server that decodes before normalizing turns `%2e%2e`
+  back into `..`; double-encoding needs more than one round), an NFKC check (NFKC folds
+  U+FF0E into `.` and U+FF0F into `/`, so a fullwidth `..` becomes a real parent reference
+  downstream), and rejection of backslashes, null bytes, and Cc control characters. All are
+  *checks*: the path is passed through byte-identical, because Nextcloud stores what it is
+  given and NFC-folding an NFD filename would break lookups for files that genuinely exist.
+  Only `Cc` is rejected, not all of `Cf` — U+200D appears in legitimate emoji filenames.
+- **Two layers of root checking.** `WebDavService` validates *every* path against
+  `permitted_roots` (allowed roots + trash + watch folder) — an always-on backstop so nothing
+  outside the app's universe reaches the server. Callers acting on user input additionally
+  apply the stricter SPEC §7.2 rule (inside an *allowed root*). SPEC §6.1 names the trash
+  folder as the one permitted exception; the watch folder is the same kind of exception, since
+  it is env configuration rather than user input.
+- **The 30-second cache covers directory listings only; `exists()` and `stat()` always read
+  live.** SPEC §6.1 promises caching for listings, and CLAUDE.md rule 2 requires the collision
+  check to happen "immediately before the MOVE" — a cached "no collision" answer would let
+  approve overwrite a file. A `move` invalidates the *parent directory of both* source and
+  destination (their contents changed), not the moved paths themselves.
+- **The listing cache is module-level with a lock, not per-instance.** `WebDavService` is
+  built per request so it can see the current `allowed_root_folders`, which would make an
+  instance cache useless. M4's APScheduler poller shares the process and FastAPI runs sync
+  handlers in a threadpool, so the shared dict genuinely needs the lock.
+- **`WebDavService.move()` has no `overwrite` parameter at all.** CLAUDE.md rule 2 is
+  structural rather than conventional: `Overwrite: F` is always sent (asserted on the wire in
+  the contract tests) and `Client.remove` is never wrapped, so there is no delete path to
+  find. A test asserts the service exposes no `remove`/`delete`/`rm`/`unlink`/`rmdir`.
+- **Added one error code beyond SPEC §5's list: `webdav_error` (502).** The listed codes cover
+  unreachable and conflict, but not a server that is reachable and refuses for another reason
+  (507 insufficient storage, 403 forbidden operation). Mapping those to `webdav_unreachable`
+  would be actively misleading in a message shown verbatim to the user.
+- **`/health` stays 200 when WebDAV is down**, reporting `webdav_reachable: false`. The deploy
+  healthcheck in `deploy/docker-compose.yml` calls it, so returning 503 on a dependency outage
+  would take the container unhealthy and stop the app for a problem it is designed to survive.
+  The probe uses its own 2-second timeout (`WEBDAV_HEALTH_TIMEOUT_SECONDS`) rather than the
+  30-second operation timeout, since the frontend polls this and a slow probe delays the
+  outage banner. `queue_depth` counts `pending` + `skipped`, i.e. everything still awaiting
+  review per the SPEC §5 queue ordering.
+- **Tests come in two layers: a hand-written fake and a contract suite over the real client.**
+  `test_webdav.py` uses a fake for logic (cache, invalidation, root checks); `test_webdav_contract.py`
+  drives an actual `webdav4.Client` over an httpx `MockTransport` with canned Nextcloud
+  PROPFIND XML, so webdav4's own parsing produces the dicts our converter reads. This
+  immediately earned its keep: it revealed that `client.open()` issues a PROPFIND *before* the
+  GET, so a file read costs two round trips — something the fake asserted nothing about.
 - **`ai_endpoint_url`'s "RFC1918 hosts" http:// allowance (SPEC §7.3) also covers `127.0.0.0/8`
   and the literal hostname `localhost`.** Strictly RFC1918 is only the three private ranges
   (10/8, 172.16/12, 192.168/16); loopback isn't technically RFC1918. Included it anyway since

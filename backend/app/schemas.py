@@ -1,6 +1,12 @@
 from pydantic import BaseModel
 
 
+class HealthResponse(BaseModel):
+    status: str
+    webdav_reachable: bool
+    queue_depth: int
+
+
 class SettingsRead(BaseModel):
     allowed_root_folders: list[str]
     trash_folder_path: str

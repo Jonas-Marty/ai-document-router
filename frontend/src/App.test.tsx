@@ -21,7 +21,9 @@ describe("App", () => {
 
   it("renders the API status once the health check resolves", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ status: "ok" }), { status: 200 }),
+      new Response(JSON.stringify({ status: "ok", webdav_reachable: true, queue_depth: 0 }), {
+        status: 200,
+      }),
     );
 
     renderApp();

@@ -1,4 +1,10 @@
 class AppError(Exception):
+    """Base for errors that map to the SPEC 5 error envelope.
+
+    Services raise these; the handler in main.py turns them into
+    `{"error": {"code", "message"}}`. Never raise HTTPException from a service.
+    """
+
     code: str = "internal_error"
     status_code: int = 400
 
@@ -15,3 +21,24 @@ class NotFoundError(AppError):
 class ValidationError(AppError):
     code = "validation_error"
     status_code = 422
+
+
+class OutsideAllowedRootsError(AppError):
+    """A path resolved outside every permitted root. The security boundary said no."""
+
+    code = "outside_allowed_roots"
+    status_code = 403
+
+
+class WebDAVUnreachable(AppError):
+    """The WebDAV server could not be contacted."""
+
+    code = "webdav_unreachable"
+    status_code = 503
+
+
+class WebDAVConflict(AppError):
+    """The WebDAV server refused an operation because the target state conflicts."""
+
+    code = "webdav_conflict"
+    status_code = 409
