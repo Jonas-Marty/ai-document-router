@@ -42,3 +42,21 @@ class WebDAVConflict(AppError):
 
     code = "webdav_conflict"
     status_code = 409
+
+
+class FilenameCollision(AppError):
+    """Something already exists at the destination. The file was not touched.
+
+    Distinct from WebDAVConflict because SPEC 7.1 makes a filename collision a *blocking*
+    form state: the frontend keys the disabled approve button on this code.
+    """
+
+    code = "filename_collision"
+    status_code = 409
+
+
+class NotRevertible(AppError):
+    """The file is no longer where history says it is, so it cannot be put back."""
+
+    code = "not_revertible"
+    status_code = 409

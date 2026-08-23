@@ -10,7 +10,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db
 from app.api import documents as documents_api
+from app.api import folders as folders_api
 from app.api import health
+from app.api import history as history_api
 from app.api import settings as settings_api
 from app.config import settings as config
 from app.jobs import poller
@@ -78,3 +80,5 @@ async def handle_http_exception(_request: Request, exc: StarletteHTTPException) 
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(settings_api.router, prefix="/api/v1")
 app.include_router(documents_api.router, prefix="/api/v1")
+app.include_router(folders_api.router, prefix="/api/v1")
+app.include_router(history_api.router, prefix="/api/v1")

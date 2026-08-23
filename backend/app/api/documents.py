@@ -4,10 +4,18 @@ from urllib.parse import quote
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from app.deps import CurrentUserDep, SessionDep, WebDavDep
+from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
 from app.models import AppSettings, ProposalStatus
-from app.schemas import DocumentRead, DocumentResponse, QueueResponse
+from app.schemas import (
+    ApproveRequest,
+    DocumentRead,
+    DocumentResponse,
+    HistoryEntryRead,
+    QueueResponse,
+    RoutedResponse,
+)
 from app.services import documents as documents_service
+from app.services import router as router_service
 from app.services.errors import NotFoundError
 
 router = APIRouter()
@@ -80,3 +88,50 @@ def regenerate_proposal(
     session.refresh(document)
 
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
+
+
+@router.post("/documents/{document_id}/approve")
+def approve_document(
+    document_id: str,
+    payload: ApproveRequest,
+    session: SessionDep,
+    _user: CurrentUserDep,
+    webdav: WebDavDep,
+    app_settings: AppSettingsDep,
+) -> RoutedResponse:
+    """File the document. Synchronous, because the user is waiting on the result."""
+    document, entry = router_service.approve(
+        session,
+        webdav,
+        app_settings,
+        document_id,
+        final_name=payload.final_name,
+        final_folder_path=payload.final_folder_path,
+        document_date=payload.document_date,
+    )
+    return RoutedResponse(
+        document=documents_service.to_read_schema(session, document),
+        history_entry=HistoryEntryRead.from_model(entry),
+    )
+
+
+@router.post("/documents/{document_id}/skip")
+def skip_document(document_id: str, session: SessionDep, _user: CurrentUserDep) -> DocumentResponse:
+    document = router_service.skip(session, document_id)
+    return DocumentResponse(document=documents_service.to_read_schema(session, document))
+
+
+@router.post("/documents/{document_id}/trash")
+def trash_document(
+    document_id: str,
+    session: SessionDep,
+    _user: CurrentUserDep,
+    webdav: WebDavDep,
+    app_settings: AppSettingsDep,
+) -> RoutedResponse:
+    """Move to the trash folder. There is no delete path anywhere in this codebase."""
+    document, entry = router_service.trash(session, webdav, app_settings, document_id)
+    return RoutedResponse(
+        document=documents_service.to_read_schema(session, document),
+        history_entry=HistoryEntryRead.from_model(entry),
+    )

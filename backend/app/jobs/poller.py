@@ -18,6 +18,7 @@ from app.config import settings as config
 from app.models import AppSettings, Document, DocumentStatus, Proposal, ProposalStatus
 from app.services import ai, extraction
 from app.services import settings as settings_service
+from app.services.documents import QUEUED_STATUSES
 from app.services.errors import AppError
 from app.services.extraction import ExtractedDocument
 from app.services.times import to_storage, utc_now
@@ -186,6 +187,10 @@ def generate_proposals(
     pending = session.exec(
         select(Document)
         .where(Document.proposal_status == ProposalStatus.pending)
+        # Filed documents keep their proposal_status until they leave the queue; without
+        # this a document approved while its proposal was still queued would burn an LLM
+        # call and attach a proposal to an already-filed document.
+        .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
         .order_by(Document.discovered_at)  # type: ignore[arg-type]
         .limit(config.poller_proposal_batch)
     ).all()

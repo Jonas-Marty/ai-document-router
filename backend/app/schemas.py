@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, field_serializer
 
-from app.models import Document, DocumentStatus, ProposalStatus
+from app.models import Document, DocumentStatus, HistoryAction, HistoryEntry, ProposalStatus
 from app.services.extraction import extension_of
 from app.services.times import from_storage
 
@@ -89,3 +89,84 @@ class SettingsUpdate(BaseModel):
     ai_endpoint_url: str
     ai_model_name: str
     ai_api_key: str | None = None
+
+
+class ApproveRequest(BaseModel):
+    """SPEC 5 deliberately omits the original suggestion: the backend already has the
+    proposal and computes `was_overridden` itself, so the client cannot misreport it."""
+
+    final_name: str
+    final_folder_path: str
+    document_date: date | None = None
+
+
+class HistoryEntryRead(BaseModel):
+    id: str
+    document_id: str
+    original_filename: str
+    final_filename: str
+    final_folder_path: str
+    action: HistoryAction
+    was_overridden: bool
+    processed_at: datetime
+    revertible: bool
+
+    @field_serializer("processed_at")
+    def _serialize_processed_at(self, value: datetime) -> str:
+        return from_storage(value).isoformat()
+
+    @classmethod
+    def from_model(cls, entry: HistoryEntry) -> "HistoryEntryRead":
+        return cls(
+            id=entry.id,
+            document_id=entry.document_id,
+            original_filename=entry.original_filename,
+            final_filename=entry.final_filename,
+            final_folder_path=entry.final_folder_path,
+            action=entry.action,
+            was_overridden=entry.was_overridden,
+            processed_at=entry.processed_at,
+            revertible=entry.revertible,
+        )
+
+
+class RoutedResponse(BaseModel):
+    document: DocumentRead
+    history_entry: HistoryEntryRead
+
+
+class HistoryPage(BaseModel):
+    items: list[HistoryEntryRead]
+    next_cursor: str | None
+
+
+class RevertResponse(BaseModel):
+    history_entry: HistoryEntryRead
+    document: DocumentRead
+
+
+class FolderNode(BaseModel):
+    path: str
+    name: str
+    has_children: bool
+    children: list["FolderNode"] | None
+    file_count: int
+
+
+class CreateFolderRequest(BaseModel):
+    parent_path: str
+    name: str
+
+
+class SiblingFile(BaseModel):
+    filename: str
+    created_at: str | None
+    size_bytes: int
+
+
+class FolderContext(BaseModel):
+    path: str
+    exists: bool
+    siblings: list[SiblingFile]
+    total_file_count: int
+    filename_collision: bool
