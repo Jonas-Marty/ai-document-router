@@ -56,6 +56,13 @@ reset-db:
     rm -f backend/data/app.db backend/data/app.db-wal backend/data/app.db-shm
     just upgrade
 
+# --- verification --------------------------------------------------------------
+
+# Check the WebDAV service against your real server. Reads only.
+# Add a root to also exercise mkdir_p:  just verify-webdav --write /Documents
+verify-webdav *args:
+    cd backend && uv run python scripts/verify_webdav.py {{args}}
+
 # --- quality -----------------------------------------------------------------
 
 # Run before declaring any task done
