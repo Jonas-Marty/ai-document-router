@@ -153,3 +153,40 @@ meaningful. One line of "why" each; not a full ADR log.
   that "a skipped document never reappears before an unskipped one" deserves to be stated.
   `/health`'s `queue_depth` imports the same definition as `/queue`'s `total_pending`, so the
   outage banner and the queue screen cannot disagree about how much work is waiting.
+- **Approve checks its target against `allowed_root_folders`, not the WebDAV service's
+  `permitted_roots`.** The service's set deliberately also holds the trash and watch folders
+  as I/O exceptions, so relying on it alone would let a user approve *into the watch folder* —
+  the poller would re-ingest the file on its next tick and the document would reappear in the
+  queue forever. This is the second layer the M3 notes described and nothing enforced until
+  now; SPEC §7.2 is explicit that it is server-side regardless of the UI.
+- **A collision reports `filename_collision` whether it is found before or after the move.**
+  The `exists()` pre-check gives the friendlier message, but `Overwrite: F` is the actual
+  guarantee, so a 412 from the server is translated to the same code. SPEC §7.1 makes
+  collision a *blocking* form state, and the frontend keys that on the code — it must not
+  change depending on which check caught it.
+- **History pages on a compound `(processed_at, id)` cursor.** `processed_at` is not unique
+  and approving two documents in the same second is entirely ordinary; a timestamp-only
+  cursor silently drops or repeats rows at the page boundary. Tests with hand-written
+  distinct timestamps would never show it.
+- **Trash records the name it actually wrote.** SPEC §6.4 suffixes with a timestamp on a
+  collision in trash; storing the intended name instead would send revert looking for a file
+  that is not there and report `not_revertible` for a perfectly revertible document.
+- **The user's corrected `document_date` is written back to the `proposal` row.** SPEC §5
+  includes it in the approve body but `history_entry` has no date column, so it would
+  otherwise be read for `was_overridden` and dropped. Revert keeps the proposal, so the
+  correction has to survive a revert; `suggestion_snapshot` still holds what the AI said,
+  which keeps the training data in the plan's "Later" section meaningful.
+- **`was_overridden` compares normalized paths.** The incoming `final_folder_path` is raw
+  while the proposal's is already normalized, so `/Test-Outbox/2026/` would otherwise read as
+  an override of `/Test-Outbox/2026`.
+- **Revert checks that no other document already holds the original path.** `webdav_path` is
+  unique, so a new scan arriving at the same path while a document was filed would surface as
+  an `IntegrityError` 500 rather than a readable conflict.
+- **`FolderNode.file_count` and `has_children` cost one listing per node**, so rendering a
+  level with N subfolders is N+1 requests. Accepted because the picker is lazy (only the
+  level actually opened pays it) and the 30-second listing cache absorbs repeat views. Worth
+  revisiting if a folder ever has many dozens of subfolders.
+- **A folder that does not exist yet is not an error for `/folders/context`.** It returns
+  `exists: false` with an empty sibling list, because SPEC §8.10 wants the form to show
+  "will be created" rather than an error card while the user is typing a new folder name.
+
