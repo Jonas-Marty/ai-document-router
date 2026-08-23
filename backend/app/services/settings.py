@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 from sqlmodel import Session
 
+from app.config import settings as config
 from app.models import AppSettings
 from app.schemas import SettingsRead, SettingsUpdate
 from app.services import crypto
@@ -25,6 +26,21 @@ def get_settings(session: Session) -> AppSettings:
     if settings is None:
         raise NotFoundError("Settings have not been initialised.")
     return settings
+
+
+def permitted_roots(settings: AppSettings) -> list[str]:
+    """Every path tree the app may touch: allowed roots plus the deliberate exceptions.
+
+    Empties are dropped. On a freshly seeded database `trash_folder_path` is "" and
+    `allowed_root_folders` is [], and `normalize_path("")` raises -- without this filter the
+    poller's first tick would die in the WebDavService constructor before reaching WebDAV.
+    """
+    candidates = (
+        *settings.allowed_root_folders,
+        settings.trash_folder_path,
+        config.webdav_watch_folder,
+    )
+    return [root for root in candidates if root]
 
 
 def to_read_schema(settings: AppSettings) -> SettingsRead:

@@ -41,6 +41,7 @@ from app.services.errors import (
     WebDAVUnreachable,
 )
 from app.services.paths import assert_within_allowed_roots, is_within, normalize_path
+from app.services.times import to_utc_aware
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +363,7 @@ class WebDavService:
             name=absolute.rsplit("/", 1)[-1],
             is_dir=item.get("type") == "directory",
             size_bytes=_as_int(item.get("content_length")),
-            modified=item.get("modified") if isinstance(item.get("modified"), datetime) else None,
+            modified=_as_utc(item.get("modified")),
             content_type=_as_str(item.get("content_type")),
             etag=_as_str(item.get("etag")),
         )
@@ -370,6 +371,18 @@ class WebDavService:
 
 def _as_int(value: Any) -> int | None:
     return value if isinstance(value, int) else None
+
+
+def _as_utc(value: Any) -> datetime | None:
+    """Guarantee exactly one datetime convention leaves this module: aware UTC.
+
+    webdav4 yields aware UTC for `getlastmodified`, but callers subtract these from
+    `utc_now()` for the poller's partial-write guard, and a naive value there raises
+    TypeError. Normalising here means no caller has to know or check.
+    """
+    if not isinstance(value, datetime):
+        return None
+    return to_utc_aware(value)
 
 
 def _as_str(value: Any) -> str | None:

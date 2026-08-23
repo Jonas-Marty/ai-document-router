@@ -6,7 +6,7 @@ ls/info yield dicts with `name` relative to base_url, plus `type`, `content_leng
 """
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -110,7 +110,7 @@ def _entry(name: str, kind: str, size: int | None = None) -> dict[str, Any]:
         "type": kind,
         "content_length": size,
         "created": None,
-        "modified": datetime(2026, 8, 21, 12, 0, 0),
+        "modified": datetime(2026, 8, 21, 12, 0, 0, tzinfo=UTC),
         "content_language": None,
         "content_type": "application/pdf" if kind == "file" else None,
         "etag": "abc123",

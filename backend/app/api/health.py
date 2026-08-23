@@ -3,15 +3,12 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from app.deps import SessionDep
-from app.models import Document, DocumentStatus
+from app.models import Document
 from app.schemas import HealthResponse
 from app.services import webdav
+from app.services.documents import QUEUED_STATUSES
 
 router = APIRouter()
-
-# Everything still awaiting review: pending plus previously skipped, matching the queue
-# ordering in SPEC 5.
-_QUEUED_STATUSES = (DocumentStatus.pending, DocumentStatus.skipped)
 
 
 # AUTH: deliberately left unauthenticated -- the deploy healthcheck calls this without
@@ -23,8 +20,11 @@ def get_health(session: SessionDep) -> HealthResponse:
     Always 200, even when WebDAV is down: `webdav_reachable` is the signal, and returning
     503 here would take the container unhealthy over a dependency outage.
     """
+    # Same definition as /queue's total_pending, imported rather than restated: if the
+    # two diverged, the outage banner and the queue screen would disagree about how
+    # much work is waiting.
     queue_depth = session.exec(
-        select(func.count()).select_from(Document).where(Document.status.in_(_QUEUED_STATUSES))  # type: ignore[attr-defined]
+        select(func.count()).select_from(Document).where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
     ).one()
 
     return HealthResponse(

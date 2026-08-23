@@ -25,6 +25,18 @@ class Settings(BaseSettings):
 
     poll_interval_seconds: int = 60
 
+    # Off in tests: the TestClient runs the lifespan, which would otherwise start a real
+    # background scheduler doing real network I/O during the suite.
+    poller_enabled: bool = True
+    # A first run against a populated watch folder would otherwise download every file and
+    # make one LLM call per document in a single tick. Caps keep each tick bounded; the
+    # backlog drains over subsequent ticks.
+    poller_ingest_batch: int = 20
+    poller_proposal_batch: int = 5
+    # SPEC 6.2: ignore anything written within the last few seconds, in case the scanner is
+    # still uploading it.
+    poller_min_file_age_seconds: int = 10
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def split_cors_origins(cls, value: str | list[str]) -> list[str]:

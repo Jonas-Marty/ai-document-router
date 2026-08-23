@@ -6,6 +6,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, create_engine
 
 from app import db
+from app.config import settings as config
 from app.main import app
 from app.services import webdav
 
@@ -19,6 +20,13 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     probe patch it themselves.
     """
     monkeypatch.setattr(webdav, "probe_reachable", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def no_poller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The TestClient runs the lifespan, which would otherwise start a real background
+    scheduler doing real network I/O for the whole suite."""
+    monkeypatch.setattr(config, "poller_enabled", False)
 
 
 @pytest.fixture(autouse=True)
