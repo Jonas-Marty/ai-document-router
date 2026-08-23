@@ -189,4 +189,48 @@ meaningful. One line of "why" each; not a full ADR log.
 - **A folder that does not exist yet is not an error for `/folders/context`.** It returns
   `exists: false` with an empty sibling list, because SPEC §8.10 wants the form to show
   "will be created" rather than an error card while the user is typing a new folder name.
+- **The outage banner covers two distinct conditions with different messages, not one.**
+  SPEC 8.10 asks for a banner "driven by /health" when WebDAV is down; M6's acceptance
+  criterion asks for a banner when the *backend itself* is stopped. Those are different
+  failures (a 200 with `webdav_reachable: false` vs. the /health request failing outright),
+  so `OutageBanner` distinguishes them: `ApiError.code === "network_error"` (the client-side
+  sentinel HttpApiClient throws when `fetch` itself rejects) gets "Can't reach the server",
+  anything else non-2xx gets a generic retry message, and `webdav_reachable: false` gets the
+  WebDAV-specific one. Confirmed against a real dev server that Vite's proxy actually returns
+  an empty-bodied 502 (not a network-level failure) when the backend is down, which exercises
+  the generic-error branch, not the network one -- both still produce a banner, just want
+  different copy.
+- **A blocking inline script in `index.html` applies the stored theme before React mounts.**
+  Without it there is a flash of the wrong theme on every load for anyone who has picked
+  dark. It duplicates a few lines of `ThemeProvider`'s logic by necessity — it has to run
+  before any React code exists — so the two are commented as needing to stay in sync.
+- **`ThemeProvider` stores only an explicit override; `localStorage.getItem("theme")` absent
+  means "system".** Choosing "System" from the toggle removes the key rather than writing
+  `"system"`, so a change in OS-level preference is picked up live (via a `matchMedia` change
+  listener) rather than requiring the user to reselect it.
+- **History is an infinite query, not a plain query re-issued per cursor.** SPEC 8.6's "Load
+  more" accumulates pages; `useInfiniteQuery` does that natively, so the History page (M9)
+  just calls `fetchNextPage()` from a button rather than managing a list of seen cursors
+  itself.
+- **`ApiClient` is an interface implemented once, by `HttpApiClient`.** Not because a second
+  implementation is planned, but so components depend on a contract (mockable in tests)
+  rather than importing `fetch` directly — CLAUDE.md's "No component calls fetch" rule
+  extended to its logical foundation.
+- **No headless-browser screenshot was possible in this environment.** `chromium-cli` isn't
+  installed, and Playwright's downloaded Chromium needs `libnspr4`/`libnss3`/`libasound2`
+  system libraries this sandbox has no `sudo` to install. M6 was verified instead via the
+  project's actual Vitest + Testing Library suite (a real jsdom DOM, not a mock) covering all
+  three routes, the theme toggle's class/localStorage effects, and both outage-banner
+  conditions, plus manual `curl` checks against real `just dev` / `just dev-api` processes
+  (proxy behavior, HTML shell integrity with the backend down, recovery). If a later
+  milestone needs actual pixel-level screenshots, installing those libs (or using a
+  statically-linked headless browser) needs root once, out of band.
+- **502/503/504 with an unparseable body is treated as `network_error`, not `unknown_error`.**
+  Manual verification found that stopping the backend under `just dev` doesn't make `fetch`
+  reject -- Vite's dev proxy (and nginx in the prod deploy) answers with an empty-bodied 502
+  of its own. That response resolves normally, so without this the outage banner showed the
+  generic "unexpected error" message instead of "can't reach the server" in exactly the case
+  M6's acceptance test cares about. `client.ts`'s `parseErrorBody` now maps a JSON-parse
+  failure on 502/503/504 specifically to `NETWORK_ERROR_CODE`; other unparseable error bodies
+  still fall back to `unknown_error`.
 
