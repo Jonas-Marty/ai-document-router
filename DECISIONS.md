@@ -216,15 +216,26 @@ meaningful. One line of "why" each; not a full ADR log.
   implementation is planned, but so components depend on a contract (mockable in tests)
   rather than importing `fetch` directly — CLAUDE.md's "No component calls fetch" rule
   extended to its logical foundation.
-- **No headless-browser screenshot was possible in this environment.** `chromium-cli` isn't
-  installed, and Playwright's downloaded Chromium needs `libnspr4`/`libnss3`/`libasound2`
-  system libraries this sandbox has no `sudo` to install. M6 was verified instead via the
-  project's actual Vitest + Testing Library suite (a real jsdom DOM, not a mock) covering all
-  three routes, the theme toggle's class/localStorage effects, and both outage-banner
-  conditions, plus manual `curl` checks against real `just dev` / `just dev-api` processes
-  (proxy behavior, HTML shell integrity with the backend down, recovery). If a later
-  milestone needs actual pixel-level screenshots, installing those libs (or using a
-  statically-linked headless browser) needs root once, out of band.
+- **No headless-browser screenshot was possible in this environment at first.** `chromium-cli`
+  isn't installed, and Playwright's downloaded Chromium needed `libnspr4`/`libnss3`/`libasound2`
+  system libraries this sandbox had no `sudo` to install. M6 was initially verified via the
+  project's actual Vitest + Testing Library suite (a real jsdom DOM, not a mock) plus manual
+  `curl` checks against real `just dev` / `just dev-api` processes. The user later ran
+  `sudo env "PATH=$PATH" npx playwright install-deps chromium` as root, which unblocked real
+  headless-Chromium verification (see the next entry — it immediately found a bug jsdom
+  structurally could not).
+- **`components/ui/button.tsx`'s `Button` needed `React.forwardRef`; the shadcn CLI generated
+  it without one.** Found only once real headless Chromium became available: `ThemeToggle`'s
+  `<Button asChild>` as a `DropdownMenuTrigger` anchor left the dropdown permanently stuck at
+  Radix Popper's unmeasured placeholder position (`transform: translate(0, -200%)`, i.e.
+  invisible above the viewport) with a console warning ("Function components cannot be given
+  refs"). This project pins React 18.3 (SPEC), where `asChild`/`Slot`-based ref composition
+  requires `forwardRef` explicitly — React 19's ref-as-prop doesn't apply. jsdom's Testing
+  Library suite never caught this because it has no real layout engine, so Radix's positioning
+  math (and thus the missing ref) never had an observable effect there; Testing Library found
+  the element in the DOM and happily "clicked" it regardless of where Floating UI thought it
+  was on screen. Any future shadcn component added via the CLI that uses `asChild` needs the
+  same check — the CLI's current templates assume React 19.
 - **502/503/504 with an unparseable body is treated as `network_error`, not `unknown_error`.**
   Manual verification found that stopping the backend under `just dev` doesn't make `fetch`
   reject -- Vite's dev proxy (and nginx in the prod deploy) answers with an empty-bodied 502
