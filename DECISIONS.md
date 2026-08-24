@@ -244,4 +244,149 @@ meaningful. One line of "why" each; not a full ADR log.
   M6's acceptance test cares about. `client.ts`'s `parseErrorBody` now maps a JSON-parse
   failure on 502/503/504 specifically to `NETWORK_ERROR_CODE`; other unparseable error bodies
   still fall back to `unknown_error`.
+- **`react-resizable-panels` was added for SPEC 8.3's desktop split, as a new dependency
+  beyond SPEC 2's list.** Asked the user rather than hand-rolling per CLAUDE.md rule 8; they
+  chose the library over a hand-rolled drag divider.
+- **`pdfjs-dist` is pinned as a direct dependency at the exact version `react-pdf` bundles
+  internally (5.4.296), not the latest.** react-pdf ships its own nested `pdfjs-dist` and
+  re-exports it as `pdfjs`; a separately-versioned top-level install would resolve to a
+  second copy whose API version doesn't match the worker's, which pdf.js refuses to run
+  under. The pdf.js worker URL is built from the bare specifier
+  `pdfjs-dist/build/pdf.worker.min.mjs` (Vite resolves this via `new URL(..., import.meta.url)`),
+  which only lands on the same copy react-pdf uses because the version is pinned to match.
+- **The shadcn CLI's whole component set assumes React 19 and needs auditing per file.**
+  Following M6's `Button` finding, `Input`, and every thin Radix-wrapping component in
+  `dialog.tsx`, `sheet.tsx`, and `tooltip.tsx` (Trigger/Close/Overlay/Content/Title/Description)
+  had the same missing-`forwardRef` bug. It surfaced twice more building the document viewer:
+  once as the same "ref never reaches Radix" symptom (a console warning, ref silently
+  dropped) on `SheetOverlay`, and it would have hit `Input` the moment `react-hook-form`'s
+  `register()` needed a real DOM node (focus-on-error, `setFocus` for SPEC 8.9's `N`
+  shortcut). Fixed proactively there rather than waiting to hit it. `dropdown-menu.tsx` was
+  verified working in M6 and left alone; anything in it that starts taking a ref (a future
+  `SubTrigger asChild`, or attaching a ref to `DropdownMenuTrigger`) should get the same
+  audit before being trusted.
+- **The mobile full-screen PDF sheet needed `data-[side=bottom]:h-dvh`, not a plain `h-dvh`
+  override.** shadcn's `SheetContent` base classes set `data-[side=bottom]:h-auto`; that's a
+  compound class+attribute selector (specificity 0,2,0) which beats a plain `.h-dvh` override
+  (0,1,0) regardless of source order, so the sheet's height collapsed to fit its content
+  instead of the viewport -- with a full PDF page inside, that meant a ~9900px-tall sheet
+  scrolled almost entirely off-screen above the visible area. Only found because a real
+  headless-Chromium screenshot came back blank; jsdom has no layout engine and would have
+  reported the element as present and "visible" regardless. Any future override of a
+  variant-conditioned shadcn utility needs the same conditioned prefix, not a bare class.
+- **The full-screen PDF viewer defaults to fit-width, not pdf.js's natural 100% scale.**
+  `<Page>` is given `width={containerWidth * scale}` (measured via a `ResizeObserver` on the
+  scroll container, `hooks/useElementWidth.ts`) with `scale` starting at 1, so the zoom
+  buttons act as a multiplier on top of fit-width rather than on the PDF's native point size.
+  At native scale a typical US-letter scan is far wider than a 375px viewport and the initial
+  view showed a few oversized lines of text rather than the page. Text/annotation layers are
+  disabled on both the thumbnail and the full view (`renderTextLayer`/`renderAnnotationLayer:
+  false`) -- SPEC doesn't ask for text selection, and pdf.js's text layer is positioned to
+  match the canvas's *native* pixel size, which would misalign under this width-driven
+  scaling without importing and reasoning about its CSS as well.
+- **Pinch-zoom in the mobile viewer relies on the browser's native viewport gesture, not a
+  hand-rolled touch handler.** `index.html`'s `<meta viewport>` doesn't set
+  `user-scalable=no` or `maximum-scale`, so standard pinch-to-zoom already works while the
+  sheet is open. SPEC 8.4 asks for "pinch-zoom" without specifying a custom gesture
+  implementation; this is the simpler option and avoids fighting the browser's own gesture
+  recognizer. Swipe paging (also SPEC 8.4) *is* hand-rolled, via touchstart/touchend delta-x,
+  since there's no native "swipe" gesture that maps to page navigation.
+- **`react-pdf` is mocked globally in `src/test/setup.tsx`, and `ResizeObserver` is
+  polyfilled as a no-op alongside the existing `matchMedia` polyfill.** pdf.js needs a real
+  canvas and Web Worker jsdom doesn't provide, so any test importing `DocumentViewer`
+  (transitively `react-pdf`) would fail before reaching jsdom's own gaps. The mock is
+  intentionally minimal -- Document/Page render simple stand-ins -- so tests can assert
+  around the viewer's own logic (open/close, PDF-vs-image branching) without asserting on PDF
+  rendering itself; that half is covered by real Chromium instead. `setup.ts` became
+  `setup.tsx` for this, since the mock factory needs JSX.
+- **`reviewFormSchema`'s `useForm()` must use `mode: "onChange"`.** Found live: with RHF's
+  default `"onSubmit"` mode, `formState.isValid`/`formState.errors` don't populate until a
+  submit already happened once, so ActionBar's `disabled={!formState.isValid}` stayed
+  `false` (enabled) for an invalid name until the user clicked Approve and watched it fail --
+  exactly the outcome SPEC 7.1's "blocking" validation is supposed to prevent. There's no
+  separate submit step in this UI (Approve *is* the submit), so onChange is required, not
+  optional. Documented directly in `reviewFormSchema.ts` so it survives the next rewrite.
+- **The review page's `<h1>Review</h1>` renders unconditionally, above every loading/error/
+  empty/document branch**, matching History's and Settings' stub pattern. It's tempting to
+  put the heading only where a document is showing, but every other page keeps a stable
+  title regardless of its data state, and `App.test.tsx`'s routing tests (find the "Review"
+  heading right after navigating) depend on that stability -- a heading that only appears
+  once a real document loads made those tests wait on a queue fetch they never mock.
+- **`ReviewForm`'s `useForm` instance lives in `ReviewPage`, not in `ReviewForm`**, passed
+  down via `FormProvider`. The sticky action bar needs `formState.isValid` to gate Approve
+  but isn't a descendant of the scrollable form area (it's pinned to the viewport bottom),
+  so the two need to share one RHF instance via context rather than the page threading
+  values and callbacks between siblings by hand.
+- **`DocumentReview` (the per-document part of `ReviewPage`) is `key`ed on the document id.**
+  Switching documents needs a clean `useForm`/`useState` lifecycle (fresh dirty-state,
+  fresh picker-open state, fresh approve-error state) rather than carrying over -- and
+  actually possible to get subtly wrong -- a shared instance's stale internal state across
+  documents. React's own remount-on-key-change does this for free.
+- **`DocumentReview`'s form-reset effect watches `document.proposal_status`, not just the
+  document id.** Regenerate can turn a `failed` proposal into a `ready` one for the *same*
+  document (same key, so no remount) -- the effect has to re-run then too, or the form keeps
+  showing the empty failed-state fields after a successful retry.
+- **The AI's `reasoning_text` and its structured `document_date` can disagree, and the form
+  trusts the structured field.** Confirmed against real Ollama/llama3.1 output: a proposal's
+  reasoning said "a date of 24.01.2026" while `document_date` was `null`. Showing an empty
+  date input here is correct, not a bug -- the structured field is what actually gets
+  submitted, and inferring a date by parsing the reasoning prose would be re-doing the
+  model's job unreliably on the frontend.
+- **`SiblingList` shows "Choose a folder to see what's already there" when the query is
+  disabled (empty `folderPath`), distinct from its loading/empty-folder states.** `failed`
+  proposals start with no target folder at all (SPEC 8.8's "empty but editable fields"), and
+  without this the sibling section silently showed nothing -- indistinguishable from a bug --
+  until real-browser verification against a real failed proposal caught it.
+- **`react-resizable-panels` 4.x is not the library most tutorials/shadcn's own `resizable`
+  component assume.** It renamed `PanelGroup`/`Panel`/`PanelResizeHandle` (the older v2 API)
+  to `Group`/`Panel`/`Separator`, and replaced the old `autoSaveId` string prop with a
+  `useDefaultLayout({ id, storage })` hook returning `defaultLayout`/`onLayoutChanged` to
+  wire onto `Group`. Checked against the installed version's actual `.d.ts` rather than
+  assumed from memory, since the two APIs aren't drop-in compatible and guessing wrong here
+  would have failed silently (wrong prop names typecheck as "extra props" on some setups, not
+  errors). Persisted layout is namespaced by the library itself as
+  `react-resizable-panels:<id>` in localStorage, not the bare id -- worth knowing before
+  grepping devtools for it.
+- **The desktop viewer's page-continuity toolbar tracks the current page via
+  `IntersectionObserver`, not scroll-offset math.** Each rendered `<Page>` is wrapped in a
+  div the observer watches; whichever page has the highest intersection ratio against the
+  scroll container becomes `currentPage`. This keeps the indicator correct whether the user
+  scrolls, clicks Prev/Next, or (desktop only) presses an arrow-key shortcut, without
+  duplicating "where am I" logic three ways. Confirmed against a real 2-page scan in a real
+  browser: the indicator tracked scrolling and both navigation methods correctly.
+- **Keyboard shortcuts (SPEC 8.9) are ignored while typing, except Cmd/Ctrl+Enter, via a
+  single global `keydown` listener gated on `useIsDesktop()` and enabled only when no dialog
+  has focus trapped.** The listener reads the target's tag name (`INPUT`/`TEXTAREA`/`SELECT`/
+  `contentEditable`) to decide whether to ignore a bare key like "s" -- checked live that
+  typing "s" while editing the file name does not skip the document, and that Cmd+Enter
+  approves even with the name field focused (the SPEC 8.9 exception). The trash-confirmation
+  dialog's own open state lives inside `ActionBar`, not lifted to `ReviewPage`, so it isn't
+  one of the states that disables the global listener -- a scoped, deliberate gap (pressing a
+  shortcut letter while that specific dialog is open isn't suppressed) rather than lifting
+  state cross-component for an edge case with low real-world odds of happening.
+- **`useIsDesktop()` uses `useSyncExternalStore` over `matchMedia`, not a resize listener.**
+  This is the same primitive React itself recommends for subscribing to external mutable
+  state, and (unlike a `useState` + `useEffect` resize handler) it can't tear on concurrent
+  rendering. The SSR/first-render snapshot always returns `false` (mobile) since this app has
+  no server render to reconcile against -- Vite serves a static shell and hydrates in the
+  browser, so there's no mismatch to guard for the way there would be in a Next.js app.
+- **The production bundle is ~959 kB (293 kB gzipped) for the main JS chunk, over Vite's
+  500 kB warning threshold.** Accepted for M7: `react-pdf`/`pdfjs-dist`, `react-hook-form`,
+  `zod`, and `react-resizable-panels` are all real, load-bearing dependencies for the review
+  screen, not accidental bloat, and this is a single-user self-hosted tool on a LAN, not a
+  public site optimizing for first-load on cellular. The pdf.js worker itself is a separate
+  ~1 MB chunk, loaded only when a document is actually viewed. Revisit with route-level code
+  splitting (`React.lazy` on `ReviewPage`, or the PDF viewer specifically) if History/Settings
+  growth in M9 ever makes the shared chunk relevant to routes that don't touch PDFs at all.
+  Verified the production build (`pnpm build` + `pnpm preview`) actually loads and initialises
+  cleanly in real Chromium, not just that the build command exits 0 -- the pdf.js worker
+  asset in particular is exactly the kind of thing that can resolve in dev and 404 in a
+  built/hashed bundle, and didn't here.
+- **shadcn's own `resizable.tsx`, `scroll-area.tsx`, `card.tsx`, and `separator.tsx` were
+  installed early in M7 (speculatively, alongside the components actually needed) and never
+  ended up used.** `resizable.tsx` in particular duplicates `ResizableSplit.tsx`'s job --
+  keeping both around would leave a future reader wondering which one is real. Deleted all
+  four rather than leave dead files in `components/ui/`; re-adding any of them later is a
+  one-line `pnpm dlx shadcn@latest add <name>` if M8/M9 end up wanting them (History's mobile
+  cards, SPEC 8.6, are a plausible reason `card.tsx` comes back).
 

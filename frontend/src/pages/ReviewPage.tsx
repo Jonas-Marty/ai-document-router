@@ -1,9 +1,304 @@
-// Stub for M6. The review queue and form land in M7.
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect, useRef, useState } from "react";
+import { FormProvider, useForm } from "react-hook-form";
+import { toast } from "sonner";
+import { ActionBar } from "@/components/review/ActionBar";
+import type { DesktopDocumentPaneHandle } from "@/components/review/DesktopDocumentPane";
+import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
+import { DocumentViewer } from "@/components/review/DocumentViewer";
+import { FolderPickerDialog } from "@/components/review/FolderPickerDialog";
+import { ResizableSplit } from "@/components/review/ResizableSplit";
+import { ReviewForm } from "@/components/review/ReviewForm";
+import { type ReviewFormValues, reviewFormSchema } from "@/components/review/reviewFormSchema";
+import { ShortcutCheatSheet } from "@/components/review/ShortcutCheatSheet";
+import { EmptyState } from "@/components/shared/EmptyState";
+import { ErrorState } from "@/components/shared/ErrorState";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useIsDesktop } from "@/hooks/useBreakpoint";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import {
+  documentContentUrl,
+  useApproveDocument,
+  useRegenerateDocument,
+  useSkipDocument,
+  useTrashDocument,
+} from "@/hooks/useDocument";
+import { useFolderContext } from "@/hooks/useFolders";
+import { useReviewQueue } from "@/hooks/useReviewQueue";
+import { useReviewShortcuts } from "@/hooks/useReviewShortcuts";
+import { ApiError } from "@/services/api/errors";
+import type { Document } from "@/services/api/types";
+
 export default function ReviewPage() {
+  const queue = useReviewQueue();
+
   return (
-    <div className="mx-auto max-w-3xl p-4">
-      <h1 className="text-lg font-semibold">Review</h1>
-      <p className="mt-2 text-sm text-muted-foreground">The review queue will live here.</p>
+    <div className="mx-auto flex h-[calc(100dvh-3.5rem)] max-w-6xl flex-col lg:h-[calc(100dvh-3.5rem)]">
+      <h1 className="p-4 pb-0 text-lg font-semibold">Review</h1>
+      {queue.isLoading ? (
+        <QueueSkeleton />
+      ) : queue.isError ? (
+        <div className="p-4">
+          <ErrorState
+            message={
+              queue.error instanceof ApiError ? queue.error.message : "Couldn't load the queue."
+            }
+            onRetry={() => queue.refetch()}
+          />
+        </div>
+      ) : !queue.currentDocument ? (
+        <div className="p-4">
+          <EmptyState
+            title="Queue's clear."
+            description="New scans appear here automatically."
+            action={{ label: "Check for new documents", onClick: () => queue.refetch() }}
+          />
+        </div>
+      ) : (
+        <DocumentReview
+          key={queue.currentDocument.id}
+          document={queue.currentDocument}
+          nextDocument={queue.items.find((d) => d.id !== queue.currentDocument?.id)}
+          advancePast={queue.advancePast}
+        />
+      )}
+    </div>
+  );
+}
+
+function QueueSkeleton() {
+  return (
+    <div className="space-y-4 p-4" aria-busy="true">
+      <Skeleton className="h-20 w-full" />
+      <Skeleton className="h-8 w-1/3" />
+      <Skeleton className="h-9 w-full" />
+      <Skeleton className="h-9 w-full" />
+      <Skeleton className="h-9 w-full" />
+    </div>
+  );
+}
+
+/** Everything for one document: the form instance, the debounced folder-context query (SPEC
+ * 8.3: shared between the sibling list and the blocking collision check), the mutations, and
+ * -- desktop only -- the resizable split and keyboard shortcuts. Keyed by document id from
+ * the parent so switching documents gets a clean useForm/useState lifecycle rather than
+ * fighting stale state across a shared instance. */
+function DocumentReview({
+  document,
+  nextDocument,
+  advancePast,
+}: {
+  document: Document;
+  nextDocument: Document | undefined;
+  advancePast: (id: string) => void;
+}) {
+  const isDesktop = useIsDesktop();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
+  const viewerRef = useRef<DesktopDocumentPaneHandle>(null);
+
+  const methods = useForm<ReviewFormValues>({
+    resolver: zodResolver(reviewFormSchema),
+    // ActionBar disables Approve on formState.isValid with no separate submit step -- see
+    // reviewFormSchema.ts for why this must be "onChange".
+    mode: "onChange",
+    defaultValues: {
+      documentDate: document.proposal?.document_date ?? "",
+      name: document.proposal?.suggested_name ?? "",
+      folderPath: document.proposal?.target_folder_path ?? "",
+    },
+  });
+
+  // Regenerate can turn a "failed" proposal into a "ready" one for the *same* document (same
+  // key), so the reset also has to watch proposal_status, not just re-run on mount.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: methods.reset is stable (RHF)
+  useEffect(() => {
+    methods.reset({
+      documentDate: document.proposal?.document_date ?? "",
+      name: document.proposal?.suggested_name ?? "",
+      folderPath: document.proposal?.target_folder_path ?? "",
+    });
+  }, [document.proposal_status]);
+
+  const folderPath = methods.watch("folderPath");
+  const name = methods.watch("name");
+  const debouncedFolderPath = useDebouncedValue(folderPath, 300);
+  const debouncedFilename = useDebouncedValue(`${name}${document.extension}`, 300);
+  const folderContext = useFolderContext(debouncedFolderPath, debouncedFilename);
+
+  // SPEC 8.8: prefetch the next document's content in the background.
+  useEffect(() => {
+    if (!nextDocument) return;
+    const controller = new AbortController();
+    fetch(documentContentUrl(nextDocument.id), { signal: controller.signal }).catch(() => {});
+    return () => controller.abort();
+  }, [nextDocument]);
+
+  const approveMutation = useApproveDocument();
+  const skipMutation = useSkipDocument();
+  const trashMutation = useTrashDocument();
+  const regenerateMutation = useRegenerateDocument();
+
+  function handleApprove(values: ReviewFormValues) {
+    setApproveError(null);
+    approveMutation.mutate(
+      {
+        id: document.id,
+        body: {
+          final_name: values.name,
+          final_folder_path: values.folderPath,
+          document_date: values.documentDate || null,
+        },
+      },
+      {
+        onSuccess: (response) => {
+          toast.success(`Moved to ${response.history_entry.final_folder_path}`);
+        },
+        onError: (error) => {
+          const message =
+            error instanceof ApiError ? error.message : "Couldn't approve this document.";
+          setApproveError(message);
+          toast.error(message);
+        },
+      },
+    );
+  }
+  const submitApprove = methods.handleSubmit(handleApprove);
+
+  function handleSkip() {
+    skipMutation.mutate(document.id, {
+      onSuccess: () => advancePast(document.id),
+      onError: (error) => {
+        toast.error(error instanceof ApiError ? error.message : "Couldn't skip this document.");
+      },
+    });
+  }
+
+  function handleTrash() {
+    trashMutation.mutate(document.id, {
+      onSuccess: () => toast.success("Moved to trash"),
+      onError: (error) => {
+        toast.error(error instanceof ApiError ? error.message : "Couldn't trash this document.");
+      },
+    });
+  }
+
+  const isPendingProposal = document.proposal_status === "pending";
+  const collision = folderContext.data?.filename_collision ?? false;
+  const canApprove = methods.formState.isValid && !collision;
+
+  // SPEC 8.4: no keyboard shortcuts on mobile at all. Also suppressed while the folder
+  // picker or the cheat sheet itself has focus trapped, so their own key handling isn't
+  // fought by this global listener.
+  useReviewShortcuts(isDesktop && !isPendingProposal && !pickerOpen && !cheatSheetOpen, {
+    onApprove: () => canApprove && submitApprove(),
+    onSkip: handleSkip,
+    onOpenFolderPicker: () => setPickerOpen(true),
+    onFocusName: () => methods.setFocus("name"),
+    onPrevPage: () => viewerRef.current?.prevPage(),
+    onNextPage: () => viewerRef.current?.nextPage(),
+    onOpenCheatSheet: () => setCheatSheetOpen(true),
+  });
+
+  const form = !isPendingProposal && (
+    <FormProvider {...methods}>
+      <ReviewForm
+        document={document}
+        folderContext={folderContext}
+        onChooseFolder={() => setPickerOpen(true)}
+      />
+      {document.proposal_status === "failed" && (
+        <button
+          type="button"
+          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+          onClick={() => regenerateMutation.mutate(document.id)}
+          disabled={regenerateMutation.isPending}
+        >
+          {regenerateMutation.isPending ? "Retrying…" : "Try again"}
+        </button>
+      )}
+    </FormProvider>
+  );
+
+  const pendingSkeleton = (
+    <div className="space-y-3" aria-busy="true">
+      <p className="text-sm text-muted-foreground">Waiting for the AI proposal…</p>
+      <Skeleton className="h-9 w-full" />
+      <Skeleton className="h-9 w-full" />
+      <Skeleton className="h-9 w-full" />
+    </div>
+  );
+
+  const actionBar = !isPendingProposal && (
+    <ActionBar
+      canApprove={canApprove}
+      isApproving={approveMutation.isPending}
+      isSkipping={skipMutation.isPending}
+      isTrashing={trashMutation.isPending}
+      approveError={approveError}
+      onApprove={submitApprove}
+      onSkip={handleSkip}
+      onTrash={handleTrash}
+    />
+  );
+
+  const dialogs = (
+    <>
+      <FolderPickerDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        value={folderPath}
+        onSelect={(path) =>
+          methods.setValue("folderPath", path, { shouldValidate: true, shouldDirty: true })
+        }
+      />
+      <ShortcutCheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />
+    </>
+  );
+
+  if (isDesktop) {
+    return (
+      <div className="min-h-0 flex-1">
+        <ResizableSplit
+          left={
+            <DesktopDocumentPane
+              ref={viewerRef}
+              documentId={document.id}
+              filename={document.original_filename}
+              mimeType={document.mime_type}
+              fileSizeBytes={document.file_size_bytes}
+              pageCount={document.page_count}
+            />
+          }
+          right={
+            <div className="flex h-full flex-col">
+              <div className="flex-1 space-y-4 overflow-y-auto p-4">
+                {isPendingProposal ? pendingSkeleton : form}
+              </div>
+              {actionBar}
+            </div>
+          }
+        />
+        {dialogs}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="flex-1 space-y-4 p-4">
+        <DocumentViewer
+          documentId={document.id}
+          filename={document.original_filename}
+          mimeType={document.mime_type}
+          fileSizeBytes={document.file_size_bytes}
+          pageCount={document.page_count}
+        />
+        {isPendingProposal ? pendingSkeleton : form}
+      </div>
+      {actionBar}
+      {dialogs}
     </div>
   );
 }
