@@ -3,10 +3,14 @@ import { apiClient } from "@/services/api/client";
 import type { CreateFolderRequest } from "@/services/api/types";
 import { queryKeys } from "./queryKeys";
 
-export function useFolderTree(path?: string) {
+/** One level of the lazy tree (SPEC 8.5). `enabled` defaults to true for the root-level call
+ * (`path` undefined); the picker passes `enabled: isExpanded` for every other node so a
+ * collapsed folder's children are never fetched. */
+export function useFolderTree(path?: string, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.folderTree(path),
     queryFn: () => apiClient.getFolderTree(path),
+    enabled: options?.enabled ?? true,
   });
 }
 

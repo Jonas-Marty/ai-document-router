@@ -49,3 +49,10 @@ if (!window.matchMedia) {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// jsdom doesn't implement scrollIntoView (DesktopDocumentPane's page paging and the folder
+// picker's keyboard/click highlight both call it). A no-op is enough for tests that don't
+// assert on scroll position -- real scrolling is verified in a real browser.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}

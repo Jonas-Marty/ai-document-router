@@ -406,3 +406,50 @@ meaningful. One line of "why" each; not a full ADR log.
   layout. Re-verified with the same real-browser check post-fix (action bar back in viewport
   at both breakpoints, banner still showing, zero console errors) plus the full `just check`.
 
+## M8 — Folder picker
+
+- **Fetching is centralized in `FolderPickerBody` via one `useQueries` call over every
+  expanded path, not one `useQuery` per recursive tree node.** A node-owns-its-own-query
+  design (each `FolderTreeNode` calling `useFolderTree(node.path)` itself) would also work,
+  but auto-expanding to a deep selection needs several levels fetched in parallel the moment
+  the picker opens, and type-to-filter needs to inspect every loaded node's children in one
+  pass -- both are far simpler against one flat `Map<path, children>` built in the parent than
+  against state scattered across N recursive component instances. `FolderTreeNode` stays a
+  plain, non-fetching renderer as a result.
+- **Type-to-filter (SPEC 8.5) only searches nodes already loaded, by design, not just as an
+  implementation shortcut.** Reaching into unloaded levels would mean firing a fetch per
+  keystroke against arbitrary tree depth with no cap -- expensive and unbounded. A node whose
+  children haven't been expanded yet simply won't surface as a filter match; expanding it
+  first (or matching on its own name) does. Documented on `nodeMatchesFilter` itself.
+- **Clicking a row / arrow-key navigation only updates a draft `selectedPath`; committing
+  (closing the picker and writing back to the review form) requires the footer's `Select`
+  button or Enter.** SPEC 8.5 shows both a per-row "tap/Enter to select" affordance and a
+  footer Select button, which only cohere as one mechanism if browsing and confirming are
+  separate steps -- otherwise the footer button would be redundant. This also means a folder
+  created via `New folder` is selected as soon as it exists (see below) without forcing an
+  extra click.
+- **A newly created folder becomes the draft selection immediately, from the mutation's own
+  `onSuccess` payload, not by waiting for the parent's children query to refetch and re-render
+  it into the list.** `useCreateFolder`'s `onSuccess` (in `useFolders.ts`) already invalidates
+  the parent's `folderTree` query, so the new folder appears in the tree shortly after too --
+  but the footer (and thus "immediately selectable", M8's done-when criterion) doesn't wait on
+  that network round-trip.
+- **Real-browser verification (headless Chromium against the real backend and the real
+  sandboxed Nextcloud account, `/Test-Outbox`) caught a bug the Vitest suite could not:** the
+  auto-expand-to-current-selection effect was originally written as a direct `setState` call
+  guarded by a ref, executed during render (React's documented pattern for one-time
+  render-phase adjustments). It passed every Vitest test, because Testing Library doesn't wrap
+  renders in `StrictMode`. The real app (`main.tsx`) does, and React 18's StrictMode
+  double-invokes a component's render body in dev specifically to catch impure renders like
+  this one: the ref flips to `true` on the first (discarded) invocation, so the second (kept)
+  invocation's guard is already closed and the `setState` never fires -- the tree silently
+  opened collapsed on every real load. Fixed by moving the same ref-guarded logic into a
+  `useEffect` (the correct pattern for "run once, but only after some async data arrives" --
+  effects are specifically designed to tolerate StrictMode's double-invoke, render-phase
+  updates are not meant for this). Re-verified in the real browser: the tree now auto-expands
+  and highlights the current folder on open, at both breakpoints, before any click.
+- **A `New folder` created during verification (`/Test-Outbox/M8-Verify-<timestamp>`) and the
+  pre-existing `/Test-Outbox/M7-Verify` document both remain on the real sandboxed Nextcloud
+  account** -- consistent with CLAUDE.md rule 1 and with M7's own verification artifacts;
+  nothing in this codebase deletes anything.
+

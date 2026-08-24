@@ -68,13 +68,20 @@ export function trimStemOnBlur(value: string): string {
   return trimEdgeChars(value.trim());
 }
 
+/** Strips a trailing slash (but never collapses "/" itself). Shared by every path comparison
+ * in this file and by the folder picker's tree helpers, so "/Documents/" and "/Documents"
+ * are always treated as the same folder. */
+export function normalizeFolderPath(path: string): string {
+  return path.replace(/\/+$/, "") || "/";
+}
+
 /** UX-only check that a path sits inside one of the allowed roots (SPEC 7.2). Not a security
  * boundary -- services/paths.py's assert_within_allowed_roots is; this only avoids sending an
  * approve request the backend will certainly reject. */
 export function isWithinAllowedRoot(path: string, allowedRoots: string[]): boolean {
-  const normalized = path.replace(/\/+$/, "") || "/";
+  const normalized = normalizeFolderPath(path);
   return allowedRoots.some((root) => {
-    const normalizedRoot = root.replace(/\/+$/, "") || "/";
+    const normalizedRoot = normalizeFolderPath(root);
     return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}/`);
   });
 }

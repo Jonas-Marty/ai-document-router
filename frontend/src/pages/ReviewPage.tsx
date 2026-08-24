@@ -2,11 +2,11 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useRef, useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { FolderPicker } from "@/components/folders/FolderPicker";
 import { ActionBar } from "@/components/review/ActionBar";
 import type { DesktopDocumentPaneHandle } from "@/components/review/DesktopDocumentPane";
 import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
 import { DocumentViewer } from "@/components/review/DocumentViewer";
-import { FolderPickerDialog } from "@/components/review/FolderPickerDialog";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
 import { ReviewForm } from "@/components/review/ReviewForm";
 import { type ReviewFormValues, reviewFormSchema } from "@/components/review/reviewFormSchema";
@@ -245,7 +245,7 @@ function DocumentReview({
 
   const dialogs = (
     <>
-      <FolderPickerDialog
+      <FolderPicker
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         value={folderPath}
