@@ -301,5 +301,13 @@ describe("SettingsPage", () => {
     // is a new element -- re-query rather than trust the pre-discard reference.
     expect(screen.getByLabelText("Allowed root folder 1")).toHaveValue("/Documents/Finance");
     expect(apiClient.updateSettings).not.toHaveBeenCalled();
+
+    // Same `{ keepDirtyValues: false }` fix, but on a plain register()'d field rather than
+    // a useFieldArray row -- confirms the fix isn't specific to the field-array case it was
+    // originally caught through.
+    const hintInput = screen.getByLabelText("Pattern hint");
+    await user.type(hintInput, " extra text");
+    await user.click(nth(screen.getAllByRole("button", { name: "Discard changes" }), 1));
+    expect(hintInput).toHaveValue("");
   });
 });
