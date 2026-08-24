@@ -25,3 +25,14 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   }
   return formatter.format(Math.round(diffSeconds / 60), "minute");
 }
+
+const absoluteFormatter = new Intl.DateTimeFormat("en", {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+/** The absolute counterpart to `relativeTime` -- SPEC 8.6 wants history rows to show the
+ * relative time with the absolute time available on hover (a `title` attribute). */
+export function absoluteTime(iso: string): string {
+  return absoluteFormatter.format(new Date(iso));
+}

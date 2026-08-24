@@ -1,26 +1,32 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { HISTORY_PAGE_LIMIT } from "@/lib/constants";
 import { apiClient } from "@/services/api/client";
 import { queryKeys } from "./queryKeys";
 
-/** SPEC 8.6: "Load more" via cursor. An infinite query accumulates pages naturally, so
- * the History page just calls fetchNextPage() from a button. */
-export function useHistory(limit?: number) {
+/** SPEC 8.6: newest first, "Load more" via cursor. `useInfiniteQuery` is the natural fit for
+ * cursor pagination that accumulates rather than replaces -- each page's `next_cursor` feeds
+ * the next fetch, and `data.pages` holds every page fetched so far for the caller to flatten. */
+export function useHistory() {
   return useInfiniteQuery({
     queryKey: queryKeys.history(),
-    queryFn: ({ pageParam }) => apiClient.getHistory(limit, pageParam),
+    queryFn: ({ pageParam }: { pageParam: string | undefined }) =>
+      apiClient.getHistory(HISTORY_PAGE_LIMIT, pageParam),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
 }
 
+/** SPEC 8.6: "On success: toast ..., invalidate history and queue" -- reverting puts the
+ * document back in the review queue (SPEC 6.4), and the entry's own `revertible` flips to
+ * false, so both lists are stale. Plain invalidation, not a cache patch: revert is rare
+ * enough that the extra round trip isn't worth the risk of the two lists drifting apart. */
 export function useRevertHistoryEntry() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiClient.revertHistoryEntry(id),
     onSuccess: () => {
-      // SPEC 8.6: on success, invalidate history and queue -- the document is back in it.
       queryClient.invalidateQueries({ queryKey: queryKeys.history() });
-      queryClient.invalidateQueries({ queryKey: ["queue"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
     },
   });
 }

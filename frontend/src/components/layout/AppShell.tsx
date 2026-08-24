@@ -1,6 +1,7 @@
 import { FileStack, History, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import { useConfirmNavigation } from "@/hooks/useNavigationGuard";
 import { cn } from "@/lib/utils";
 import { OutageBanner } from "./OutageBanner";
 import { ThemeToggle } from "./ThemeToggle";
@@ -14,6 +15,8 @@ const NAV_ITEMS = [
 /** Top bar, nav, and the outage banner -- wraps every route. Mobile-first: nav labels
  * collapse to icon-only below the sm breakpoint rather than wrapping or overflowing. */
 export function AppShell({ children }: { children: ReactNode }) {
+  const confirmNavigation = useConfirmNavigation();
+
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       <header className="border-b border-border bg-background">
@@ -25,6 +28,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                 key={to}
                 to={to}
                 end={end}
+                onClick={(e) => {
+                  // Already on this route (react-router sets aria-current) -- nothing to
+                  // leave, so don't prompt.
+                  if (e.currentTarget.getAttribute("aria-current") === "page") return;
+                  if (!confirmNavigation()) e.preventDefault();
+                }}
                 className={({ isActive }) =>
                   cn(
                     "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
