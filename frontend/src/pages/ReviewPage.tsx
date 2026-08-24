@@ -33,7 +33,7 @@ export default function ReviewPage() {
   const queue = useReviewQueue();
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-3.5rem)] max-w-6xl flex-col lg:h-[calc(100dvh-3.5rem)]">
+    <div className="mx-auto flex h-full max-w-6xl flex-col">
       <h1 className="p-4 pb-0 text-lg font-semibold">Review</h1>
       {queue.isLoading ? (
         <QueueSkeleton />

@@ -389,4 +389,20 @@ meaningful. One line of "why" each; not a full ADR log.
   four rather than leave dead files in `components/ui/`; re-adding any of them later is a
   one-line `pnpm dlx shadcn@latest add <name>` if M8/M9 end up wanting them (History's mobile
   cards, SPEC 8.6, are a plausible reason `card.tsx` comes back).
+- **`ReviewPage`'s fixed-height container used to be `h-[calc(100dvh-3.5rem)]`, hardcoding the
+  top bar's height (`h-14`).** A post-M7 real-browser check (375px and 1440px, WebDAV forced
+  unreachable via an unroutable `WEBDAV_BASE_URL` so `/health` reports
+  `webdav_reachable: false` while the queue/document data stays live) found this pushed the
+  sticky action bar entirely below the fold whenever `OutageBanner` was showing, on both
+  breakpoints -- the calc had no way to account for the banner's height since it lives inside
+  the same `<header>`. Fixed at the `AppShell` level instead of patching the constant: the
+  root is now `h-dvh` (was `min-h-dvh`) with `<main>` as `min-h-0 flex-1 overflow-y-auto`, so
+  `<main>` always gets the real remaining height regardless of what the header/banner render
+  to, and `ReviewPage`'s outer container is just `h-full`. `header`'s `sticky top-0` was
+  removed as redundant -- it's now a fixed-height sibling of `<main>` in a capped flex column,
+  never itself inside a scrolling context. This also means `History`/`Settings` now scroll
+  within `<main>` rather than the page body; visually identical, and the one page-level model
+  that works correctly for both the plain stub pages and `ReviewPage`'s internal-scroll
+  layout. Re-verified with the same real-browser check post-fix (action bar back in viewport
+  at both breakpoints, banner still showing, zero console errors) plus the full `just check`.
 

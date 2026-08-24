@@ -15,8 +15,8 @@ const NAV_ITEMS = [
  * collapse to icon-only below the sm breakpoint rather than wrapping or overflowing. */
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="sticky top-0 z-10 border-b border-border bg-background">
+    <div className="flex h-dvh flex-col bg-background text-foreground">
+      <header className="border-b border-border bg-background">
         <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
           <span className="min-w-0 shrink truncate font-semibold">AI Document Router</span>
           <nav className="ml-auto flex items-center gap-1">
@@ -44,7 +44,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
         <OutageBanner />
       </header>
-      <main className="flex-1">{children}</main>
+      <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
     </div>
   );
 }
