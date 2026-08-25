@@ -33,6 +33,10 @@ RUN pnpm build
 # nginx stable branch. The default nginx entrypoint runs the master as root and workers as the
 # unprivileged `nginx` user, which is the upstream-supported arrangement -- the backend, which
 # actually touches persistent data, is the one that runs fully non-root.
+#
+# This is the only base image tag here not pinned to something verified on the build machine
+# (uv and Node match the development toolchain exactly, Python matches requires-python). If
+# this build fails with "manifest unknown", the tag is the cause: fall back to `nginx:alpine`.
 FROM nginx:1.28-alpine AS runtime
 
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
