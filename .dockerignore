@@ -1,0 +1,39 @@
+# Build context for BOTH images is the repo root (deploy/docker-compose.yml sets
+# `context: ..`), so this file governs the backend and frontend builds alike.
+
+# Secrets. Compose injects these at runtime via `env_file`; they must never reach an image
+# layer, where they would persist even if a later layer deleted them.
+.env
+.env.local
+
+# The local development database. Without this line `backend/data/app.db` would be baked
+# into the image and then shadowed at runtime by the named volume -- invisible, but shipping
+# real scanned-document metadata inside a distributable artifact.
+backend/data/
+
+# Dependency trees and build output: rebuilt inside the image, and copying host-built ones
+# risks mixing architectures (this repo is developed on arm64).
+.venv/
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# Caches and local tooling state
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# VCS and editor state
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Documentation. Nothing in either image reads these, and excluding them means editing a
+# doc doesn't invalidate the Docker build cache.
+*.md

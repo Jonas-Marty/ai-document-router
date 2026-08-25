@@ -13,6 +13,10 @@ dependencies = [
     "webdav4>=0.11.0",
     "pypdf>=6.16.1",
     "apscheduler>=3.11.3",
+    # services/ai.py and services/webdav.py import httpx directly. It resolves transitively
+    # through webdav4 anyway, but a production install (`uv sync --no-dev`) would break the
+    # moment that transitive edge changed, so declare what we actually import.
+    "httpx>=0.28",
 ]
 
 [dependency-groups]

@@ -16,6 +16,9 @@ backend/data/
 *.db-wal
 *.db-shm
 
+# Database backups written by `just backup`
+backups/
+
 # Node
 node_modules/
 dist/

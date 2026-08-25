@@ -89,9 +89,16 @@ test-watch:
 
 # --- deployment --------------------------------------------------------------
 
+# Rotating SECRET_KEY invalidates the stored AI API key, which then has to be re-entered in
+# Settings -- read the deployment section of the README before replacing an existing one.
+# Generate a Fernet key for SECRET_KEY on first run
+secret-key:
+    @python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
 build:
     docker compose -f deploy/docker-compose.yml build
 
+# Builds anything not yet built, then starts. Requires a filled-in .env at the repo root.
 up:
     docker compose -f deploy/docker-compose.yml up -d
 
@@ -100,3 +107,20 @@ down:
 
 logs:
     docker compose -f deploy/docker-compose.yml logs -f
+
+# Uses SQLite's own backup API rather than copying the file: under WAL a plain copy of
+# app.db can miss pages that are committed but still only in the -wal file, producing a
+# backup that silently loses recent work. Runs live; no downtime needed.
+# Back up the SQLite database to ./backups/
+backup dest="backups":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    compose="docker compose -f deploy/docker-compose.yml"
+    stamp=$(date +%Y%m%d-%H%M%S)
+    mkdir -p "{{dest}}"
+    # Written inside the container onto the mounted volume first: the backup API needs a
+    # real file target, and /data is the one path guaranteed to exist and be writable.
+    $compose exec -T api python -c "import sqlite3; s = sqlite3.connect('/data/app.db'); t = sqlite3.connect('/data/backup.tmp.db'); s.backup(t); t.close(); s.close()"
+    $compose cp api:/data/backup.tmp.db "{{dest}}/app-$stamp.db"
+    $compose exec -T api rm -f /data/backup.tmp.db
+    echo "Wrote {{dest}}/app-$stamp.db"

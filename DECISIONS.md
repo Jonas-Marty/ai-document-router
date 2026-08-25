@@ -526,3 +526,72 @@ meaningful. One line of "why" each; not a full ADR log.
   typed value never touched `localStorage`. Confirmed via `GET /settings` before and after
   that `ai_api_key_set` was still `false` on the real backend.
 
+
+## M10 — Deployment
+
+- **Migrations run in the container entrypoint, not in the FastAPI lifespan.** A schema
+  failure then stops the container outright instead of leaving a running app serving errors
+  against a stale schema, and `restart: unless-stopped` turns it into an honest crash loop
+  with the reason in `just logs`. `alembic upgrade head` is idempotent, so the common case (a
+  restart with nothing to apply) is a no-op -- verified by running it twice against a fresh
+  database.
+- **One Uvicorn worker, structurally.** The APScheduler poller starts in the application
+  lifespan, so every extra worker is another poller ingesting the same WebDAV folder and
+  making duplicate LLM calls for the same documents. `--workers 1` is written explicitly in
+  `deploy/entrypoint.sh` rather than left to the default, and the reason is repeated in the
+  README's deployment section, which is where someone chasing throughput will actually look.
+  Scaling means extracting the poller into its own process, never raising this number.
+- **nginx proxying `/api` is load-bearing, not a convenience.** `services/api/client.ts`
+  hardcodes a relative `/api/v1` base, so a deployment that served the bundle without the
+  proxy would have no way to reach the backend at all. A useful consequence: the browser only
+  ever sees one origin, so `CORS_ORIGINS` is purely a native-development concern. (SPEC §10
+  lists a `VITE_API_BASE_URL`, but nothing in the frontend reads it -- the relative base makes
+  it unnecessary. Left in `.env.example` as documentation of the escape hatch, unimplemented.)
+- **`location /api` without a trailing slash**, so a bare `/api` is proxied too. With
+  `location /api/`, that one path would fall through to the SPA fallback and answer an API
+  call with `index.html` instead of the JSON error envelope from SPEC §5.
+- **The two security headers are repeated in every location block that sets `Cache-Control`.**
+  nginx does not merge `add_header` across levels: a location declaring any `add_header` of
+  its own silently discards every one inherited from the server block. Without the repetition
+  the static bundle and `index.html` -- the two responses a browser actually renders -- would
+  be the only ones missing `X-Content-Type-Options`.
+- **Hashed assets get `try_files $uri =404`, not the SPA fallback.** A missing hashed asset is
+  a broken deploy; answering it with `index.html` turns that into a confusing
+  "unexpected token <" at parse time instead of an honest 404. `index.html` itself is
+  `no-cache` for the mirror-image reason: a cached copy keeps pointing at the previous build's
+  asset hashes after an update.
+- **The API container's hostname goes through an nginx variable (`set $api_upstream api`) with
+  an explicit `resolver 127.0.0.11`.** With a literal hostname, nginx resolves once at startup
+  and caches that IP for the process lifetime -- an `api` container restart landing on a new
+  IP would 502 every request until the web container was restarted too, which
+  `restart: unless-stopped` makes a question of when, not whether.
+- **`httpx` promoted from a dev-only to an explicit runtime dependency.** `services/ai.py` and
+  `services/webdav.py` import it directly while it resolved only transitively through
+  `webdav4` -- a production `uv sync --no-dev` happened to work, but would have broken the
+  moment that transitive edge changed. Not a new dependency under CLAUDE.md rule 8: it was
+  already installed and imported at runtime, just undeclared. Re-locking changed exactly two
+  lines and resolved the same httpx 0.28.1, so the 302 backend tests were unaffected.
+- **`just backup` uses SQLite's backup API rather than copying `app.db`.** The database runs
+  in WAL mode, where a plain file copy can miss pages that are committed but live only in the
+  `-wal` file -- a backup that looks fine and silently loses recent work. Restoring therefore
+  has to delete the stale `-wal`/`-shm` sidecars, which is why the README's restore command
+  does that rather than just copying a file in.
+- **`/data` is created and chowned in the image even though a volume mounts over it.** Docker
+  populates an empty named volume from the image's directory *and inherits its ownership*; if
+  the path doesn't exist in the image, the volume is created root-owned and the non-root
+  process cannot write the database. The uid is pinned to 1001 for the same reason -- a uid
+  that drifted between rebuilds would leave an existing volume unwritable.
+- **M10's done-when could not be verified in this environment.** Docker Desktop is not running
+  and the WSL2 distro has no Docker integration enabled, so neither half of "`just up`
+  produces a working application from a clean checkout, and the database survives a container
+  recreate" has been executed. What *was* verified without Docker: the production frontend
+  build (`dist/index.html` plus ten content-hashed assets, matching the nginx location
+  blocks exactly); `uv sync --frozen --no-dev` into an isolated venv, after which
+  `app.main`, `httpx`, `services/ai` and `services/webdav` all import and no dev tooling is
+  present; `alembic upgrade head` against an empty database and again on rerun; the compose
+  healthcheck command returning 0 against a live API and 1 against a dead port; the compose
+  file parsing with the intended wiring; `pnpm install --frozen-lockfile` resolving; and a
+  simulation of `.dockerignore` confirming `.env` and `backend/data/app.db` cannot enter the
+  build context while every path the two Dockerfiles copy survives. The base image *tags*
+  (`python:3.12-slim-bookworm`, `node:24-alpine`, `nginx:1.28-alpine`,
+  `ghcr.io/astral-sh/uv:0.12.5`) are unverified against a registry.

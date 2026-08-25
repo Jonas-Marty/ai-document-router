@@ -1,23 +1,45 @@
 # Deployment only. Development runs natively in WSL2 — see CLAUDE.md.
-# Place this at deploy/docker-compose.yml.
+# Run from the repo root via the justfile: `just build`, `just up`, `just logs`, `just down`.
 
 services:
   api:
     build:
+      # The repo root, so the backend image can copy backend/ and deploy/entrypoint.sh.
       context: ..
       dockerfile: deploy/backend.Dockerfile
     restart: unless-stopped
+    # Everything the backend needs: SECRET_KEY, the WebDAV credentials, POLL_INTERVAL_SECONDS,
+    # LOG_LEVEL. Compose fails loudly if this file is missing, which is the right behaviour on
+    # a first run — see the deployment section of the README.
     env_file: ../.env
     environment:
+      # Overrides whatever DATABASE_URL the .env carries for native development. Values here
+      # win over env_file, so the container always writes to the volume below rather than to
+      # a path inside its own ephemeral filesystem. Four slashes: `sqlite:///` + `/data/app.db`.
       DATABASE_URL: sqlite:////data/app.db
     volumes:
+      # This is what makes the database outlive the container. `docker compose down` and a
+      # subsequent `up` recreate the container against the same volume; only an explicit
+      # `docker compose down -v` destroys it.
       - appdata:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health').status==200 else 1)"]
+      # /health is always 200 even when WebDAV is unreachable (webdav_reachable is the signal),
+      # so this checks that the API process is up, not that the whole system is happy.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health').status==200 else 1)",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      # Generous: the first start runs `alembic upgrade head` before uvicorn binds.
+      start_period: 30s
+    # No published port, deliberately. The API is reachable only on the compose network, as
+    # `api:8000`, which the web container proxies to. To poke at it directly:
+    #   docker compose -f deploy/docker-compose.yml exec api python -c "..."
 
   web:
     build:
@@ -27,8 +49,16 @@ services:
     ports:
       - "8080:80"
     depends_on:
+      # nginx resolves `api` when proxying, so starting before the API exists would mean a
+      # window of 502s on first boot.
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   appdata:
