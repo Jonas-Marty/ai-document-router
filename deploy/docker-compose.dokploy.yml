@@ -72,7 +72,16 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://localhost/"]
+      # 127.0.0.1 rather than localhost, and the distinction is load-bearing. deploy/nginx.conf
+      # declares only `listen 80;`, and the nginx image's 10-listen-on-ipv6-by-default.sh skips
+      # adding the IPv6 listener whenever the config differs from the packaged one -- which ours
+      # does. Docker resolves `localhost` to ::1 as well as 127.0.0.1, busybox wget tries ::1
+      # first, and the check reports "connection refused" against an nginx that is serving fine.
+      # A false unhealthy here does not just look untidy: Traefik's docker provider filters out
+      # non-healthy containers together with their labels, so the router vanishes, the
+      # certresolver is never referenced, and the domain is served Traefik's self-signed default
+      # cert without a single Let's Encrypt request being made.
+      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://127.0.0.1/"]
       interval: 30s
       timeout: 5s
       retries: 3
