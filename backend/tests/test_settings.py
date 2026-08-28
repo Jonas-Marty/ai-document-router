@@ -145,6 +145,47 @@ def test_put_settings_allows_http_for_localhost(client: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_put_settings_saves_folders_before_the_ai_endpoint_is_configured(
+    client: TestClient,
+) -> None:
+    """Regression: every settings card PUTs the whole settings object, filling the fields it
+    does not own from the server's current values. On a freshly seeded database that means
+    saving Folders sends back the still-empty ai_endpoint_url -- and rejecting it left no card
+    that could be saved first, because saving AI fails on the still-empty allowed roots."""
+    payload = {
+        "allowed_root_folders": ["/Test-Inbox"],
+        "trash_folder_path": "/Test-Trash",
+        "filename_pattern": None,
+        "filename_pattern_hint": None,
+        "ai_endpoint_url": "",
+        "ai_model_name": "",
+    }
+
+    response = client.put("/api/v1/settings", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["allowed_root_folders"] == ["/Test-Inbox"]
+    assert data["ai_endpoint_url"] == ""
+
+    # And the AI card saves on top of it, which is what was previously unreachable.
+    ai_response = client.put(
+        "/api/v1/settings",
+        json={**payload, "ai_endpoint_url": "https://api.example.com/v1", "ai_model_name": "m"},
+    )
+
+    assert ai_response.status_code == 200
+    assert ai_response.json()["ai_endpoint_url"] == "https://api.example.com/v1"
+
+
+def test_put_settings_rejects_a_blank_but_non_empty_endpoint(client: TestClient) -> None:
+    payload = {**VALID_PAYLOAD, "ai_endpoint_url": "   "}
+    response = client.put("/api/v1/settings", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
 def test_put_settings_rejects_malformed_body_with_error_envelope(client: TestClient) -> None:
     response = client.put("/api/v1/settings", json={})
 

@@ -116,6 +116,15 @@ def _validate_filename_pattern(pattern: str | None) -> None:
 
 
 def _validate_ai_endpoint_url(url: str) -> None:
+    # "" is the seeded not-configured-yet state (models.AppSettings), and every settings card
+    # PUTs the whole object -- so rejecting it here would make the first save of Folders or
+    # Naming on a fresh install fail on a field the user has not reached yet, with no way to
+    # set that field first (saving the AI card would fail on the still-empty roots). Format is
+    # checked only once a URL is actually present; the poller reports an unconfigured endpoint
+    # per document instead. Only "" is the unconfigured state -- the frontend trims before
+    # sending, so whitespace here is a malformed URL, not a cleared field.
+    if not url:
+        return
     parsed = urlparse(url)
     if parsed.scheme == "https" and parsed.hostname:
         return
