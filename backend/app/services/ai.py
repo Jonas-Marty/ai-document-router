@@ -20,6 +20,9 @@ from app.services.paths import is_within, normalize_path
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT_SECONDS = 30.0
+# Listing models backs a button someone is waiting on, so it fails fast rather than
+# holding the Settings form for the proposal timeout.
+MODELS_TIMEOUT_SECONDS = 10.0
 MAX_TREE_DEPTH = 4
 MAX_SAMPLE_FILENAMES = 8
 
@@ -128,6 +131,68 @@ def request_proposal(
     body = _post_with_retry(url, payload, headers, client)
     content = _extract_message_content(body)
     return _validate(content, model_name, allowed_roots)
+
+
+def list_models(
+    *,
+    endpoint_url: str,
+    api_key: str | None,
+    client: httpx.Client | None = None,
+) -> list[str]:
+    """GET the OpenAI-compatible `/models` list, sorted, for the Settings model picker.
+
+    No retry, unlike request_proposal: this backs a button, and a person watching a spinner
+    would rather see the failure and press it again than wait through a second timeout.
+    """
+    url = f"{endpoint_url.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    owned = client is None
+    http = client or httpx.Client(timeout=MODELS_TIMEOUT_SECONDS)
+    try:
+        try:
+            response = http.get(url, headers=headers)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            logger.warning("Listing models from %s failed: %s", url, exc)
+            raise AIUnavailable(f"Couldn't reach the AI endpoint: {exc}.") from exc
+
+        if response.status_code in (401, 403):
+            raise AIUnavailable(f"The AI endpoint rejected the API key ({response.status_code}).")
+        if response.status_code >= 400:
+            raise AIUnavailable(
+                f"The AI endpoint returned {response.status_code} for {url}. "
+                "Check that the URL is the API base, not a documentation page."
+            )
+
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            raise AIUnavailable(
+                "The AI endpoint returned a non-JSON response. Check that the URL is the "
+                "API base, not a documentation page."
+            ) from exc
+    finally:
+        if owned:
+            http.close()
+
+    return _extract_model_ids(parsed)
+
+
+def _extract_model_ids(parsed: object) -> list[str]:
+    if not isinstance(parsed, dict):
+        raise AIUnavailable("The AI endpoint returned an unexpected response shape.")
+    data = parsed.get("data")
+    if not isinstance(data, list):
+        raise AIUnavailable("The AI endpoint's model list had no 'data' array.")
+
+    ids = {
+        entry["id"]
+        for entry in data
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"].strip()
+    }
+    if not ids and data:
+        raise AIUnavailable("The AI endpoint listed models without usable ids.")
+    return sorted(ids)
 
 
 def _post_with_retry(

@@ -4,11 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NavigationGuardProvider, useConfirmNavigation } from "@/hooks/useNavigationGuard";
+import { ApiError } from "@/services/api/errors";
 import type { Settings } from "@/services/api/types";
 import SettingsPage from "./SettingsPage";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getSettings: vi.fn(), updateSettings: vi.fn() },
+  apiClient: { getSettings: vi.fn(), updateSettings: vi.fn(), listAiModels: vi.fn() },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -259,6 +260,101 @@ describe("SettingsPage", () => {
     // field itself is cleared back to blank after a successful save (CLAUDE.md rule 5).
     await waitFor(() => expect(keyInput).toHaveValue(""));
     expect(JSON.stringify(window.localStorage)).not.toContain("sk-secret-value");
+  });
+
+  it("tests the endpoint currently typed in the form and offers its models in a dropdown", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    // Typed, not saved: finding out the URL is wrong is the reason to press Test.
+    const endpoint = screen.getByLabelText("Endpoint URL");
+    await user.clear(endpoint);
+    await user.type(endpoint, "https://api.infomaniak.com/2/ai/1/openai/v1");
+    await user.click(screen.getByRole("button", { name: /test connection/i }));
+
+    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.listAiModels).mock.calls[0]?.[0]).toEqual({
+      ai_endpoint_url: "https://api.infomaniak.com/2/ai/1/openai/v1",
+    });
+
+    expect(await screen.findByText("2 models offered by this endpoint.")).toBeInTheDocument();
+    const picker = await screen.findByRole("combobox", { name: "Model" });
+    expect(picker).toHaveTextContent("llama3");
+  });
+
+  it("sends the typed API key with the test, and falls back to the stored one when blank", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: [] });
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    await user.type(screen.getByLabelText("API key"), "sk-typed");
+    await user.click(screen.getByRole("button", { name: /test connection/i }));
+
+    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.listAiModels).mock.calls[0]?.[0]).toMatchObject({
+      ai_api_key: "sk-typed",
+    });
+    // An endpoint that answers with nothing is not a picker -- the field stays typeable.
+    expect(await screen.findByText(/listed no models/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Model")).toHaveValue("llama3");
+  });
+
+  it("shows why the test failed and leaves the model as a text field", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockRejectedValue(
+      new ApiError("ai_unavailable", "The AI endpoint returned 404 for .../models.", 503),
+    );
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    await user.click(screen.getByRole("button", { name: /test connection/i }));
+
+    expect(
+      await screen.findByText("The AI endpoint returned 404 for .../models."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Model")).toHaveValue("llama3");
+  });
+
+  it("picks a model from the dropdown, which dirties the form and saves that model", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    await user.click(screen.getByRole("button", { name: /test connection/i }));
+    const picker = await screen.findByRole("combobox", { name: "Model" });
+    await user.click(picker);
+    await user.click(await screen.findByRole("option", { name: "qwen3" }));
+
+    vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ ai_model_name: "qwen3" }));
+    const saveButtons = screen.getAllByRole("button", { name: "Save" });
+    await user.click(nth(saveButtons, saveButtons.length - 1));
+
+    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0]).toMatchObject({
+      ai_model_name: "qwen3",
+    });
+  });
+
+  it("can fall back to typing a model name the endpoint does not list", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    await user.click(screen.getByRole("button", { name: /test connection/i }));
+    await screen.findByRole("combobox", { name: "Model" });
+
+    await user.click(screen.getByRole("button", { name: /enter a model name manually/i }));
+
+    const modelInput = screen.getByLabelText("Model");
+    expect(modelInput).toHaveValue("llama3");
+    await user.clear(modelInput);
+    await user.type(modelInput, "custom/model");
+    expect(modelInput).toHaveValue("custom/model");
   });
 
   it("arms the navigation guard once any section is dirty, and disarms after a successful save", async () => {

@@ -56,3 +56,13 @@ if (!window.matchMedia) {
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
+
+// Radix's Select (the AI settings model picker) calls the Pointer Capture API on its trigger,
+// which jsdom does not implement. Without these, opening the dropdown in a test throws
+// "target.hasPointerCapture is not a function" -- nothing to do with the component's own
+// behavior, which real browsers exercise fine.
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}

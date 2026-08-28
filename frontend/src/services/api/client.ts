@@ -1,5 +1,7 @@
 import { ApiError, NETWORK_ERROR_CODE } from "./errors";
 import type {
+  AiModelsRequest,
+  AiModelsResponse,
   ApiErrorBody,
   ApproveRequest,
   CreateFolderRequest,
@@ -39,6 +41,7 @@ export interface ApiClient {
 
   getSettings(): Promise<Settings>;
   updateSettings(body: SettingsUpdate): Promise<Settings>;
+  listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
 }
 
 const API_BASE = "/api/v1";
@@ -114,6 +117,10 @@ export class HttpApiClient implements ApiClient {
 
   updateSettings(body: SettingsUpdate): Promise<Settings> {
     return this.request<Settings>("PUT", "/settings", body);
+  }
+
+  listAiModels(body: AiModelsRequest): Promise<AiModelsResponse> {
+    return this.request<AiModelsResponse>("POST", "/settings/ai/models", body);
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {

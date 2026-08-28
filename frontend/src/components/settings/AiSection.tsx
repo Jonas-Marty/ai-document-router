@@ -1,10 +1,19 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useMemo } from "react";
+import { Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useUpdateSettings } from "@/hooks/useSettings";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useListAiModels, useUpdateSettings } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
 import type { Settings } from "@/services/api/types";
 import { SectionCard } from "./SectionCard";
@@ -30,6 +39,10 @@ export function AiSection({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const updateSettings = useUpdateSettings();
+  const listModels = useListAiModels();
+  // Free text is the fallback, not the exception: an endpoint that cannot be reached (or one
+  // that serves a model it does not list) must still be configurable.
+  const [enterModelManually, setEnterModelManually] = useState(false);
   // See FoldersSection's comment: `values` must stay reference-stable across incidental
   // re-renders, not a fresh object every time.
   const values = useMemo(
@@ -48,8 +61,46 @@ export function AiSection({
   const {
     register,
     handleSubmit,
+    getValues,
+    setValue,
+    watch,
     formState: { errors, isDirty },
   } = methods;
+
+  const models = listModels.data?.models;
+  const modelName = watch("ai_model_name");
+  const showModelPicker = models !== undefined && models.length > 0 && !enterModelManually;
+  // A saved model the endpoint does not list still belongs in the options -- dropping it
+  // would blank a working setting the moment the picker appeared.
+  const modelOptions = useMemo(() => {
+    if (models === undefined) return [];
+    return modelName && !models.includes(modelName) ? [modelName, ...models] : models;
+  }, [models, modelName]);
+
+  function onTest() {
+    const typedKey = getValues("ai_api_key").trim();
+    listModels.mutate(
+      {
+        ai_endpoint_url: getValues("ai_endpoint_url").trim(),
+        ...(typedKey ? { ai_api_key: typedKey } : {}),
+      },
+      {
+        onSuccess: ({ models: found }) => {
+          setEnterModelManually(false);
+          toast.success(
+            found.length > 0
+              ? `Endpoint reachable — ${found.length} model${found.length === 1 ? "" : "s"} available`
+              : "Endpoint reachable, but it listed no models",
+          );
+        },
+        onError: (error) => {
+          toast.error(
+            error instanceof ApiError ? error.message : "Couldn't reach the AI endpoint.",
+          );
+        },
+      },
+    );
+  }
 
   useEffect(() => {
     onDirtyChange(isDirty);
@@ -106,14 +157,44 @@ export function AiSection({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ai_model_name">Model</Label>
-          <Input
-            id="ai_model_name"
-            className="font-mono"
-            aria-invalid={!!errors.ai_model_name}
-            {...register("ai_model_name")}
-          />
+          {showModelPicker ? (
+            <Select
+              value={modelName}
+              onValueChange={(value) =>
+                setValue("ai_model_name", value, { shouldDirty: true, shouldValidate: true })
+              }
+            >
+              <SelectTrigger id="ai_model_name" className="w-full font-mono">
+                <SelectValue placeholder="Choose a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {modelOptions.map((model) => (
+                  <SelectItem key={model} value={model} className="font-mono">
+                    {model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              id="ai_model_name"
+              className="font-mono"
+              aria-invalid={!!errors.ai_model_name}
+              {...register("ai_model_name")}
+            />
+          )}
           {errors.ai_model_name && (
             <p className="text-sm text-destructive">{errors.ai_model_name.message}</p>
+          )}
+          {models !== undefined && models.length > 0 && (
+            <Button
+              type="button"
+              variant="link"
+              className="h-auto p-0 text-sm"
+              onClick={() => setEnterModelManually(!enterModelManually)}
+            >
+              {showModelPicker ? "Enter a model name manually" : "Choose from the endpoint's list"}
+            </Button>
           )}
         </div>
         <div className="space-y-1.5">
@@ -126,6 +207,26 @@ export function AiSection({
             {...register("ai_api_key")}
           />
           <p className="text-sm text-muted-foreground">Leave blank to keep the current key.</p>
+        </div>
+        <div className="space-y-1.5">
+          <Button type="button" variant="outline" disabled={listModels.isPending} onClick={onTest}>
+            {listModels.isPending && <Loader2 className="animate-spin" />}
+            Test connection
+          </Button>
+          {listModels.isError && (
+            <p className="text-sm text-destructive">
+              {listModels.error instanceof ApiError
+                ? listModels.error.message
+                : "Couldn't reach the AI endpoint."}
+            </p>
+          )}
+          {models !== undefined && (
+            <p className="text-sm text-muted-foreground">
+              {models.length > 0
+                ? `${models.length} model${models.length === 1 ? "" : "s"} offered by this endpoint.`
+                : "The endpoint answered but listed no models. Enter the model name manually."}
+            </p>
+          )}
         </div>
       </SectionCard>
     </form>

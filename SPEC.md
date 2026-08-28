@@ -240,6 +240,15 @@ export interface Settings {
 export interface SettingsUpdate extends Omit<Settings, "ai_api_key_set"> {
   ai_api_key?: string;          // omitted or empty = leave unchanged
 }
+
+export interface AiModelsRequest {
+  ai_endpoint_url: string;      // as typed in the form; need not be saved yet
+  ai_api_key?: string;          // omitted or empty = test with the stored key
+}
+
+export interface AiModelsResponse {
+  models: string[];             // model ids, sorted
+}
 ```
 
 ---
@@ -264,6 +273,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/history/{id}/revert` | — | `{ history_entry, document }` |
 | GET | `/settings` | — | `Settings` |
 | PUT | `/settings` | `SettingsUpdate` | `Settings` |
+| POST | `/settings/ai/models` | `{ ai_endpoint_url, ai_api_key? }` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
 | GET | `/health` | — | `{ status, webdav_reachable, queue_depth }` |
 
 **Queue ordering:** `pending` first by `scanned_at` ascending, then `skipped` by `skip_count`
@@ -479,6 +489,13 @@ One form per section, save disabled until dirty, `Discard changes` alongside, un
 navigation guard. Sections: Folders (allowed roots list, trash folder), Naming (pattern +
 hint, with a live regex validity check), AI (endpoint, model, API key). API key renders as
 `••••••••  (saved)` with helper text "Leave blank to keep the current key."
+
+AI has a `Test connection` button that GETs the endpoint's `/models` with the values currently
+in the form — the URL being tested is the one typed, not the one saved, since finding out the
+URL is wrong is the point. On success the model field becomes a dropdown of the returned ids,
+with `Enter a model name manually` to fall back to free text; on failure the reason shows
+inline under the button and the field stays a text input. An endpoint that answers but lists
+nothing is not an error.
 
 ### 8.8 Queue behaviour
 

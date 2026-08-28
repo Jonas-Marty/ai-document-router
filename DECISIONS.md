@@ -595,3 +595,18 @@ meaningful. One line of "why" each; not a full ADR log.
   build context while every path the two Dockerfiles copy survives. The base image *tags*
   (`python:3.12-slim-bookworm`, `node:24-alpine`, `nginx:1.28-alpine`,
   `ghcr.io/astral-sh/uv:0.12.5`) are unverified against a registry.
+
+- **The model list is a `POST /settings/ai/models`, not a `GET`.** The endpoint under test is
+  whatever is typed into the Settings form, and a typed API key has to travel with it —
+  neither belongs in a query string that lands in access logs. A blank key means "use the
+  stored one", because the form is never given the saved key back (CLAUDE.md rule 5) and
+  requiring one would make Test unusable on every visit after the first.
+- **`ai.list_models` does not retry, unlike `request_proposal`.** SPEC 6.3's single retry
+  exists for an unattended poller. This backs a button someone is watching, so it fails fast
+  (10s timeout, not 30) and lets them press it again.
+- **The model dropdown never replaces free-text entry outright.** It appears only after a
+  successful test that returned at least one id, always includes the currently-saved model
+  even when the endpoint does not list it, and can be dismissed with `Enter a model name
+  manually` — otherwise an unreachable endpoint, or one whose served model is absent from
+  `/models`, would leave the field unconfigurable.
+

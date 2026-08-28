@@ -7,7 +7,7 @@ from sqlmodel import Session
 from app.config import settings as config
 from app.models import AppSettings
 from app.schemas import SettingsRead, SettingsUpdate
-from app.services import crypto
+from app.services import ai, crypto
 from app.services.errors import NotFoundError, ValidationError
 from app.services.paths import is_within, normalize_path
 
@@ -77,6 +77,28 @@ def update_settings(session: Session, payload: SettingsUpdate, secret_key: str) 
     session.commit()
     session.refresh(settings)
     return settings
+
+
+def list_ai_models(session: Session, endpoint_url: str, api_key: str | None) -> list[str]:
+    """Models offered by the endpoint the user is about to save.
+
+    The URL comes from the form rather than the database so the button can be pressed before
+    saving -- which is the point, since it is how you find out the URL is wrong. A blank key
+    means "use the stored one": the form cannot send back a key it is never given (CLAUDE.md
+    rule 5), so requiring one would make Test unusable on every visit after the first.
+    """
+    url = endpoint_url.strip()
+    if not url:
+        raise ValidationError("Add an AI endpoint URL before testing the connection.")
+    _validate_ai_endpoint_url(url)
+
+    key = api_key.strip() if api_key else ""
+    if not key:
+        settings = get_settings(session)
+        if settings.ai_api_key_encrypted is not None:
+            key = crypto.decrypt(config.secret_key, settings.ai_api_key_encrypted)
+
+    return ai.list_models(endpoint_url=url, api_key=key or None)
 
 
 def _validate_allowed_roots(roots: list[str]) -> list[str]:

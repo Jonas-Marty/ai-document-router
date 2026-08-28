@@ -91,6 +91,17 @@ class SettingsUpdate(BaseModel):
     ai_api_key: str | None = None
 
 
+class AiModelsRequest(BaseModel):
+    """The endpoint under test is the one typed into the form, which may not be saved yet."""
+
+    ai_endpoint_url: str
+    ai_api_key: str | None = None  # omitted or empty = test with the stored key
+
+
+class AiModelsResponse(BaseModel):
+    models: list[str]
+
+
 class ApproveRequest(BaseModel):
     """SPEC 5 deliberately omits the original suggestion: the backend already has the
     proposal and computes `was_overridden` itself, so the client cannot misreport it."""

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/services/api/client";
-import type { SettingsUpdate } from "@/services/api/types";
+import type { AiModelsRequest, SettingsUpdate } from "@/services/api/types";
 import { queryKeys } from "./queryKeys";
 
 export function useSettings() {
@@ -19,5 +19,13 @@ export function useUpdateSettings() {
       // allowed_root_folders can change what the picker and proposals see.
       queryClient.invalidateQueries({ queryKey: queryKeys.folderTree() });
     },
+  });
+}
+
+/** Backs the AI section's Test button. Deliberately not a query: it must run when asked, on
+ * the values currently typed into the form, and its result is not server state to cache. */
+export function useListAiModels() {
+  return useMutation({
+    mutationFn: (body: AiModelsRequest) => apiClient.listAiModels(body),
   });
 }

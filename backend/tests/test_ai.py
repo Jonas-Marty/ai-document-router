@@ -276,3 +276,57 @@ class TestPrompt:
         prompt = ai.build_prompt("t", ["/a"], names, None)
 
         assert prompt.count("file-") == ai.MAX_SAMPLE_FILENAMES
+
+
+def models_response(payload: Any, status: int = 200) -> list[str]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        assert request.headers["Authorization"] == "Bearer k"
+        if isinstance(payload, str):
+            return httpx.Response(status, text=payload)
+        return httpx.Response(status, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        return ai.list_models(endpoint_url="https://ai.example.com/v1", api_key="k", client=client)
+
+
+def test_list_models_returns_sorted_unique_ids() -> None:
+    models = models_response(
+        {"data": [{"id": "gpt-4o"}, {"id": "claude"}, {"id": "gpt-4o"}, {"no_id": True}]}
+    )
+
+    assert models == ["claude", "gpt-4o"]
+
+
+def test_list_models_accepts_an_endpoint_with_no_models() -> None:
+    assert models_response({"data": []}) == []
+
+
+def test_list_models_rejects_a_documentation_page() -> None:
+    """The failure that prompted this: an endpoint URL pointing at HTML docs, not an API."""
+    with pytest.raises(AIUnavailable, match="non-JSON"):
+        models_response("<!doctype html><title>API docs</title>")
+
+
+def test_list_models_reports_a_rejected_key_distinctly() -> None:
+    with pytest.raises(AIUnavailable, match="rejected the API key"):
+        models_response({"error": "nope"}, status=401)
+
+
+def test_list_models_reports_an_http_error_with_the_status() -> None:
+    with pytest.raises(AIUnavailable, match="404"):
+        models_response({"error": "nope"}, status=404)
+
+
+def test_list_models_rejects_a_reply_without_a_data_array() -> None:
+    with pytest.raises(AIUnavailable, match="no 'data' array"):
+        models_response({"models": ["gpt-4o"]})
+
+
+def test_list_models_reports_an_unreachable_host() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("nope", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(AIUnavailable, match="Couldn't reach"):
+            ai.list_models(endpoint_url="https://ai.example.com/v1", api_key=None, client=client)

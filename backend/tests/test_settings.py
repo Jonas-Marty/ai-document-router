@@ -6,7 +6,7 @@ from sqlmodel import Session
 from app import db
 from app.config import settings as app_config
 from app.models import AppSettings
-from app.services import crypto
+from app.services import ai, crypto
 
 VALID_PAYLOAD: dict[str, Any] = {
     "allowed_root_folders": ["/Documents"],
@@ -212,3 +212,78 @@ def test_stored_api_key_is_decryptable_with_the_secret_key(client: TestClient) -
         decrypted = crypto.decrypt(app_config.secret_key, settings.ai_api_key_encrypted)
 
     assert decrypted == "super-secret-key"
+
+
+def test_list_ai_models_uses_the_endpoint_and_key_from_the_form(
+    client: TestClient, monkeypatch: Any
+) -> None:
+    """The point of the button is testing a URL you have not committed to yet."""
+    seen: dict[str, Any] = {}
+
+    def fake_list_models(*, endpoint_url: str, api_key: str | None) -> list[str]:
+        seen.update(endpoint_url=endpoint_url, api_key=api_key)
+        return ["a", "b"]
+
+    monkeypatch.setattr(ai, "list_models", fake_list_models)
+
+    response = client.post(
+        "/api/v1/settings/ai/models",
+        json={"ai_endpoint_url": "https://typed.example.com/v1", "ai_api_key": "typed-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"models": ["a", "b"]}
+    assert seen == {"endpoint_url": "https://typed.example.com/v1", "api_key": "typed-key"}
+
+
+def test_list_ai_models_falls_back_to_the_stored_key(client: TestClient, monkeypatch: Any) -> None:
+    """The form is never given the saved key back, so a blank one cannot mean "no key"."""
+    client.put("/api/v1/settings", json=VALID_PAYLOAD)
+    seen: dict[str, Any] = {}
+
+    def fake_list_models(*, endpoint_url: str, api_key: str | None) -> list[str]:
+        seen.update(api_key=api_key)
+        return []
+
+    monkeypatch.setattr(ai, "list_models", fake_list_models)
+
+    response = client.post(
+        "/api/v1/settings/ai/models",
+        json={"ai_endpoint_url": "https://api.example.com/v1", "ai_api_key": ""},
+    )
+
+    assert response.status_code == 200
+    assert seen == {"api_key": "super-secret-key"}
+
+
+def test_list_ai_models_requires_an_endpoint_url(client: TestClient) -> None:
+    response = client.post("/api/v1/settings/ai/models", json={"ai_endpoint_url": "   "})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_list_ai_models_rejects_a_public_http_endpoint(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/settings/ai/models", json={"ai_endpoint_url": "http://api.example.com/v1"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_ai_models_surfaces_an_unreachable_endpoint_as_503(
+    client: TestClient, monkeypatch: Any
+) -> None:
+    def fake_list_models(*, endpoint_url: str, api_key: str | None) -> list[str]:
+        raise ai.AIUnavailable("Couldn't reach the AI endpoint: nope.")
+
+    monkeypatch.setattr(ai, "list_models", fake_list_models)
+
+    response = client.post(
+        "/api/v1/settings/ai/models", json={"ai_endpoint_url": "https://api.example.com/v1"}
+    )
+
+    assert response.status_code == 503
+    body = response.json()["error"]
+    assert body["code"] == "ai_unavailable"
+    assert "Couldn't reach" in body["message"]

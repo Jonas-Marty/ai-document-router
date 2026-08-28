@@ -108,6 +108,15 @@ export interface SettingsUpdate extends Omit<Settings, "ai_api_key_set"> {
   ai_api_key?: string; // omitted or empty = leave unchanged
 }
 
+export interface AiModelsRequest {
+  ai_endpoint_url: string; // the URL in the form, which may not be saved yet
+  ai_api_key?: string; // omitted or empty = test with the stored key
+}
+
+export interface AiModelsResponse {
+  models: string[]; // ids from the endpoint's /models, sorted
+}
+
 export interface HealthResponse {
   status: string;
   webdav_reachable: boolean;
