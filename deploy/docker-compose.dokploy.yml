@@ -1,0 +1,88 @@
+# Dokploy deployment. Point the Compose service's "Compose Path" at this file
+# (./deploy/docker-compose.dokploy.yml) and add a domain against service `web`, port `80`.
+#
+# Kept separate from docker-compose.yml rather than replacing it: that file is what `just up`
+# runs on a plain Docker host, and the two differences below are exactly the things that make
+# a stack work under Dokploy and fail without it (and vice versa).
+#
+#   1. Environment comes from `${VAR}` interpolation, not `env_file: ../.env`. Dokploy writes
+#      the variables from its Environment tab into a `.env` beside the compose file, which
+#      Compose picks up for interpolation automatically. `../.env` is a path that only exists
+#      in a local checkout, and a missing env_file is a hard failure, not a warning.
+#   2. Both services join the external `dokploy-network`. Traefik runs in its own container
+#      and can only reach services on that shared network -- without it the domain resolves
+#      but every request 502s.
+#   3. No published ports. Traefik routes to the container port over the network, so a host
+#      mapping is unnecessary and risks colliding with something else on a shared server.
+
+services:
+  api:
+    build:
+      # The repo root, so the backend image can copy backend/ and deploy/entrypoint.sh.
+      # Dokploy must therefore be pointed at the whole repository, not a subdirectory.
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+    restart: unless-stopped
+    environment:
+      # Always the volume below, never a path inside the container's ephemeral filesystem.
+      # Four slashes: `sqlite:///` + `/data/app.db`.
+      DATABASE_URL: sqlite:////data/app.db
+      # Deploy fails immediately with this message if the variable is unset, rather than
+      # starting an API that cannot decrypt the stored AI API key.
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in the Dokploy Environment tab}
+      WEBDAV_BASE_URL: ${WEBDAV_BASE_URL:?set WEBDAV_BASE_URL in the Dokploy Environment tab}
+      WEBDAV_USERNAME: ${WEBDAV_USERNAME:?set WEBDAV_USERNAME in the Dokploy Environment tab}
+      WEBDAV_PASSWORD: ${WEBDAV_PASSWORD:?set WEBDAV_PASSWORD in the Dokploy Environment tab}
+      WEBDAV_WATCH_FOLDER: ${WEBDAV_WATCH_FOLDER:-/Scans/Inbox}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # nginx serves the bundle and proxies /api on the same origin, so the browser never
+      # makes a cross-origin request and this stays a native-development concern.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    volumes:
+      # What makes the database outlive a redeploy. Dokploy recreates containers on every
+      # deploy; only deleting the volume destroys the queue, history, and settings.
+      - appdata:/data
+    healthcheck:
+      # /health is always 200 even when WebDAV is unreachable (webdav_reachable is the
+      # signal), so this checks that the API process is up, not that everything is happy.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health').status==200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous: the first start runs `alembic upgrade head` before uvicorn binds.
+      start_period: 30s
+    networks:
+      - dokploy-network
+
+  # This is the service to attach the domain to, on port 80.
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      # nginx resolves `api` when proxying, so starting first would mean a window of 502s.
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - dokploy-network
+
+volumes:
+  appdata:
+
+networks:
+  dokploy-network:
+    external: true
