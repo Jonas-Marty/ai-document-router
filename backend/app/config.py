@@ -1,5 +1,6 @@
 from typing import Annotated
 
+from cryptography.fernet import Fernet
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -36,6 +37,26 @@ class Settings(BaseSettings):
     # SPEC 6.2: ignore anything written within the last few seconds, in case the scanner is
     # still uploading it.
     poller_min_file_age_seconds: int = 10
+
+    @field_validator("secret_key")
+    @classmethod
+    def check_secret_key_is_a_fernet_key(cls, value: str) -> str:
+        """Fail at startup, not at the one request that happens to need the key.
+
+        SECRET_KEY is only ever used to encrypt the AI API key (services/crypto.py), so an
+        invalid one is invisible through boot, the health check, and every other endpoint --
+        and then surfaces as a 500 the first time someone saves a key in Settings. Checking it
+        here makes a bad value a container that refuses to start, which is what
+        deploy/docker-compose.dokploy.yml already promises for a missing one.
+        """
+        try:
+            Fernet(value.encode())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "must be a Fernet key -- 32 url-safe base64-encoded bytes, i.e. 44 characters "
+                "ending in '='. Generate one with `just secret-key`."
+            ) from exc
+        return value
 
     @field_validator("cors_origins", mode="before")
     @classmethod
