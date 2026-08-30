@@ -590,6 +590,13 @@ nothing is not an error.
 - Trash → confirm → advance.
 - Empty queue: "Queue's clear. New scans appear here automatically." plus a
   `Check for new documents` button.
+- **Queue overview.** The Review header carries a `Queue` control labelled with the number of
+  documents still open, hidden when that is zero. It opens a panel — dialog on desktop,
+  full-height sheet on mobile — listing everything queued in the order the screen will reach
+  it, each row labelled with the proposed filename (the original only while there is no
+  proposal), its destination folder, and whether it is waiting on the AI, failed, or skipped.
+  Picking a row makes that document current and closes the panel; the queue is not reordered.
+  `/queue` is capped, so a backlog larger than the page says how many are behind the rows.
 - Refetch on a 60 s interval and on window refocus.
 - `proposal_status = "pending"`: form skeleton, actions disabled, "Waiting for the AI
   proposal."

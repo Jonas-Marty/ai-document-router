@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Document, QueueResponse } from "@/services/api/types";
@@ -52,6 +52,39 @@ describe("useReviewQueue", () => {
     const { result } = renderHook(() => useReviewQueue(), { wrapper: wrapper(queryClient) });
 
     await waitFor(() => expect(result.current.currentDocument?.id).toBe("a"));
+  });
+
+  it("jumps to a document picked out of the queue overview", async () => {
+    vi.mocked(apiClient.getQueue).mockResolvedValue(queueOf("a", "b", "c"));
+    const { result } = renderHook(() => useReviewQueue(), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("a"));
+
+    act(() => result.current.selectDocument("c"));
+
+    expect(result.current.currentDocument?.id).toBe("c");
+  });
+
+  it("ignores a pick for a document that has left the queue", async () => {
+    vi.mocked(apiClient.getQueue).mockResolvedValue(queueOf("a", "b"));
+    const { result } = renderHook(() => useReviewQueue(), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("a"));
+
+    // The 60s refetch can remove one between the list rendering and the click landing;
+    // following it would blank the review pane instead of saying anything useful.
+    act(() => result.current.selectDocument("gone"));
+
+    expect(result.current.currentDocument?.id).toBe("a");
+  });
+
+  it("reports the whole backlog, not just the page /queue returned", async () => {
+    vi.mocked(apiClient.getQueue).mockResolvedValue({
+      items: [doc("a"), doc("b")],
+      total_pending: 37,
+    });
+    const { result } = renderHook(() => useReviewQueue(), { wrapper: wrapper(queryClient) });
+
+    await waitFor(() => expect(result.current.totalPending).toBe(37));
+    expect(result.current.items).toHaveLength(2);
   });
 
   it("advances to the next document once the current one is removed from the cache (approve/trash)", async () => {

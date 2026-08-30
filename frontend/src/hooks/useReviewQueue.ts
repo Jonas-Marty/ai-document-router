@@ -13,6 +13,8 @@ import { useQueue } from "./useQueue";
  *   2. The caller explicitly calls `advancePast(id)` -- used for skip, which SPEC 8.8 says
  *      must "advance immediately" even though the document stays in the queue (just reordered
  *      to the back), so removal-triggered fallback doesn't apply.
+ *   3. The caller explicitly calls `selectDocument(id)` -- the queue overview, where the
+ *      person picks which document to work on out of order.
  * A failed mutation calls neither, so the pointer -- and the form built on top of it -- never
  * moves on failure. */
 export function useReviewQueue() {
@@ -33,6 +35,15 @@ export function useReviewQueue() {
 
   const currentDocument: Document | undefined = items.find((doc) => doc.id === currentId);
 
+  /** Jump to a document the person picked out of the queue overview.
+   *
+   * An id that is no longer in the queue is ignored: the 60s refetch can remove one between
+   * the list rendering and the click landing, and pointing the review pane at a document
+   * that isn't there would blank it rather than saying anything useful. */
+  function selectDocument(id: string) {
+    if (items.some((doc) => doc.id === id)) setCurrentId(id);
+  }
+
   function advancePast(id: string) {
     setCurrentId((prev) => {
       if (prev !== id) return prev;
@@ -41,5 +52,14 @@ export function useReviewQueue() {
     });
   }
 
-  return { ...queueQuery, items, currentDocument, advancePast };
+  return {
+    ...queueQuery,
+    items,
+    // Everything queued, not just what `items` holds: /queue is capped at QUEUE_LIMIT, and
+    // the count the person is shown has to be the size of the backlog, not the page size.
+    totalPending: queueQuery.data?.total_pending ?? items.length,
+    currentDocument,
+    selectDocument,
+    advancePast,
+  };
 }

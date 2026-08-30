@@ -682,3 +682,21 @@ meaningful. One line of "why" each; not a full ADR log.
   to `application/javascript` while css, woff2 and html kept theirs. `application/javascript`
   rather than `text/javascript` so it matches the `.js` sibling and stays inside `gzip_types`:
   the worker is 1 MB uncompressed and 282 KB gzipped, and it was being sent uncompressed too.
+- **The queue overview is a panel on the Review screen, not a fourth route.** SPEC 8.8 only
+  ever described the queue one document at a time, so there was no way to see what was still
+  waiting. A panel keeps SPEC 8.1's three routes and puts the answer where the question is
+  asked; a separate page would mean leaving the review flow to look and coming back to act.
+  It reuses the dialog-on-desktop / sheet-on-mobile split SPEC 8.5 already sets for the
+  folder picker rather than inventing a third kind of surface.
+- **Queue rows are labelled with the *proposed* filename, not the original.** A scanner names
+  every file `scan_0041.pdf`, which is precisely the thing that cannot tell two rows apart.
+  The original is the fallback only while there is no proposal to name the row by yet.
+- **Picking a document out of the overview does not confirm unsaved edits.** Switching
+  documents discards whatever was typed into the form, exactly as Skip already does — this is
+  a deliberate navigation the person just chose, not the failed-approve case CLAUDE.md rule 7
+  protects. A confirm dialog on a browse action would make the overview tiresome to use for
+  the thing it is mostly for, which is looking.
+- **The overview count comes from `total_pending`, not from `items.length`.** `/queue` is
+  capped at `QUEUE_LIMIT`, so on a backlog the list is a window onto the front of the queue.
+  The count has to be the size of the backlog, and the list says how many are behind it —
+  otherwise the header count visibly fails to add up to the rows underneath it.

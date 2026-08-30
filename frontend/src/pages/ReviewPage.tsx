@@ -1,4 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { ListChecks } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -7,12 +8,14 @@ import { ActionBar } from "@/components/review/ActionBar";
 import type { DesktopDocumentPaneHandle } from "@/components/review/DesktopDocumentPane";
 import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
 import { DocumentViewer } from "@/components/review/DocumentViewer";
+import { QueuePanel } from "@/components/review/QueuePanel";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
 import { ReviewForm } from "@/components/review/ReviewForm";
 import { type ReviewFormValues, reviewFormSchema } from "@/components/review/reviewFormSchema";
 import { ShortcutCheatSheet } from "@/components/review/ShortcutCheatSheet";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useIsDesktop } from "@/hooks/useBreakpoint";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -31,10 +34,24 @@ import type { Document } from "@/services/api/types";
 
 export default function ReviewPage() {
   const queue = useReviewQueue();
+  const [queueOpen, setQueueOpen] = useState(false);
 
   return (
     <div className="mx-auto flex h-full max-w-6xl flex-col">
-      <h1 className="p-4 pb-0 text-lg font-semibold">Review</h1>
+      <div className="flex items-center justify-between gap-2 p-4 pb-0">
+        <h1 className="text-lg font-semibold">Review</h1>
+        {/* The count is the whole point of the control, so it is in the label rather than
+            behind the click: "what is still open?" is answered without opening anything. */}
+        {queue.totalPending > 0 && (
+          <Button variant="outline" size="sm" onClick={() => setQueueOpen(true)}>
+            <ListChecks className="size-4" aria-hidden="true" />
+            Queue
+            <span className="rounded bg-secondary px-1.5 py-0.5 text-xs font-medium tabular-nums text-secondary-foreground">
+              {queue.totalPending}
+            </span>
+          </Button>
+        )}
+      </div>
       {queue.isLoading ? (
         <QueueSkeleton />
       ) : queue.isError ? (
@@ -62,6 +79,14 @@ export default function ReviewPage() {
           advancePast={queue.advancePast}
         />
       )}
+      <QueuePanel
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        items={queue.items}
+        totalPending={queue.totalPending}
+        currentId={queue.currentDocument?.id}
+        onSelect={queue.selectDocument}
+      />
     </div>
   );
 }
