@@ -25,6 +25,10 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 MODELS_TIMEOUT_SECONDS = 10.0
 MAX_TREE_DEPTH = 4
 MAX_SAMPLE_FILENAMES = 8
+# A real Nextcloud holds thousands of folders under an allowed root. Sending all of them
+# pushes the request past the model's context window, which comes back as an opaque 400
+# rather than as a readable "too long".
+MAX_TREE_FOLDERS = 250
 
 # SPEC 7.1: the same characters the filename field forbids. The model is told about these,
 # and a response that ignores the instruction is rejected rather than sanitised.
@@ -93,13 +97,20 @@ def build_prompt(
 
 
 def _render_tree(paths: list[str]) -> list[str]:
-    """Render absolute paths as an indented list, capped at MAX_TREE_DEPTH."""
-    rendered = []
-    for path in sorted(set(paths)):
-        depth = path.count("/") - 1
-        if depth >= MAX_TREE_DEPTH:
-            continue
-        rendered.append(f"{'  ' * depth}{path}")
+    """Render absolute paths as an indented list, capped at MAX_TREE_DEPTH and MAX_TREE_FOLDERS.
+
+    When the count cap bites, shallower folders are kept: they are the plausible filing
+    targets, and anything dropped can still be typed by hand in the review form. Keeping the
+    *alphabetically* first N instead would silently delete every folder past the letter it
+    ran out at, which reads as a much stranger tree than a truncated one.
+    """
+    within_depth = sorted({path for path in paths if path.count("/") - 1 < MAX_TREE_DEPTH})
+    kept = sorted(sorted(within_depth, key=lambda p: (p.count("/"), p))[:MAX_TREE_FOLDERS])
+
+    rendered = [f"{'  ' * (path.count('/') - 1)}{path}" for path in kept]
+    dropped = len(within_depth) - len(kept)
+    if dropped:
+        rendered.append(f"(and {dropped} more folders, not shown)")
     return rendered
 
 
@@ -117,20 +128,53 @@ def request_proposal(
     Raises AIUnavailable if the endpoint could not be reached (after one retry), or
     ProposalRejected if it replied with something unusable.
     """
-    payload: Mapping[str, object] = {
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    url = f"{endpoint_url.rstrip('/')}/chat/completions"
+
+    owned = client is None
+    http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+    try:
+        try:
+            body = _post_with_retry(
+                url, _payload(model_name, prompt, json_mode=True), headers, http
+            )
+        except _Rejected as rejected:
+            # SPEC 6.3 asks for response_format JSON, but the endpoint is whatever the user
+            # configured, and plenty of OpenAI-compatible servers answer 400 to that field
+            # instead of ignoring it. The system prompt already demands JSON-only, so one
+            # plain retry beats failing the document over an optional field. Only 400: a 401
+            # or a 404 means the key or the URL is wrong, and would fail identically twice.
+            if rejected.status_code != 400:
+                raise AIUnavailable(rejected.message) from rejected
+            logger.warning(
+                "AI endpoint refused the request (400: %s); retrying without response_format",
+                rejected.detail or "no reason given",
+            )
+            try:
+                body = _post_with_retry(
+                    url, _payload(model_name, prompt, json_mode=False), headers, http
+                )
+            except _Rejected as plain:
+                raise AIUnavailable(plain.message) from plain
+    finally:
+        if owned:
+            http.close()
+
+    content = _extract_message_content(body)
+    return _validate(content, model_name, allowed_roots)
+
+
+def _payload(model_name: str, prompt: str, *, json_mode: bool) -> dict[str, object]:
+    payload: dict[str, object] = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        "response_format": {"type": "json_object"},
     }
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    url = f"{endpoint_url.rstrip('/')}/chat/completions"
-
-    body = _post_with_retry(url, payload, headers, client)
-    content = _extract_message_content(body)
-    return _validate(content, model_name, allowed_roots)
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    return payload
 
 
 def list_models(
@@ -157,11 +201,25 @@ def list_models(
             raise AIUnavailable(f"Couldn't reach the AI endpoint: {exc}.") from exc
 
         if response.status_code in (401, 403):
-            raise AIUnavailable(f"The AI endpoint rejected the API key ({response.status_code}).")
+            # 403 is not always "bad key" -- it is also how a provider says the plan does not
+            # cover this endpoint -- so pass on the reason when there is one.
+            detail = _json_error_detail(response)
+            raise AIUnavailable(
+                f"The AI endpoint rejected the API key ({response.status_code})."
+                + (f" It said: {detail}" if detail else "")
+            )
         if response.status_code >= 400:
+            # Only a structured reason, not the raw body: a wrong URL answers with an HTML
+            # page, and quoting 300 characters of markup at the user would bury the one
+            # sentence that actually tells them what to change.
+            detail = _json_error_detail(response)
             raise AIUnavailable(
                 f"The AI endpoint returned {response.status_code} for {url}. "
-                "Check that the URL is the API base, not a documentation page."
+                + (
+                    f"It said: {detail}"
+                    if detail
+                    else "Check that the URL is the API base, not a documentation page."
+                )
             )
 
         try:
@@ -195,52 +253,96 @@ def _extract_model_ids(parsed: object) -> list[str]:
     return sorted(ids)
 
 
+class _Rejected(Exception):
+    """A 4xx from the endpoint, carrying whatever reason it gave for it."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+    @property
+    def message(self) -> str:
+        base = f"The AI endpoint rejected the request ({self.status_code})."
+        if not self.detail:
+            return f"{base} Check the model name and API key in Settings."
+        return f"{base} It said: {self.detail}"
+
+
 def _post_with_retry(
     url: str,
     payload: Mapping[str, object],
     headers: Mapping[str, str],
-    client: httpx.Client | None,
+    http: httpx.Client,
 ) -> dict[str, object]:
     """POST with a single retry on 5xx or timeout, per SPEC 6.3.
 
-    4xx is not retried: a bad key or a wrong model name fails the same way twice, and
-    retrying only doubles the user's wait.
+    4xx is not retried here: a bad key or a wrong model name fails the same way twice, and
+    retrying only doubles the user's wait. It is raised as _Rejected rather than AIUnavailable
+    so the caller can decide whether the request itself is worth adjusting.
     """
-    owned = client is None
-    http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+    last_error = ""
+    for attempt in (1, 2):
+        try:
+            response = http.post(url, json=dict(payload), headers=dict(headers))
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_error = f"the request timed out or the host was unreachable ({exc})"
+            logger.warning("AI request attempt %d failed: %s", attempt, exc)
+            continue
+
+        if response.status_code >= 500:
+            last_error = f"the model server returned {response.status_code}"
+            logger.warning("AI request attempt %d got %d", attempt, response.status_code)
+            continue
+
+        if response.status_code >= 400:
+            raise _Rejected(response.status_code, _provider_detail(response))
+
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            raise AIUnavailable("The AI endpoint returned a non-JSON response.") from exc
+        if not isinstance(parsed, dict):
+            raise AIUnavailable("The AI endpoint returned an unexpected response shape.")
+        return parsed
+
+    raise AIUnavailable(f"Couldn't reach the AI endpoint: {last_error}.")
+
+
+def _provider_detail(response: httpx.Response) -> str:
+    """The reason the endpoint gave for refusing, if it gave one.
+
+    Without this every 400 reads the same, and an unsupported field, a context overflow and
+    an unknown model are indistinguishable to the person who has to fix the configuration.
+    Only the response body is read; the API key travels in a header, so it cannot appear here
+    even from an endpoint that echoes the request back.
+    """
+    return _json_error_detail(response) or _shorten(response.text)
+
+
+def _json_error_detail(response: httpx.Response) -> str:
+    """The error message out of a JSON body, in the shapes providers actually use."""
     try:
-        last_error = ""
-        for attempt in (1, 2):
-            try:
-                response = http.post(url, json=dict(payload), headers=dict(headers))
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
-                last_error = f"the request timed out or the host was unreachable ({exc})"
-                logger.warning("AI request attempt %d failed: %s", attempt, exc)
-                continue
+        parsed = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(parsed, dict):
+        return ""
 
-            if response.status_code >= 500:
-                last_error = f"the model server returned {response.status_code}"
-                logger.warning("AI request attempt %d got %d", attempt, response.status_code)
-                continue
+    error = parsed.get("error")
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return _shorten(error["message"])
+    for key in ("error", "detail", "message"):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            return _shorten(value)
+    return ""
 
-            if response.status_code >= 400:
-                raise AIUnavailable(
-                    f"The AI endpoint rejected the request ({response.status_code}). "
-                    "Check the model name and API key in Settings."
-                )
 
-            try:
-                parsed = response.json()
-            except ValueError as exc:
-                raise AIUnavailable("The AI endpoint returned a non-JSON response.") from exc
-            if not isinstance(parsed, dict):
-                raise AIUnavailable("The AI endpoint returned an unexpected response shape.")
-            return parsed
-
-        raise AIUnavailable(f"Couldn't reach the AI endpoint: {last_error}.")
-    finally:
-        if owned:
-            http.close()
+def _shorten(text: str, limit: int = 300) -> str:
+    """Collapse to one line and cap it: this ends up in a form field, not a log viewer."""
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else f"{collapsed[:limit]}\u2026"
 
 
 def _extract_message_content(body: dict[str, object]) -> str:
@@ -259,9 +361,25 @@ def _extract_message_content(body: dict[str, object]) -> str:
     return content
 
 
+def _strip_code_fence(content: str) -> str:
+    """Unwrap a ```json ... ``` block if there is one.
+
+    Needed on the no-response_format path: without JSON mode the model is only following the
+    prompt's "JSON only" by its own lights, and a markdown fence is the usual way that goes.
+    """
+    text = content.strip()
+    if not text.startswith("```"):
+        return text
+    after_opening = text[3:].partition("\n")[2]
+    if not after_opening:
+        return text
+    body, fence, _ = after_opening.rpartition("```")
+    return (body if fence else after_opening).strip()
+
+
 def _validate(content: str, model_name: str, allowed_roots: list[str]) -> Proposal:
     try:
-        parsed = json.loads(content)
+        parsed = json.loads(_strip_code_fence(content))
     except ValueError as exc:
         raise ProposalRejected(f"The model's reply wasn't valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):

@@ -610,3 +610,49 @@ meaningful. One line of "why" each; not a full ADR log.
   manually` — otherwise an unreachable endpoint, or one whose served model is absent from
   `/models`, would leave the field unconfigurable.
 
+- **Sessions are a server-side row plus an opaque cookie, not a JWT.** Revocation is then a
+  `DELETE`, logout actually ends the session, and nothing signed has to be rotated. The
+  cookie is HttpOnly, so no token ever sits where an XSS could read it, and only the token's
+  SHA-256 is stored so a database copy cannot be replayed as a login.
+- **Passwords use `hashlib.scrypt`, not passlib/bcrypt/argon2.** Memory-hard, in the standard
+  library, and therefore no new runtime dependency (CLAUDE.md rule 8) for the one thing this
+  app needs from a password library.
+- **The OIDC ID token's signature is not verified locally.** The token is fetched over TLS
+  directly from the token endpoint by a client that authenticated with its secret, which OIDC
+  Core 3.1.3.7 explicitly allows, and identity is then read from a second authenticated call
+  to `/userinfo` rather than from an unverified body. Doing it "properly" would mean JWKS
+  fetching, caching, key rotation and a JWT library — real complexity for no gain in this
+  topology. This is why only confidential clients are supported: with a public client the
+  argument does not hold.
+- **The first account to register becomes admin, and registration then closes.** A freshly
+  deployed instance is open to anyone who knows the URL until it is claimed, so the shortest
+  path from "deployed" to "claimed" is the security-relevant one — an invite flow would make
+  that window longer, not shorter. `ALLOW_REGISTRATION=true` reopens it deliberately.
+- **`useCurrentUser` sets `refetchOnMount: false`, and `RequireAuth` latches its decision.**
+  The guard and the shell both subscribe to `/auth/me`; with the default, the shell mounting
+  would restart a query that had just failed, which flipped the guard back to "loading",
+  which unmounted the shell — an unmount/remount spin for as long as the API stayed down.
+- **A non-401 error from `/auth/me` renders the app anyway.** An unreachable backend is the
+  outage banner's job; showing a sign-in form that would fail identically turns an outage into
+  a wrong diagnosis.
+
+- **`response_format` is attempted, then dropped on a 400.** SPEC 6.3 specifies
+  `response_format` JSON, but the endpoint is whatever the user configured, and a fair number
+  of otherwise OpenAI-compatible servers answer 400 to that field rather than ignoring it —
+  which failed every document against such an endpoint while Test connection kept reporting
+  success, because listing models never sends it. One plain retry is worth more than failing
+  the document over an optional field; the system prompt already demands JSON-only, so
+  `_strip_code_fence` handles the markdown fence a model produces when nothing constrains it.
+  Only a 400 triggers the fallback: a 401 or a 404 means the key or the URL is wrong and
+  would fail identically twice.
+- **A 4xx from the AI endpoint now carries the endpoint's own reason.** Previously every
+  rejection read "Check the model name and API key in Settings", so an unsupported field, a
+  context overflow and an unknown model were indistinguishable from the review screen — and
+  the response body was never logged either, so there was nowhere else to look. The reason is
+  read from the response body only, collapsed to one line and capped at 300 characters,
+  because it lands in a form field rather than a log viewer.
+- **The folder tree in the prompt is capped at 250 folders, not just at depth 4.** A real
+  Nextcloud holds thousands of folders within four levels of an allowed root; sending all of
+  them pushes the request past the model's context window, which comes back as an opaque 400.
+  Shallow folders are kept first — they are the plausible filing targets, and anything dropped
+  can still be typed by hand in the review form.

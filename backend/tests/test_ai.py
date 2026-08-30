@@ -148,6 +148,13 @@ class TestRejectsBadOutput:
         with pytest.raises(ProposalRejected):
             call({**VALID_REPLY, "confidence_score": score})
 
+    def test_accepts_json_wrapped_in_a_code_fence(self) -> None:
+        """Without response_format the model formats the reply its own way, and a markdown
+        fence is the usual one. Rejecting it would fail a proposal that is entirely correct."""
+        fenced = f"```json\n{json.dumps(VALID_REPLY)}\n```"
+
+        assert call(fenced).suggested_name == VALID_REPLY["suggested_name"]
+
     def test_rejects_non_json_content(self) -> None:
         with pytest.raises(ProposalRejected, match="JSON"):
             call("I think this is an invoice, actually.")
@@ -238,6 +245,39 @@ class TestTransport:
             self._call(handler)
         assert len(calls) == 1
 
+    def test_falls_back_when_the_endpoint_refuses_response_format(self) -> None:
+        """Not every OpenAI-compatible server implements response_format; several answer 400
+        rather than ignoring it, which failed every document against such an endpoint."""
+        bodies: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            bodies.append(body)
+            if "response_format" in body:
+                return httpx.Response(400, json={"error": {"message": "response_format"}})
+            return httpx.Response(200, json=completion(VALID_REPLY))
+
+        assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
+        assert len(bodies) == 2
+        assert bodies[1]["messages"] == bodies[0]["messages"]
+
+    def test_reports_the_reason_the_endpoint_gave(self) -> None:
+        """A 400 with no detail is unactionable: an unsupported field, a context overflow and
+        an unknown model all read the same."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"error": {"message": "model 'm' does not exist"}})
+
+        with pytest.raises(AIUnavailable, match="does not exist"):
+            self._call(handler)
+
+    def test_reports_a_non_json_rejection_body(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, text="Bad Request: unknown field")
+
+        with pytest.raises(AIUnavailable, match="unknown field"):
+            self._call(handler)
+
     def test_sends_the_key_and_targets_chat_completions(self) -> None:
         seen: list[httpx.Request] = []
 
@@ -270,6 +310,23 @@ class TestPrompt:
     def test_caps_tree_depth(self) -> None:
         deep = "/a/b/c/d/e/f"
         assert deep not in ai.build_prompt("t", ["/a", deep], [], None)
+
+    def test_caps_the_number_of_folders(self) -> None:
+        """An unbounded tree pushes the request past the model's context window, which the
+        endpoint reports as an opaque 400."""
+        tree = [f"/Documents/{i:04d}" for i in range(ai.MAX_TREE_FOLDERS + 50)]
+
+        prompt = ai.build_prompt("t", tree, [], None)
+
+        assert prompt.count("/Documents/") == ai.MAX_TREE_FOLDERS
+        assert "and 50 more folders" in prompt
+
+    def test_keeps_shallow_folders_when_the_cap_bites(self) -> None:
+        deep = [f"/Documents/a/{i:04d}" for i in range(ai.MAX_TREE_FOLDERS)]
+
+        prompt = ai.build_prompt("t", ["/Documents", "/Archive", *deep], [], None)
+
+        assert "/Archive" in prompt
 
     def test_caps_sample_filenames(self) -> None:
         names = [f"file-{i}.pdf" for i in range(20)]
@@ -330,3 +387,15 @@ def test_list_models_reports_an_unreachable_host() -> None:
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(AIUnavailable, match="Couldn't reach"):
             ai.list_models(endpoint_url="https://ai.example.com/v1", api_key=None, client=client)
+
+
+def test_list_models_keeps_the_api_base_hint_for_a_non_json_error() -> None:
+    """A wrong URL answers with an HTML page; quoting the markup would bury the one
+    sentence that tells the user what to change."""
+    with pytest.raises(AIUnavailable, match="not a documentation page"):
+        models_response("<!doctype html><title>Not found</title>", status=404)
+
+
+def test_list_models_reports_the_reason_the_endpoint_gave() -> None:
+    with pytest.raises(AIUnavailable, match="tier does not include models"):
+        models_response({"error": {"message": "tier does not include models"}}, status=403)
