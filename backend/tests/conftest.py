@@ -37,8 +37,15 @@ def clean_webdav_cache() -> Iterator[None]:
     webdav.clear_cache()
 
 
+# The account every authenticated fixture signs in as. First registration wins the instance,
+# so this user is an admin -- which is what the routes under test run as in production too.
+TEST_EMAIL = "owner@example.com"
+TEST_PASSWORD = "correct-horse-battery-staple"
+
+
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def anonymous_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """A client with no session. Everything except /health and /auth/* answers 401."""
     test_engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -49,3 +56,17 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def client(anonymous_client: TestClient) -> TestClient:
+    """Signed in, because that is the only state in which the app is usable.
+
+    Registering here rather than in every test keeps the suite about what each route does,
+    not about how it is authenticated -- test_auth.py owns that.
+    """
+    response = anonymous_client.post(
+        "/api/v1/auth/register", json={"email": TEST_EMAIL, "password": TEST_PASSWORD}
+    )
+    assert response.status_code == 201, response.text
+    return anonymous_client

@@ -34,6 +34,17 @@ services:
       WEBDAV_USERNAME: ${WEBDAV_USERNAME:?set WEBDAV_USERNAME in the Dokploy Environment tab}
       WEBDAV_PASSWORD: ${WEBDAV_PASSWORD:?set WEBDAV_PASSWORD in the Dokploy Environment tab}
       WEBDAV_WATCH_FOLDER: ${WEBDAV_WATCH_FOLDER:-/Scans/Inbox}
+      # The public URL. Without it the session cookie is not marked Secure and the OIDC
+      # redirect URI points at localhost, so single sign-on cannot work.
+      APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL to the domain this is served on}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      SESSION_LIFETIME_DAYS: ${SESSION_LIFETIME_DAYS:-30}
+      # Empty issuer = password sign-in only. All three are needed for the SSO button.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-SSO}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid email profile}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # nginx serves the bundle and proxies /api on the same origin, so the browser never

@@ -71,6 +71,26 @@ class HealthResponse(BaseModel):
     queue_depth: int
 
 
+class AuthConfig(BaseModel):
+    """What the sign-in screen needs before anyone is signed in."""
+
+    oidc_enabled: bool
+    oidc_provider_name: str
+    registration_open: bool
+    has_users: bool  # false = fresh instance, so the screen offers "create the first account"
+
+
+class UserRead(BaseModel):
+    id: str
+    email: str
+    is_admin: bool
+
+
+class CredentialsRequest(BaseModel):
+    email: str
+    password: str
+
+
 class SettingsRead(BaseModel):
     allowed_root_folders: list[str]
     trash_folder_path: str

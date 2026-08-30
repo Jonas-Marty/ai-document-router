@@ -89,3 +89,52 @@ class AppSettings(SQLModel, table=True):
     ai_endpoint_url: str = ""
     ai_model_name: str = ""
     ai_api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
+
+
+class User(SQLModel, table=True):
+    """A person who can sign in. Password and OIDC are two ways into the same row.
+
+    `password_hash` is None for an account that only ever signed in through the identity
+    provider, and `oidc_subject` is None for one that only ever used a password. An account
+    can carry both: signing in with OIDC using the email of an existing local account links
+    the two rather than creating a second row.
+    """
+
+    __tablename__ = "user"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    email: str = Field(unique=True, index=True)
+    password_hash: str | None = None
+    oidc_subject: str | None = Field(default=None, unique=True, index=True)
+    is_admin: bool = False
+    created_at: datetime
+    last_login_at: datetime | None = None
+
+
+class UserSession(SQLModel, table=True):
+    """A signed-in browser. `id` is the SHA-256 of the cookie value, never the value itself,
+    so a copy of the database does not hand out live sessions."""
+
+    __tablename__ = "user_session"
+
+    id: str = Field(primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+
+
+class OidcLogin(SQLModel, table=True):
+    """One in-flight authorization code flow: the PKCE verifier and nonce, keyed by state.
+
+    Server-side rather than in a cookie because the verifier must never reach the browser,
+    and rows are single-use -- the callback deletes the row it consumes.
+    """
+
+    __tablename__ = "oidc_login"
+
+    state: str = Field(primary_key=True)
+    code_verifier: str
+    nonce: str
+    redirect_uri: str
+    created_at: datetime

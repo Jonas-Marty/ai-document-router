@@ -38,6 +38,33 @@ class Settings(BaseSettings):
     # still uploading it.
     poller_min_file_age_seconds: int = 10
 
+    # --- auth ---------------------------------------------------------------
+    # Where the browser reaches this app. Only used to build the OIDC redirect URI and to
+    # decide whether the session cookie may be marked Secure, so it must be the *public*
+    # URL, not the container's.
+    app_base_url: str = "http://localhost:5173"
+    session_lifetime_days: int = 30
+    # The first account is always allowed -- someone has to claim a fresh instance. This
+    # governs everyone after them; off by default, because a self-hosted single-user tool
+    # with open registration is an unlocked front door.
+    allow_registration: bool = False
+
+    # A single OIDC provider, confidential client. All three must be set for the SSO button
+    # to appear; a client without a secret is deliberately not supported.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid email profile"
+    oidc_provider_name: str = "SSO"
+
+    @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.oidc_issuer and self.oidc_client_id and self.oidc_client_secret)
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        return self.app_base_url.startswith("https://")
+
     @field_validator("secret_key")
     @classmethod
     def check_secret_key_is_a_fernet_key(cls, value: str) -> str:

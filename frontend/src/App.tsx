@@ -1,4 +1,5 @@
 import { AppShell } from "@/components/layout/AppShell";
+import { RequireAuth } from "@/components/layout/RequireAuth";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NavigationGuardProvider } from "@/hooks/useNavigationGuard";
@@ -8,10 +9,13 @@ function App() {
   return (
     <NavigationGuardProvider>
       <TooltipProvider>
-        <AppShell>
-          <AppRoutes />
-          <Toaster />
-        </AppShell>
+        {/* Outside RequireAuth: the sign-in screen raises toasts too. */}
+        <Toaster />
+        <RequireAuth>
+          <AppShell>
+            <AppRoutes />
+          </AppShell>
+        </RequireAuth>
       </TooltipProvider>
     </NavigationGuardProvider>
   );

@@ -108,6 +108,24 @@ export interface SettingsUpdate extends Omit<Settings, "ai_api_key_set"> {
   ai_api_key?: string; // omitted or empty = leave unchanged
 }
 
+export interface AuthConfig {
+  oidc_enabled: boolean;
+  oidc_provider_name: string;
+  registration_open: boolean;
+  has_users: boolean; // false = nobody has claimed this instance yet
+}
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  is_admin: boolean;
+}
+
+export interface Credentials {
+  email: string;
+  password: string;
+}
+
 export interface AiModelsRequest {
   ai_endpoint_url: string; // the URL in the form, which may not be saved yet
   ai_api_key?: string; // omitted or empty = test with the stored key

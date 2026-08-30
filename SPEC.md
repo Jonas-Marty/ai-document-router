@@ -160,6 +160,36 @@ ai-document-router/
 | `ai_model_name` | str |
 | `ai_api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
 
+**`user`** — password and OIDC are two ways into the same row.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `email` | str, unique, lowercased |
+| `password_hash` | str \| null — scrypt; null for an OIDC-only account |
+| `oidc_subject` | str \| null, unique — the provider's `sub` |
+| `is_admin` | bool — true for whoever registered first |
+| `created_at` | datetime |
+| `last_login_at` | datetime \| null |
+
+**`user_session`** — one signed-in browser.
+
+| column | type |
+|---|---|
+| `id` | str PK — SHA-256 of the cookie value, never the value |
+| `user_id` | FK user.id |
+| `created_at` / `last_seen_at` / `expires_at` | datetime |
+
+**`oidc_login`** — one in-flight authorization code flow, single-use, expires after 10 minutes.
+
+| column | type |
+|---|---|
+| `state` | str PK |
+| `code_verifier` | str — PKCE; never leaves the server |
+| `nonce` | str |
+| `redirect_uri` | str |
+| `created_at` | datetime |
+
 ### 4.2 Shared TypeScript types
 
 Mirror these exactly in `frontend/src/services/api/types.ts`. The API returns camel-free
@@ -241,6 +271,24 @@ export interface SettingsUpdate extends Omit<Settings, "ai_api_key_set"> {
   ai_api_key?: string;          // omitted or empty = leave unchanged
 }
 
+export interface AuthConfig {
+  oidc_enabled: boolean;
+  oidc_provider_name: string;
+  registration_open: boolean;
+  has_users: boolean;           // false = nobody has claimed this instance yet
+}
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  is_admin: boolean;
+}
+
+export interface Credentials {
+  email: string;
+  password: string;
+}
+
 export interface AiModelsRequest {
   ai_endpoint_url: string;      // as typed in the form; need not be saved yet
   ai_api_key?: string;          // omitted or empty = test with the stored key
@@ -275,6 +323,13 @@ Base path `/api/v1`. JSON in, JSON out.
 | PUT | `/settings` | `SettingsUpdate` | `Settings` |
 | POST | `/settings/ai/models` | `{ ai_endpoint_url, ai_api_key? }` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
 | GET | `/health` | — | `{ status, webdav_reachable, queue_depth }` |
+| GET | `/auth/config` | — | `AuthConfig` — public |
+| GET | `/auth/me` | — | `AuthUser`, or 401 |
+| POST | `/auth/register` | `Credentials` | `AuthUser`, 201, sets the session cookie |
+| POST | `/auth/login` | `Credentials` | `AuthUser`, sets the session cookie |
+| POST | `/auth/logout` | — | 204, clears the cookie |
+| GET | `/auth/oidc/login` | — | 303 to the provider |
+| GET | `/auth/oidc/callback` | — | 303 back into the app, or to `/login?error=…` |
 
 **Queue ordering:** `pending` first by `scanned_at` ascending, then `skipped` by `skip_count`
 ascending, then `scanned_at`. A skipped document never reappears before an unskipped one.
@@ -282,7 +337,8 @@ ascending, then `scanned_at`. A skipped document never reappears before an unski
 **Errors:** non-2xx returns `{ "error": { "code": string, "message": string } }`. `message`
 is written for a human and is displayed verbatim in the UI. Codes used:
 `not_found`, `validation_error`, `webdav_unreachable`, `webdav_conflict`, `ai_unavailable`,
-`outside_allowed_roots`, `filename_collision`, `not_revertible`.
+`outside_allowed_roots`, `filename_collision`, `not_revertible`, `unauthenticated`,
+`invalid_credentials`, `admin_required`, `registration_closed`, `oidc_error`.
 
 **`original_suggestion` is not in the approve payload.** The backend already has the
 proposal; it snapshots it into `history_entry.suggestion_snapshot` and computes
@@ -373,12 +429,33 @@ trash, suffix with a timestamp rather than failing. Files are never deleted.
 file is no longer where the history says it is, return 409 `not_revertible` and flip
 `revertible` to false so the UI stops offering it.
 
-### 6.5 Auth stub
+### 6.5 Authentication (`services/auth.py`, `services/oidc.py`)
 
-`deps.py` exposes `get_current_user()` which currently returns a fixed single-user object.
-Every route already depends on it. Adding Authentik later means implementing JWT validation
-inside that one function plus the header injection in the frontend client — nothing else in
-the codebase changes. Mark both spots with `# AUTH:` comments.
+`deps.py`'s `get_current_user()` resolves the session cookie to a `user` row and raises 401
+otherwise. Every route depends on it except `/health` (the container healthcheck calls it
+unauthenticated) and `/auth/*` (which is how someone becomes authenticated).
+
+**Sessions.** A random 256-bit token in an HttpOnly, SameSite=Lax cookie, `Secure` whenever
+`APP_BASE_URL` is https. Only the SHA-256 of the token is stored, so a copy of the database
+cannot be replayed as a login. Expiry is `SESSION_LIFETIME_DAYS`; logout deletes the row.
+
+**Passwords.** `hashlib.scrypt` (RFC 7914 interactive parameters), per-user salt, stored as
+`scrypt$n$r$p$salt$hash`. Minimum 12 characters. A failed login hashes anyway, so an unknown
+address and a wrong password take the same time and cannot be told apart.
+
+**First user wins.** Registration is open while the `user` table is empty and the first
+account is made admin; afterwards it is closed unless `ALLOW_REGISTRATION=true`. A fresh
+deployment is reachable by anyone who knows its URL until someone claims it, so the sign-in
+screen doubles as first-run setup to keep that window short.
+
+**OIDC.** One provider, confidential client, Authorization Code flow with PKCE (S256). The
+`state`, nonce and verifier live in `oidc_login` (single-use, 10-minute TTL), never in the
+browser. Identity comes from `/userinfo`, not from the ID token body: the token arrives over
+TLS straight from the token endpoint to a client that authenticated with its secret, which
+OIDC Core 3.1.3.7 accepts, and verifying the signature locally would mean JWKS handling and a
+JWT dependency this project does not otherwise need. A provider user is matched on `sub`,
+then on email — the email fallback links SSO onto an existing password account instead of
+forking it. Failures redirect to `/login?error=…` rather than rendering JSON.
 
 ---
 
@@ -417,6 +494,11 @@ changes app behaviour. There is no auto-approval at any threshold.
 
 ### 8.1 Routes
 `/` Review · `/history` History · `/settings` Settings
+
+Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
+than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
+the OIDC callback's error redirect. An API error that is not a 401 leaves the app rendered
+and lets the outage banner speak — an unreachable backend must not look like a sign-in prompt.
 
 ### 8.2 Breakpoints
 
@@ -564,6 +646,12 @@ happened and what to do next, without apologising. Empty states invite an action
 Backend: `DATABASE_URL`, `SECRET_KEY`, `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
 `WEBDAV_PASSWORD`, `WEBDAV_WATCH_FOLDER`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`.
 
+Auth: `APP_BASE_URL` (the public URL — decides the OIDC redirect URI and whether the session
+cookie is `Secure`), `ALLOW_REGISTRATION`, `SESSION_LIFETIME_DAYS`, and for single sign-on
+`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_PROVIDER_NAME`, `OIDC_SCOPES`.
+All three OIDC values must be set for the SSO button to appear; a public client (no secret)
+is deliberately unsupported.
+
 Frontend: `VITE_API_BASE_URL`.
 
 AI endpoint, model, and API key live in the database because they are editable in the UI. The
@@ -574,7 +662,9 @@ and requires re-entering it — document this in the README.
 
 ## 11. Out of scope
 
-- Authentication, users, roles (stub only — see 6.5)
+- Roles beyond the single `is_admin` flag, and any user-management UI (accounts are created
+  by registering; there is no invite, reset-password, or delete-user flow yet)
+- More than one OIDC provider at a time
 - Bulk selection or batch approval
 - OCR (a PDF with no text layer fails its proposal and is handled manually)
 - Splitting a multi-page PDF into several documents — every page in a file is one document

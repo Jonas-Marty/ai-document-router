@@ -75,8 +75,8 @@ just secret-key          # paste the output into SECRET_KEY in .env
 ```
 
 Fill in the rest of `.env` — at minimum `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
-`WEBDAV_PASSWORD`, and `WEBDAV_WATCH_FOLDER`. Use a WebDAV **app password**, never the account
-password. Then:
+`WEBDAV_PASSWORD`, `WEBDAV_WATCH_FOLDER`, and `APP_BASE_URL` (the public URL the browser will
+use). Use a WebDAV **app password**, never the account password. Then:
 
 ```bash
 just up
@@ -99,6 +99,46 @@ just build    # rebuild images after pulling new code, then `just up`
 
 The AI endpoint, model, and API key are **not** in `.env` — they are configured in the app's
 Settings screen, because they are editable at runtime and the key is encrypted at rest.
+
+### Signing in
+
+**Claim the instance immediately after the first deploy.** Until someone registers, the
+sign-in screen offers *Create the first account* to anyone who reaches the URL, and that first
+account becomes the admin. Registration then closes; set `ALLOW_REGISTRATION=true` if you
+want further self-service sign-ups.
+
+Sessions are an HttpOnly cookie (`SESSION_LIFETIME_DAYS`, default 30). Set `APP_BASE_URL` to
+the real public URL: it is what makes the cookie `Secure` on https, and what the OIDC redirect
+URI is built from.
+
+#### Single sign-on (Authentik)
+
+Optional, one provider, and it must be a **confidential** client — a client ID alone is not
+enough. In Authentik, create an OAuth2/OpenID *Provider*:
+
+- Client type: **Confidential**
+- Redirect URI: `<APP_BASE_URL>/api/v1/auth/oidc/callback`
+- Scopes: `openid`, `email`, `profile` — an email claim is required; a user without one is
+  rejected rather than filed under a guessed address
+
+Then put its values in `.env` (or the Dokploy Environment tab):
+
+```bash
+OIDC_ISSUER=https://auth.example.com/application/o/document-router/
+OIDC_CLIENT_ID=...
+OIDC_CLIENT_SECRET=...
+OIDC_PROVIDER_NAME=Authentik      # the label on the sign-in button
+```
+
+`OIDC_ISSUER` is the provider's *OpenID Configuration Issuer*; everything else is discovered
+from `<issuer>/.well-known/openid-configuration`. Restart the API after changing these.
+
+Signing in through the provider matches on its `sub`, falling back to the email address — so
+using SSO with the address of an existing password account links the two rather than creating
+a second one. If nobody has registered yet, the first person through SSO becomes the admin.
+
+Other providers implementing OIDC discovery should work, but Authentik is the one this was
+built against.
 
 ### Rotating SECRET_KEY
 

@@ -60,3 +60,38 @@ class NotRevertible(AppError):
 
     code = "not_revertible"
     status_code = 409
+
+
+class AuthenticationRequired(AppError):
+    """No valid session. The frontend turns this into "sign in", not an error toast."""
+
+    code = "unauthenticated"
+    status_code = 401
+
+
+class InvalidCredentials(AppError):
+    """Wrong email or wrong password -- deliberately indistinguishable to the caller."""
+
+    code = "invalid_credentials"
+    status_code = 401
+
+
+class AdminRequired(AppError):
+    """Signed in, but not as an admin. Distinct from 401: signing in again will not help."""
+
+    code = "admin_required"
+    status_code = 403
+
+
+class RegistrationClosed(AppError):
+    """Someone already claimed this instance and self-registration is off."""
+
+    code = "registration_closed"
+    status_code = 403
+
+
+class OidcError(AppError):
+    """The identity provider could not be used, or answered with something unusable."""
+
+    code = "oidc_error"
+    status_code = 502

@@ -4,7 +4,10 @@ import type {
   AiModelsResponse,
   ApiErrorBody,
   ApproveRequest,
+  AuthConfig,
+  AuthUser,
   CreateFolderRequest,
+  Credentials,
   Document,
   FolderContext,
   FolderNode,
@@ -42,6 +45,11 @@ export interface ApiClient {
   getSettings(): Promise<Settings>;
   updateSettings(body: SettingsUpdate): Promise<Settings>;
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
+  getAuthConfig(): Promise<AuthConfig>;
+  getCurrentUser(): Promise<AuthUser>;
+  login(body: Credentials): Promise<AuthUser>;
+  register(body: Credentials): Promise<AuthUser>;
+  logout(): Promise<void>;
 }
 
 const API_BASE = "/api/v1";
@@ -123,6 +131,26 @@ export class HttpApiClient implements ApiClient {
     return this.request<AiModelsResponse>("POST", "/settings/ai/models", body);
   }
 
+  getAuthConfig(): Promise<AuthConfig> {
+    return this.request<AuthConfig>("GET", "/auth/config");
+  }
+
+  getCurrentUser(): Promise<AuthUser> {
+    return this.request<AuthUser>("GET", "/auth/me");
+  }
+
+  login(body: Credentials): Promise<AuthUser> {
+    return this.request<AuthUser>("POST", "/auth/login", body);
+  }
+
+  register(body: Credentials): Promise<AuthUser> {
+    return this.request<AuthUser>("POST", "/auth/register", body);
+  }
+
+  logout(): Promise<void> {
+    return this.request<void>("POST", "/auth/logout");
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     let response: Response;
     try {
@@ -130,9 +158,11 @@ export class HttpApiClient implements ApiClient {
         method,
         headers: {
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-          // AUTH: inject the Authentik bearer token here once auth exists. Nothing else
-          // in this file should need to change (SPEC 6.5).
         },
+        // The session is an HttpOnly cookie, so there is no token for this layer to hold
+        // or for an XSS to read. Same-origin is the default, but stating it keeps the
+        // credentialed request explicit.
+        credentials: "same-origin",
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
     } catch {

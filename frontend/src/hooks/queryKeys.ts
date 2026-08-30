@@ -13,4 +13,6 @@ export const queryKeys = {
     ["folders", "context", path, filename ?? null] as const,
   history: () => ["history"] as const,
   settings: ["settings"] as const,
+  authConfig: ["auth", "config"] as const,
+  currentUser: ["auth", "me"] as const,
 };

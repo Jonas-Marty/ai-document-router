@@ -656,3 +656,17 @@ meaningful. One line of "why" each; not a full ADR log.
   them pushes the request past the model's context window, which comes back as an opaque 400.
   Shallow folders are kept first — they are the plausible filing targets, and anything dropped
   can still be typed by hand in the review form.
+- **The sign-in screen offers registration only when the backend says it is open, and
+  sign-in stays the default when it is.** `ALLOW_REGISTRATION=true` was honoured by the API
+  and documented in the README, but the screen keyed its mode off `has_users` alone — so the
+  setting did nothing anyone could reach. A toggle rather than a second route: `/login`
+  exists only for the OIDC error redirect, and a second URL to guard would be a second way
+  to get the gate wrong. Switching modes resets the mutation, because "Wrong email or
+  password" carried onto a registration form reads as a verdict on what was just typed.
+- **A 401 from any query re-asks who is signed in.** Only `/auth/me` feeds the auth gate, so
+  a session that ended while the app was open (expired, or signed out in another tab) left
+  every screen sitting on an error state until something happened to refetch it. The
+  QueryCache `onError` in `lib/queryClient.ts` invalidates the current-user query instead,
+  which is what turns those 401s into the sign-in screen. The client also stops retrying a
+  401 three times over: it is an answer, not a transient failure, and retrying only delays
+  the screen it should have produced immediately.

@@ -1,6 +1,9 @@
-import { FileStack, History, Settings } from "lucide-react";
+import { FileStack, History, LogOut, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 import { useConfirmNavigation } from "@/hooks/useNavigationGuard";
 import { cn } from "@/lib/utils";
 import { OutageBanner } from "./OutageBanner";
@@ -16,6 +19,8 @@ const NAV_ITEMS = [
  * collapse to icon-only below the sm breakpoint rather than wrapping or overflowing. */
 export function AppShell({ children }: { children: ReactNode }) {
   const confirmNavigation = useConfirmNavigation();
+  const { data: user } = useCurrentUser();
+  const logout = useLogout();
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -50,6 +55,24 @@ export function AppShell({ children }: { children: ReactNode }) {
             ))}
           </nav>
           <ThemeToggle />
+          {user && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Sign out ${user.email}`}
+                  disabled={logout.isPending}
+                  onClick={() => {
+                    if (confirmNavigation()) logout.mutate();
+                  }}
+                >
+                  <LogOut className="size-4" aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Sign out {user.email}</TooltipContent>
+            </Tooltip>
+          )}
         </div>
         <OutageBanner />
       </header>

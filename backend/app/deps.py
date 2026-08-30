@@ -1,12 +1,13 @@
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Cookie, Depends
 from sqlmodel import Session
 
 from app.db import get_session
-from app.models import AppSettings
+from app.models import AppSettings, User
+from app.services import auth as auth_service
 from app.services import settings as settings_service
-from app.services.errors import NotFoundError
+from app.services.errors import AdminRequired, NotFoundError
 from app.services.webdav import WebDavService, build_client
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -38,14 +39,21 @@ def get_webdav(app_settings: AppSettingsDep) -> WebDavService:
 WebDavDep = Annotated[WebDavService, Depends(get_webdav)]
 
 
-class CurrentUser:
-    id: str = "single-user"
+def get_current_user(
+    session: SessionDep,
+    session_cookie: Annotated[str | None, Cookie(alias=auth_service.SESSION_COOKIE_NAME)] = None,
+) -> User:
+    """The signed-in user, or 401. Every route except /health and /auth/* depends on this."""
+    return auth_service.resolve_session(session, session_cookie)
 
 
-# AUTH: replace with real JWT validation for Authentik. Every non-health route depends on
-# this; nothing else in the codebase should need to change when auth is added.
-def get_current_user() -> CurrentUser:
-    return CurrentUser()
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
 
 
-CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
+def get_admin_user(user: CurrentUserDep) -> User:
+    if not user.is_admin:
+        raise AdminRequired("This action needs an admin account.")
+    return user
+
+
+AdminUserDep = Annotated[User, Depends(get_admin_user)]

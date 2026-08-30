@@ -28,12 +28,63 @@ function healthResponse(body: unknown, status = 200) {
   });
 }
 
-describe("routing", () => {
-  beforeEach(() => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 0 }),
-    );
+const SIGNED_IN = { id: "u1", email: "owner@example.com", is_admin: true };
+const AUTH_CONFIG = {
+  oidc_enabled: false,
+  oidc_provider_name: "SSO",
+  registration_open: false,
+  has_users: true,
+};
+
+/** Routes fetch by path instead of answering every call the same way: with the auth gate in
+ * front of the app, a test that wants to see a page has to be signed in first. `health`
+ * stays a callback so the outage tests can vary just that one response. */
+function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus = 200) {
+  // Signing out has to change what /auth/me answers, or the gate would just let the person
+  // straight back in on the refetch.
+  let signedOut = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes("/auth/logout")) {
+      signedOut = true;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (url.includes("/auth/me")) {
+      return signedOut
+        ? Promise.resolve(
+            healthResponse({ error: { code: "unauthenticated", message: "no" } }, 401),
+          )
+        : Promise.resolve(healthResponse(auth, authStatus));
+    }
+    if (url.includes("/auth/config")) return Promise.resolve(healthResponse(AUTH_CONFIG));
+    if (url.includes("/health")) return Promise.resolve(health());
+    if (url.includes("/queue")) {
+      return Promise.resolve(healthResponse({ items: [], total_pending: 0 }));
+    }
+    if (url.includes("/history")) {
+      return Promise.resolve(healthResponse({ items: [], next_cursor: null }));
+    }
+    if (url.includes("/settings")) {
+      return Promise.resolve(
+        healthResponse({
+          allowed_root_folders: ["/Documents"],
+          trash_folder_path: "/Trash",
+          filename_pattern: null,
+          filename_pattern_hint: null,
+          ai_endpoint_url: "",
+          ai_model_name: "",
+          ai_api_key_set: false,
+        }),
+      );
+    }
+    return Promise.resolve(healthResponse({}));
   });
+}
+
+const healthy = () => healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 0 });
+
+describe("routing", () => {
+  beforeEach(() => mockApi(healthy));
   afterEach(() => vi.restoreAllMocks());
 
   it("renders the Review page at /", async () => {
@@ -68,15 +119,14 @@ describe("dark mode", () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.classList.remove("dark");
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 0 }),
-    );
+    mockApi(healthy);
   });
   afterEach(() => vi.restoreAllMocks());
 
   it("toggles the dark class on <html> and persists the choice", async () => {
     const user = userEvent.setup();
     renderApp("/");
+    await screen.findByRole("heading", { name: "Review" });
 
     await user.click(screen.getByRole("button", { name: /change theme/i }));
     await user.click(await screen.findByText("Dark"));
@@ -99,6 +149,7 @@ describe("dark mode", () => {
     localStorage.setItem("theme", "dark");
     const user = userEvent.setup();
     renderApp("/");
+    await screen.findByRole("heading", { name: "Review" });
 
     await user.click(screen.getByRole("button", { name: /change theme/i }));
     await user.click(await screen.findByText("System"));
@@ -113,9 +164,7 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
   afterEach(() => vi.restoreAllMocks());
 
   it("shows no banner when the backend and WebDAV are both healthy", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 3 }),
-    );
+    mockApi(() => healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 3 }));
     renderApp("/");
 
     await screen.findByRole("heading", { name: "Review" });
@@ -123,9 +172,7 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
   });
 
   it("shows a WebDAV-specific message when the backend is up but WebDAV is not", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      healthResponse({ status: "ok", webdav_reachable: false, queue_depth: 3 }),
-    );
+    mockApi(() => healthResponse({ status: "ok", webdav_reachable: false, queue_depth: 3 }));
     renderApp("/");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/webdav is unreachable/i);
@@ -134,6 +181,8 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
   });
 
   it("shows a distinct message when the backend itself can't be reached at all", async () => {
+    // Every call fails, /auth/me included: an unreachable API must surface as the outage
+    // banner over a still-rendered page, not as "please sign in".
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
     renderApp("/");
 
@@ -147,5 +196,61 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/can't reach the server/i);
     expect(screen.getByRole("heading", { name: "Review" })).toBeInTheDocument();
+  });
+});
+
+describe("authentication gate", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the sign-in screen instead of the app when nobody is signed in", async () => {
+    mockApi(healthy, { error: { code: "unauthenticated", message: "Sign in to continue." } }, 401);
+    renderApp("/settings");
+
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    // The protected screen must not render behind it, not even briefly.
+    expect(screen.queryByRole("heading", { name: "Settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /history/i })).not.toBeInTheDocument();
+  });
+
+  it("offers first-account setup on an instance nobody has claimed", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/auth/me")) return Promise.resolve(healthResponse({}, 401));
+      if (url.includes("/auth/config"))
+        return Promise.resolve(healthResponse({ ...AUTH_CONFIG, has_users: false }));
+      return Promise.resolve(healthy());
+    });
+    renderApp("/");
+
+    expect(await screen.findByText("Create the first account")).toBeInTheDocument();
+    expect(screen.getByText(/first account becomes its admin/i)).toBeInTheDocument();
+  });
+
+  it("offers the configured provider when SSO is enabled", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/auth/me")) return Promise.resolve(healthResponse({}, 401));
+      if (url.includes("/auth/config"))
+        return Promise.resolve(
+          healthResponse({ ...AUTH_CONFIG, oidc_enabled: true, oidc_provider_name: "Authentik" }),
+        );
+      return Promise.resolve(healthy());
+    });
+    renderApp("/");
+
+    const sso = await screen.findByRole("link", { name: /sign in with authentik/i });
+    // A full navigation, so the provider can redirect the browser back.
+    expect(sso).toHaveAttribute("href", "/api/v1/auth/oidc/login");
+  });
+
+  it("signs out back to the sign-in screen", async () => {
+    mockApi(healthy);
+    const user = userEvent.setup();
+    renderApp("/");
+    await screen.findByRole("heading", { name: "Review" });
+
+    await user.click(screen.getByRole("button", { name: /sign out owner@example.com/i }));
+
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
   });
 });
