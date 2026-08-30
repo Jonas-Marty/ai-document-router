@@ -670,3 +670,15 @@ meaningful. One line of "why" each; not a full ADR log.
   which is what turns those 401s into the sign-in screen. The client also stops retrying a
   401 three times over: it is an answer, not a transient failure, and retrying only delays
   the screen it should have produced immediately.
+- **`.mjs` is mapped to `application/javascript` in `deploy/nginx.conf`, at http level.**
+  nginx's bundled `mime.types` maps `.js` but not `.mjs` (still true in 1.28), so the pdf.js
+  worker — the one `.mjs` Vite emits — was served as `application/octet-stream`, and browsers
+  refuse to load a module worker with a non-JavaScript type. pdf.js then fell back to a "fake
+  worker" that tried to reach `file:///`, and the viewer showed "Couldn't load the file." The
+  block sits at http level, alongside the `server` block rather than inside it: a `types`
+  block inside `server` *replaces* the map loaded by `mime.types` instead of extending it,
+  which would take every other asset's content type with it. Verified against
+  `nginx:1.28-alpine` with the real build output — `.mjs` went from `application/octet-stream`
+  to `application/javascript` while css, woff2 and html kept theirs. `application/javascript`
+  rather than `text/javascript` so it matches the `.js` sibling and stays inside `gzip_types`:
+  the worker is 1 MB uncompressed and 282 KB gzipped, and it was being sent uncompressed too.
