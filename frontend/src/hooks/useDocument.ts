@@ -75,6 +75,21 @@ export function useTrashDocument() {
   });
 }
 
+/** Retry every failed proposal at once.
+ *
+ * The single-document regenerate is the wrong tool after a configuration fix: the poller
+ * never revisits a failed proposal, so every document that failed while the setting was
+ * wrong would have to be opened and retried one at a time. */
+export function useRetryFailedProposals() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiClient.retryFailedProposals(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
+    },
+  });
+}
+
 export function useRegenerateDocument() {
   const queryClient = useQueryClient();
   return useMutation({

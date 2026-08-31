@@ -61,6 +61,10 @@ class QueueResponse(BaseModel):
     total_pending: int
 
 
+class RetriedResponse(BaseModel):
+    retried: int
+
+
 class DocumentResponse(BaseModel):
     document: DocumentRead
 

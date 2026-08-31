@@ -34,6 +34,10 @@ export interface QueueResponse {
   total_pending: number;
 }
 
+export interface RetriedResponse {
+  retried: number;
+}
+
 export interface ApproveRequest {
   final_name: string;
   final_folder_path: string;

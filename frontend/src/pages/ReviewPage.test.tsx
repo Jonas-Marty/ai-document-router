@@ -12,6 +12,7 @@ vi.mock("@/services/api/client", () => ({
     getFolderContext: vi.fn(),
     getSettings: vi.fn(),
     getDocumentContentUrl: (id: string) => `/api/v1/documents/${id}/content`,
+    retryFailedProposals: vi.fn(),
   },
 }));
 
@@ -92,6 +93,26 @@ describe("ReviewPage queue overview", () => {
 
     expect(await screen.findByText("Queue's clear.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^queue/i })).not.toBeInTheDocument();
+  });
+
+  it("retries every failed proposal at once, not one document at a time", async () => {
+    // The whole point: the poller never revisits a failed proposal, so a configuration fix
+    // in Settings cannot heal a queue that already failed against the old configuration.
+    renderReview([
+      doc("1", "2026.05.18 Swisscom Rechnung"),
+      doc("2", "", {
+        proposal_status: "failed",
+        proposal: null,
+        proposal_error: "No allowed folders are configured yet — set them in Settings.",
+      }),
+    ]);
+    vi.mocked(apiClient.retryFailedProposals).mockResolvedValue({ retried: 2 });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /queue/i }));
+    await user.click(await screen.findByRole("button", { name: /retry failed/i }));
+
+    await waitFor(() => expect(apiClient.retryFailedProposals).toHaveBeenCalled());
   });
 
   it("lists every open document and jumps to the one that is picked", async () => {

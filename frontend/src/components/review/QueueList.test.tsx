@@ -36,15 +36,18 @@ function doc(id: string, overrides: Partial<Document> = {}): Document {
 
 function renderList(items: Document[], totalPending = items.length, currentId = items[0]?.id) {
   const onSelect = vi.fn();
+  const onRetryFailed = vi.fn();
   render(
     <QueueList
       items={items}
       totalPending={totalPending}
       currentId={currentId}
       onSelect={onSelect}
+      onRetryFailed={onRetryFailed}
+      isRetryingFailed={false}
     />,
   );
-  return onSelect;
+  return { onSelect, onRetryFailed };
 }
 
 describe("QueueList", () => {
@@ -104,8 +107,28 @@ describe("QueueList", () => {
     expect(screen.queryByText(/more behind these/)).not.toBeInTheDocument();
   });
 
+  it("offers a bulk retry when something in the queue has failed", async () => {
+    // The poller never revisits a failed proposal, so after a configuration fix the only
+    // route back would be opening all of them and pressing Try again one at a time.
+    const { onRetryFailed } = renderList([
+      doc("1"),
+      doc("2", { proposal_status: "failed", proposal: null, proposal_error: "No folders." }),
+    ]);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /retry failed/i }));
+
+    expect(onRetryFailed).toHaveBeenCalled();
+  });
+
+  it("offers no bulk retry when nothing has failed", () => {
+    renderList([doc("1"), doc("2")]);
+
+    expect(screen.queryByRole("button", { name: /retry failed/i })).not.toBeInTheDocument();
+  });
+
   it("hands back the document that was picked", async () => {
-    const onSelect = renderList(
+    const { onSelect } = renderList(
       [doc("1"), doc("2", { proposal: proposal({ suggested_name: "2026.05.19 SAC Spende" }) })],
       2,
       "1",

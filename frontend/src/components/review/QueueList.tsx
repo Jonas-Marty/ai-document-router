@@ -1,5 +1,6 @@
-import { CircleAlert, Loader2 } from "lucide-react";
+import { CircleAlert, Loader2, RotateCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Document } from "@/services/api/types";
 
@@ -8,6 +9,8 @@ export interface QueueListProps {
   totalPending: number;
   currentId: string | undefined;
   onSelect: (id: string) => void;
+  onRetryFailed: () => void;
+  isRetryingFailed: boolean;
 }
 
 /** Everything still waiting to be filed, in the order the review screen will reach it.
@@ -16,11 +19,38 @@ export interface QueueListProps {
  * a scanner names every file "scan_0041.pdf", so the original filename is exactly the thing
  * that cannot tell two of them apart. The original is the fallback only while there is no
  * proposal to name the row by yet. */
-export function QueueList({ items, totalPending, currentId, onSelect }: QueueListProps) {
+export function QueueList({
+  items,
+  totalPending,
+  currentId,
+  onSelect,
+  onRetryFailed,
+  isRetryingFailed,
+}: QueueListProps) {
   const notLoaded = totalPending - items.length;
+  const hasFailures = items.some((document) => document.proposal_status === "failed");
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
+      {hasFailures && (
+        // Most of these failures are one configuration problem wearing many hats -- no
+        // allowed folders, a rejected AI request -- so the useful action after fixing it is
+        // "do all of them again", not opening each document to press Try again. Offered
+        // here because this list is where the failures are actually legible.
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/40 px-4 py-3">
+          <p className="text-xs text-muted-foreground">
+            Fixed the cause in Settings? Ask for these proposals again.
+          </p>
+          <Button size="sm" variant="outline" disabled={isRetryingFailed} onClick={onRetryFailed}>
+            {isRetryingFailed ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <RotateCw className="size-4" aria-hidden="true" />
+            )}
+            Retry failed
+          </Button>
+        </div>
+      )}
       <ul className="divide-y divide-border">
         {items.map((document) => {
           const isCurrent = document.id === currentId;

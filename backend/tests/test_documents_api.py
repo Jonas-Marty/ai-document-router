@@ -250,3 +250,61 @@ class TestRegenerate:
 
     def test_unknown_id_is_a_404(self, client: TestClient) -> None:
         assert client.post("/api/v1/documents/nope/regenerate").status_code == 404
+
+
+class TestRetryFailed:
+    """The poller only looks at pending documents, so a failed proposal stays failed for
+    good. When the *configuration* was the problem -- no allowed folders, a rejected AI
+    request -- one fix in Settings has to be able to make all of them retryable at once."""
+
+    def _add(self, name: str, **kwargs: object) -> str:
+        with Session(db.engine) as session:
+            document = make_document(name, **kwargs)  # type: ignore[arg-type]
+            document.proposal_error = "No allowed folders are configured yet."
+            session.add(document)
+            session.commit()
+            return document.id
+
+    def test_resets_every_failed_proposal_in_the_queue(self, client: TestClient) -> None:
+        first = self._add("a.pdf", proposal_status=ProposalStatus.failed)
+        second = self._add("b.pdf", proposal_status=ProposalStatus.failed)
+
+        body = client.post("/api/v1/documents/retry-failed").json()
+
+        assert body["retried"] == 2
+        for document_id in (first, second):
+            document = client.get(f"/api/v1/documents/{document_id}").json()
+            assert document["proposal_status"] == "pending"
+            assert document["proposal_error"] is None
+
+    def test_leaves_ready_proposals_alone(self, client: TestClient) -> None:
+        ready = self._add("ready.pdf", proposal_status=ProposalStatus.ready)
+
+        assert client.post("/api/v1/documents/retry-failed").json()["retried"] == 0
+        assert client.get(f"/api/v1/documents/{ready}").json()["proposal_status"] == "ready"
+
+    def test_leaves_already_filed_documents_alone(self, client: TestClient) -> None:
+        """Their proposal_status survives filing, and re-proposing one would spend an LLM
+        call on a document nobody is going to review again."""
+        moved = self._add(
+            "moved.pdf", status=DocumentStatus.moved, proposal_status=ProposalStatus.failed
+        )
+
+        assert client.post("/api/v1/documents/retry-failed").json()["retried"] == 0
+        assert client.get(f"/api/v1/documents/{moved}").json()["proposal_status"] == "failed"
+
+    def test_retries_a_skipped_document(self, client: TestClient) -> None:
+        """Skipped is still in the queue -- it is at the back of it, not out of it."""
+        self._add(
+            "skipped.pdf",
+            status=DocumentStatus.skipped,
+            proposal_status=ProposalStatus.failed,
+        )
+
+        assert client.post("/api/v1/documents/retry-failed").json()["retried"] == 1
+
+    def test_is_a_no_op_when_nothing_failed(self, client: TestClient) -> None:
+        assert client.post("/api/v1/documents/retry-failed").json()["retried"] == 0
+
+    def test_needs_a_session(self, anonymous_client: TestClient) -> None:
+        assert anonymous_client.post("/api/v1/documents/retry-failed").status_code == 401

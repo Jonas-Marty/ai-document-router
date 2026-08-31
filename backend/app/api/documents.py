@@ -12,6 +12,7 @@ from app.schemas import (
     DocumentResponse,
     HistoryEntryRead,
     QueueResponse,
+    RetriedResponse,
     RoutedResponse,
 )
 from app.services import documents as documents_service
@@ -27,6 +28,17 @@ def read_queue(
 ) -> QueueResponse:
     items, total = documents_service.queue(session, limit)
     return QueueResponse(items=items, total_pending=total)
+
+
+@router.post("/documents/retry-failed")
+def retry_failed_proposals(session: SessionDep, _user: CurrentUserDep) -> RetriedResponse:
+    """Queue a fresh proposal for every document whose last one failed.
+
+    Declared above `/documents/{document_id}` so the literal path wins the match. Same
+    asynchronous contract as the single-document regenerate: this only resets status, and
+    the poller does the work on its next tick.
+    """
+    return RetriedResponse(retried=documents_service.retry_failed_proposals(session))
 
 
 @router.get("/documents/{document_id}")

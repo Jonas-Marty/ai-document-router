@@ -700,3 +700,20 @@ meaningful. One line of "why" each; not a full ADR log.
   capped at `QUEUE_LIMIT`, so on a backlog the list is a window onto the front of the queue.
   The count has to be the size of the backlog, and the list says how many are behind it —
   otherwise the header count visibly fails to add up to the rows underneath it.
+- **A failed proposal is retryable in bulk, from the queue panel.** `generate_proposals`
+  only ever selects `proposal_status=pending`, so a proposal that failed stays failed for
+  good. That is right for a per-document problem and wrong for the common one: the failures
+  are usually a single piece of configuration wearing many hats ("No allowed folders are
+  configured yet", "The AI endpoint rejected the request"), and fixing it in Settings left
+  every already-failed document stranded, reachable only by opening each one and pressing
+  `Try again`. `POST /documents/retry-failed` resets the lot; the poller does the work.
+- **Retrying does not filter out documents that failed for a permanent reason.** A missing
+  text layer will fail again, but telling those apart means pattern-matching
+  `proposal_error` prose, and they re-fail during extraction without costing an LLM call.
+  Documents that have already been filed *are* excluded — they keep their `proposal_status`
+  after moving, and re-proposing one would spend a call on something nobody will review.
+- **Retry is an explicit action rather than something a settings save triggers.** Saving
+  Settings could reset every failed document automatically, which would be more magical and
+  occasionally right, but it would also re-download the whole backlog from WebDAV on a save
+  that changed nothing relevant. A button next to the errors it fixes is more predictable,
+  and it also covers a transient AI outage, which no settings change would.

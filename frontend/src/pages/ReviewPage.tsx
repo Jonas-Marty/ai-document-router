@@ -23,6 +23,7 @@ import {
   documentContentUrl,
   useApproveDocument,
   useRegenerateDocument,
+  useRetryFailedProposals,
   useSkipDocument,
   useTrashDocument,
 } from "@/hooks/useDocument";
@@ -35,6 +36,24 @@ import type { Document } from "@/services/api/types";
 export default function ReviewPage() {
   const queue = useReviewQueue();
   const [queueOpen, setQueueOpen] = useState(false);
+  const retryFailed = useRetryFailedProposals();
+
+  function handleRetryFailed() {
+    retryFailed.mutate(undefined, {
+      // The count comes from the server, not from the visible rows: /queue is capped, so a
+      // backlog can hold failures this list never showed.
+      onSuccess: ({ retried }) =>
+        toast.success(
+          retried === 1
+            ? "Asked for 1 proposal again. It appears as the poller gets to it."
+            : `Asked for ${retried} proposals again. They appear as the poller gets to them.`,
+        ),
+      onError: (error) =>
+        toast.error(
+          error instanceof ApiError ? error.message : "Couldn't retry the failed proposals.",
+        ),
+    });
+  }
 
   return (
     <div className="mx-auto flex h-full max-w-6xl flex-col">
@@ -86,6 +105,8 @@ export default function ReviewPage() {
         totalPending={queue.totalPending}
         currentId={queue.currentDocument?.id}
         onSelect={queue.selectDocument}
+        onRetryFailed={handleRetryFailed}
+        isRetryingFailed={retryFailed.isPending}
       />
     </div>
   );

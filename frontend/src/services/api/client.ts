@@ -14,6 +14,7 @@ import type {
   HealthResponse,
   HistoryPage,
   QueueResponse,
+  RetriedResponse,
   RevertResponse,
   RoutedResponse,
   Settings,
@@ -34,6 +35,7 @@ export interface ApiClient {
   skipDocument(id: string): Promise<Document>;
   trashDocument(id: string): Promise<RoutedResponse>;
   regenerateDocument(id: string): Promise<Document>;
+  retryFailedProposals(): Promise<RetriedResponse>;
 
   getFolderTree(path?: string): Promise<FolderNode[]>;
   createFolder(body: CreateFolderRequest): Promise<FolderNode>;
@@ -97,6 +99,10 @@ export class HttpApiClient implements ApiClient {
       `/documents/${encodeURIComponent(id)}/regenerate`,
     );
     return response.document;
+  }
+
+  retryFailedProposals(): Promise<RetriedResponse> {
+    return this.request<RetriedResponse>("POST", "/documents/retry-failed");
   }
 
   getFolderTree(path?: string): Promise<FolderNode[]> {

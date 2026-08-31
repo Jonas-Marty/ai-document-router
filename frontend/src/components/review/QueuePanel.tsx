@@ -11,6 +11,8 @@ export interface QueuePanelProps {
   totalPending: number;
   currentId: string | undefined;
   onSelect: (id: string) => void;
+  onRetryFailed: () => void;
+  isRetryingFailed: boolean;
 }
 
 /** The queue overview, in the chrome this app already uses for a secondary surface: a dialog
@@ -25,6 +27,8 @@ export function QueuePanel({
   totalPending,
   currentId,
   onSelect,
+  onRetryFailed,
+  isRetryingFailed,
 }: QueuePanelProps) {
   const isDesktop = useIsDesktop();
   const heading = `Open documents (${totalPending})`;
@@ -35,7 +39,14 @@ export function QueuePanel({
   }
 
   const body = (
-    <QueueList items={items} totalPending={totalPending} currentId={currentId} onSelect={choose} />
+    <QueueList
+      items={items}
+      totalPending={totalPending}
+      currentId={currentId}
+      onSelect={choose}
+      onRetryFailed={onRetryFailed}
+      isRetryingFailed={isRetryingFailed}
+    />
   );
 
   if (isDesktop) {

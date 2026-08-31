@@ -313,6 +313,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/documents/{id}/approve` | `{ final_name, final_folder_path, document_date }` | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
+| POST | `/documents/retry-failed` | — | `{ retried: number }` — every failed proposal still in the queue goes back to `pending` |
 | POST | `/documents/{id}/regenerate` | — | `{ document }` — re-runs the AI proposal |
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
 | POST | `/folders` | `{ parent_path, name }` | `FolderNode` |
@@ -597,6 +598,10 @@ nothing is not an error.
   proposal), its destination folder, and whether it is waiting on the AI, failed, or skipped.
   Picking a row makes that document current and closes the panel; the queue is not reordered.
   `/queue` is capped, so a backlog larger than the page says how many are behind the rows.
+  When any listed document has failed, the panel offers a bulk `Retry failed`, hitting
+  `/documents/retry-failed`. The poller never revisits a failed proposal on its own, so
+  without this a setting corrected after the fact cannot heal a queue that already failed
+  against the old one.
 - Refetch on a 60 s interval and on window refocus.
 - `proposal_status = "pending"`: form skeleton, actions disabled, "Waiting for the AI
   proposal."
