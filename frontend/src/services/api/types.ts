@@ -47,7 +47,7 @@ export interface RetriedResponse {
   retried: number;
 }
 
-export type CompareMethod = "text_layer" | "ocr" | "vision";
+export type CompareMethod = "text_layer" | "ocr" | "markdown";
 
 /** One way of reading a document, and what it proposed. `proposal` and `error` are
  * mutually exclusive: a method either produced something or said why it couldn't. */
@@ -130,15 +130,44 @@ export interface Settings {
   trash_folder_path: string;
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
-  ai_endpoint_url: string;
-  ai_model_name: string;
-  vision_model_names: string[]; // extra models offered in the review screen's comparison
   store_ocr_text: boolean; // file a searchable copy of a scan instead of the original
-  ai_api_key_set: boolean; // never the key itself
 }
 
-export interface SettingsUpdate extends Omit<Settings, "ai_api_key_set"> {
-  ai_api_key?: string; // omitted or empty = leave unchanged
+export type SettingsUpdate = Settings;
+
+/** The two jobs a model can be given, in the order they run: a vision model reads the pages
+ * into markdown, then a text model chooses the filename from what was read. */
+export type AiTask = "extraction" | "filing";
+
+export interface AiEndpoint {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key_set: boolean; // never the key itself
+  used_by: AiTask[]; // tasks that would lose a step if this were removed
+}
+
+export interface AiEndpointWrite {
+  name: string;
+  base_url: string;
+  api_key?: string; // omitted or empty = leave the stored key unchanged
+}
+
+export interface AiTaskStep {
+  endpoint_id: string;
+  endpoint_name: string;
+  model_name: string;
+}
+
+/** A task's endpoints in the order they are tried: the first that answers wins, and the
+ * rest exist for the days it doesn't. */
+export interface AiTaskChain {
+  task: AiTask;
+  steps: AiTaskStep[];
+}
+
+export interface AiTaskChainUpdate {
+  steps: { endpoint_id: string; model_name: string }[];
 }
 
 export interface AuthConfig {
@@ -160,8 +189,9 @@ export interface Credentials {
 }
 
 export interface AiModelsRequest {
-  ai_endpoint_url: string; // the URL in the form, which may not be saved yet
-  ai_api_key?: string; // omitted or empty = test with the stored key
+  base_url: string; // the URL in the form, which may not be saved yet
+  api_key?: string; // omitted or empty = test with the saved endpoint's key
+  endpoint_id?: string; // set once the endpoint is saved, so the stored key can be used
 }
 
 export interface AiModelsResponse {

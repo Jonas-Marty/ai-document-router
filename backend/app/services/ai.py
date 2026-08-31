@@ -171,6 +171,46 @@ def request_proposal(
     return _validate(content, model_name, allowed_roots)
 
 
+def request_completion(
+    *,
+    endpoint_url: str,
+    model_name: str,
+    api_key: str | None,
+    system_prompt: str,
+    prompt: str,
+    images: list[bytes] | None = None,
+    client: httpx.Client | None = None,
+) -> str:
+    """Call the model and hand back its reply verbatim.
+
+    The prose counterpart to request_proposal: no JSON mode and no validation, because the
+    answer wanted here is a transcription rather than a set of fields. Raises AIUnavailable
+    for anything that stopped the endpoint from replying, so a caller walking a fallback
+    chain sees endpoint trouble as endpoint trouble.
+    """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    url = f"{endpoint_url.rstrip('/')}/chat/completions"
+    payload: dict[str, object] = {
+        "model": model_name,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _user_content(prompt, images)},
+        ],
+    }
+
+    owned = client is None
+    http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+    try:
+        body = _post_with_retry(url, payload, headers, http)
+    except _Rejected as rejected:
+        raise AIUnavailable(rejected.message) from rejected
+    finally:
+        if owned:
+            http.close()
+
+    return _extract_message_content(body)
+
+
 def _payload(
     model_name: str, prompt: str, images: list[bytes] | None, *, json_mode: bool
 ) -> dict[str, object]:

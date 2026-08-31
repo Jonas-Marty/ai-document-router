@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
-import { AiSection } from "@/components/settings/AiSection";
+import { AiEndpointsSection } from "@/components/settings/AiEndpointsSection";
+import { AiTasksSection } from "@/components/settings/AiTasksSection";
 import { FoldersSection } from "@/components/settings/FoldersSection";
 import { NamingSection } from "@/components/settings/NamingSection";
 import { OcrSection } from "@/components/settings/OcrSection";
@@ -9,14 +10,15 @@ import { useSetNavigationGuard } from "@/hooks/useNavigationGuard";
 import { useSettings } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
 
-type SectionName = "folders" | "naming" | "ai" | "ocr";
+type SectionName = "folders" | "naming" | "endpoints" | "tasks" | "ocr";
 
 export default function SettingsPage() {
   const settings = useSettings();
   const [dirtySections, setDirtySections] = useState<Record<SectionName, boolean>>({
     folders: false,
     naming: false,
-    ai: false,
+    endpoints: false,
+    tasks: false,
     ocr: false,
   });
 
@@ -31,8 +33,12 @@ export default function SettingsPage() {
     (dirty: boolean) => setDirtySections((prev) => ({ ...prev, naming: dirty })),
     [],
   );
-  const onAiDirtyChange = useCallback(
-    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, ai: dirty })),
+  const onEndpointsDirtyChange = useCallback(
+    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, endpoints: dirty })),
+    [],
+  );
+  const onTasksDirtyChange = useCallback(
+    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, tasks: dirty })),
     [],
   );
   const onOcrDirtyChange = useCallback(
@@ -57,7 +63,8 @@ export default function SettingsPage() {
         <>
           <FoldersSection settings={settings.data} onDirtyChange={onFoldersDirtyChange} />
           <NamingSection settings={settings.data} onDirtyChange={onNamingDirtyChange} />
-          <AiSection settings={settings.data} onDirtyChange={onAiDirtyChange} />
+          <AiEndpointsSection onDirtyChange={onEndpointsDirtyChange} />
+          <AiTasksSection onDirtyChange={onTasksDirtyChange} />
           <OcrSection settings={settings.data} onDirtyChange={onOcrDirtyChange} />
         </>
       ) : null}

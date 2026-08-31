@@ -12,8 +12,18 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings as config
 from app.jobs import poller
-from app.models import AppSettings, Document, DocumentStatus, OcrStatus, Proposal, ProposalStatus
-from app.services import ai
+from app.models import (
+    AiEndpoint,
+    AiTask,
+    AiTaskStep,
+    AppSettings,
+    Document,
+    DocumentStatus,
+    OcrStatus,
+    Proposal,
+    ProposalStatus,
+)
+from app.services import ai, transcribe
 from app.services.times import utc_now
 from app.services.webdav import WebDavEntry
 
@@ -67,6 +77,10 @@ def session() -> Iterator[Session]:
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
         s.add(AppSettings(id=1, allowed_root_folders=["/Documents"], trash_folder_path="/Trash"))
+        # A filing chain with one step: the poller takes its endpoint and model from here,
+        # so without it every proposal fails before it reaches the stubbed request_proposal.
+        s.add(AiEndpoint(id="ep", name="Local", base_url="http://ai.test/v1", created_at=utc_now()))
+        s.add(AiTaskStep(task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"))
         s.commit()
         yield s
 
@@ -469,6 +483,12 @@ class TestFullTick:
             setup.add(
                 AppSettings(id=1, allowed_root_folders=["/Documents"], trash_folder_path="/Trash")
             )
+            setup.add(
+                AiEndpoint(
+                    id="ep", name="Local", base_url="http://ai.test/v1", created_at=utc_now()
+                )
+            )
+            setup.add(AiTaskStep(task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"))
             setup.commit()
 
         monkeypatch.setattr(poller.db, "engine", engine)
@@ -684,3 +704,126 @@ class TestPartialWriteGuardTimezones:
         )
 
         assert poller._is_ready(aware) is True
+
+
+class TestExtractionStage:
+    """SPEC 6.3a: when an extraction chain exists, the filing model reads markdown off the
+    pages rather than the PDF's flat text layer -- and a failure there is a worse reading,
+    not a stopped document."""
+
+    def _prepare(
+        self, session: Session, monkeypatch: pytest.MonkeyPatch, *, text: str = "flat text " * 5
+    ) -> Document:
+        from app.services.extraction import ExtractedDocument
+
+        document = TestProposals()._document(session)
+        monkeypatch.setattr(
+            poller.extraction,
+            "extract",
+            lambda *a, **k: ExtractedDocument(
+                content_hash="h",
+                file_size_bytes=100,
+                mime_type="application/pdf",
+                page_count=1,
+                text=text,
+                text_error=None,
+            ),
+        )
+        session.add(
+            AiTaskStep(task=AiTask.extraction, position=0, endpoint_id="ep", model_name="v")
+        )
+        session.commit()
+        return document
+
+    def _capture_prompt(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+        seen: dict[str, str] = {}
+
+        def propose(**kwargs: Any) -> ai.Proposal:
+            seen["prompt"] = kwargs["prompt"]
+            return ai.Proposal(
+                suggested_name="n",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.9,
+                reasoning_text="r",
+                model_name="m",
+            )
+
+        monkeypatch.setattr(poller.ai, "request_proposal", propose)
+        return seen
+
+    def test_the_filing_model_is_given_the_markdown_not_the_text_layer(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._prepare(session, monkeypatch)
+        seen = self._capture_prompt(monkeypatch)
+        monkeypatch.setattr(
+            poller.transcribe,
+            "transcribe",
+            lambda data, steps: transcribe.Transcription(
+                markdown="# Swisscom\n\n| Total | 42.00 |", model_label="Local · v"
+            ),
+        )
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
+        assert "| Total | 42.00 |" in seen["prompt"]
+        assert "flat text" not in seen["prompt"]
+        session.refresh(document)
+        assert document.extraction_model == "Local · v"
+        assert document.extraction_error is None
+
+    def test_a_failed_transcription_files_from_the_text_layer_and_records_why(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._prepare(session, monkeypatch)
+        seen = self._capture_prompt(monkeypatch)
+
+        def unavailable(data: bytes, steps: Any) -> transcribe.Transcription:
+            raise ai.AIUnavailable("Every extraction endpoint failed.")
+
+        monkeypatch.setattr(poller.transcribe, "transcribe", unavailable)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
+        assert "flat text" in seen["prompt"]
+        session.refresh(document)
+        assert document.proposal_status == ProposalStatus.ready
+        assert document.extracted_markdown is None
+        assert document.extraction_error == "Every extraction endpoint failed."
+
+    def test_regenerating_reuses_the_markdown_rather_than_reading_the_pages_again(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._prepare(session, monkeypatch)
+        seen = self._capture_prompt(monkeypatch)
+        document.extracted_markdown = "# Already read"
+        session.add(document)
+        session.commit()
+
+        def fail(data: bytes, steps: Any) -> transcribe.Transcription:
+            raise AssertionError("The pages should not have been read a second time.")
+
+        monkeypatch.setattr(poller.transcribe, "transcribe", fail)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
+        assert "# Already read" in seen["prompt"]
+
+    def test_without_an_extraction_chain_the_text_layer_is_used_unchanged(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._prepare(session, monkeypatch)
+        for existing in session.exec(
+            select(AiTaskStep).where(AiTaskStep.task == AiTask.extraction)
+        ).all():
+            session.delete(existing)
+        session.commit()
+        seen = self._capture_prompt(monkeypatch)
+
+        def fail(data: bytes, steps: Any) -> transcribe.Transcription:
+            raise AssertionError("Nothing is configured to read the pages.")
+
+        monkeypatch.setattr(poller.transcribe, "transcribe", fail)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
+        assert "flat text" in seen["prompt"]
+        session.refresh(document)
+        assert document.extraction_error is None

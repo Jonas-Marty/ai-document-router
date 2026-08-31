@@ -3,6 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, field_serializer
 
 from app.models import (
+    AiTask,
     Document,
     DocumentStatus,
     HistoryAction,
@@ -86,7 +87,7 @@ class RetriedResponse(BaseModel):
 class MethodResultRead(BaseModel):
     """One way of reading a document, and what it proposed."""
 
-    method: str  # "text_layer" | "ocr" | "vision"
+    method: str  # "text_layer" | "ocr" | "markdown"
     model_name: str
     label: str
     text_preview: str
@@ -134,11 +135,7 @@ class SettingsRead(BaseModel):
     trash_folder_path: str
     filename_pattern: str | None
     filename_pattern_hint: str | None
-    ai_endpoint_url: str
-    ai_model_name: str
-    vision_model_names: list[str]
     store_ocr_text: bool
-    ai_api_key_set: bool
 
 
 class SettingsUpdate(BaseModel):
@@ -146,18 +143,56 @@ class SettingsUpdate(BaseModel):
     trash_folder_path: str
     filename_pattern: str | None = None
     filename_pattern_hint: str | None = None
-    ai_endpoint_url: str
-    ai_model_name: str
-    vision_model_names: list[str] = []
     store_ocr_text: bool = True
-    ai_api_key: str | None = None
+
+
+class AiEndpointRead(BaseModel):
+    """CLAUDE.md rule 5: the key itself never leaves the backend, only whether one is set."""
+
+    id: str
+    name: str
+    base_url: str
+    api_key_set: bool
+    used_by: list[AiTask]
+
+
+class AiEndpointWrite(BaseModel):
+    name: str
+    base_url: str
+    # Omitted or empty on an update means "keep the stored key", because the form is never
+    # given the key back and so cannot send it again.
+    api_key: str | None = None
+
+
+class AiTaskStepWrite(BaseModel):
+    endpoint_id: str
+    model_name: str
+
+
+class AiTaskStepRead(BaseModel):
+    endpoint_id: str
+    endpoint_name: str
+    model_name: str
+
+
+class AiTaskChainRead(BaseModel):
+    """A task's endpoints in the order they are tried."""
+
+    task: AiTask
+    steps: list[AiTaskStepRead]
+
+
+class AiTaskChainUpdate(BaseModel):
+    steps: list[AiTaskStepWrite]
 
 
 class AiModelsRequest(BaseModel):
-    """The endpoint under test is the one typed into the form, which may not be saved yet."""
+    """The endpoint under test may be one being typed into the add form, so it is described
+    by URL rather than by id. A blank key on a saved endpoint means "use the stored one"."""
 
-    ai_endpoint_url: str
-    ai_api_key: str | None = None  # omitted or empty = test with the stored key
+    base_url: str
+    api_key: str | None = None
+    endpoint_id: str | None = None
 
 
 class AiModelsResponse(BaseModel):

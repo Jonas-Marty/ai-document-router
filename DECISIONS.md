@@ -813,3 +813,31 @@ meaningful. One line of "why" each; not a full ADR log.
   leave the real entry to age out. `content_hash` and `file_size_bytes` are updated to
   describe what is actually on the server, because the poller dedupes queued documents by
   hash and a stale one would make a re-ingest look like a new document.
+- **Reading and naming became two tasks, each with an ordered endpoint chain.** SPEC 6.3a.
+  The model that reads a scanned table well is not the model that picks a filename well, and
+  a flat blob of `pypdf` text throws away exactly the structure a filing decision turns on.
+  Splitting them lets a vision model transcribe to markdown and a text model file from that,
+  and makes "run this locally, fall back to a provider" a matter of chain order rather than
+  a redeploy.
+- **A chain falls through on `AIUnavailable` only.** That is an endpoint problem, which is
+  precisely what the next endpoint is for. Anything else — a reply that failed validation,
+  say — is the model having *answered*; re-asking a different one would hide a problem the
+  person needs to see and spend a second call doing it.
+- **Extraction runs on every document, not only scans without a text layer.** A markdown
+  reading of an invoice's line items beats a flat one whether or not the PDF happens to carry
+  text. It is never fatal: an unconfigured, unreachable or failing extraction records its
+  reason in `Document.extraction_error` and filing proceeds from the text layer, because a
+  document that cannot be read a better way still deserves to be read.
+- **Deleting an endpoint a task still uses is refused, not cascaded.** Silently shortening a
+  chain would change what happens to every future document without saying so. The 422 names
+  the task, which is the one thing needed to fix it.
+- **A chain is replaced wholesale on save, not diffed.** It is an ordered list the user edits
+  as a whole; reconciling it row by row would be work in service of nothing.
+- **The comparison view's third method is now Markdown extraction, and `vision_model_names`
+  is gone.** SPEC 6.4a. The old method asked each configured vision model to file in one
+  shot, which compared two variables at once. Running the real two-stage path instead holds
+  the filing model constant, so what is being judged is the *reading* — which is the question
+  the view exists to answer — and removes a settings field that only that view ever read.
+- **Named endpoints, and the name is what appears in errors.** "Every filing endpoint failed.
+  Tried: Workshop PC · qwen3 (connection refused); Infomaniak · gpt-4o (401)" is a sentence
+  someone can act on. A URL is not.

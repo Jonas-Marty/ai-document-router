@@ -54,10 +54,9 @@ export function NamingSection({
 
   function onSubmit(values: NamingFormValues) {
     const trimmedPattern = values.filename_pattern.trim();
-    const { ai_api_key_set: _aiApiKeySet, ...rest } = settings;
     updateSettings.mutate(
       {
-        ...rest,
+        ...settings,
         filename_pattern: trimmedPattern || null,
         filename_pattern_hint: values.filename_pattern_hint.trim() || null,
       },

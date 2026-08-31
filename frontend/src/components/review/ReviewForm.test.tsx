@@ -46,11 +46,7 @@ const emptySettings: Settings = {
   trash_folder_path: "/Trash",
   filename_pattern: null,
   filename_pattern_hint: null,
-  ai_endpoint_url: "http://localhost:11434",
-  ai_model_name: "test-model",
-  vision_model_names: [],
   store_ocr_text: true,
-  ai_api_key_set: false,
 };
 
 function folderContextOf(overrides: Partial<FolderContext> = {}): FolderContext {

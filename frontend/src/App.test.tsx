@@ -64,6 +64,15 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
     if (url.includes("/history")) {
       return Promise.resolve(healthResponse({ items: [], next_cursor: null }));
     }
+    if (url.includes("/ai/endpoints")) return Promise.resolve(healthResponse([]));
+    if (url.includes("/ai/tasks")) {
+      return Promise.resolve(
+        healthResponse([
+          { task: "extraction", steps: [] },
+          { task: "filing", steps: [] },
+        ]),
+      );
+    }
     if (url.includes("/settings")) {
       return Promise.resolve(
         healthResponse({
@@ -71,11 +80,7 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
           trash_folder_path: "/Trash",
           filename_pattern: null,
           filename_pattern_hint: null,
-          ai_endpoint_url: "",
-          ai_model_name: "",
-          vision_model_names: [],
           store_ocr_text: true,
-          ai_api_key_set: false,
         }),
       );
     }

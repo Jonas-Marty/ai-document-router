@@ -62,10 +62,9 @@ export function FoldersSection({
   }, [isDirty, onDirtyChange]);
 
   function onSubmit(values: FoldersFormValues) {
-    const { ai_api_key_set: _aiApiKeySet, ...rest } = settings;
     updateSettings.mutate(
       {
-        ...rest,
+        ...settings,
         allowed_root_folders: values.allowed_root_folders.map((r) => r.value.trim()),
         trash_folder_path: values.trash_folder_path.trim(),
       },

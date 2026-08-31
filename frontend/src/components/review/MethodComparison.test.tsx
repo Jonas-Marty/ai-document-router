@@ -50,9 +50,9 @@ describe("MethodComparison", () => {
       results: [
         result(),
         result({
-          method: "vision",
+          method: "markdown",
           model_name: "qwen2.5vl:7b",
-          label: "Vision · qwen2.5vl:7b",
+          label: "Markdown · Local · qwen2.5vl:7b",
           proposal: {
             suggested_name: "2026.04.16 Helvetia Versicherungspolice",
             target_folder_path: "/Documents/Insurance",
@@ -68,7 +68,7 @@ describe("MethodComparison", () => {
     });
 
     expect(screen.getByText("Text layer")).toBeInTheDocument();
-    expect(screen.getByText("Vision · qwen2.5vl:7b")).toBeInTheDocument();
+    expect(screen.getByText("Markdown · Local · qwen2.5vl:7b")).toBeInTheDocument();
     expect(screen.getByText("2026.04.16 Helvetia Police.pdf")).toBeInTheDocument();
     expect(screen.getByText("2026.04.16 Helvetia Versicherungspolice.pdf")).toBeInTheDocument();
   });

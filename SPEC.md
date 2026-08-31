@@ -65,11 +65,14 @@ ai-document-router/
 │       │   ├── documents.py
 │       │   ├── folders.py
 │       │   ├── history.py
+│       │   ├── ai.py         # endpoints + task chains
 │       │   └── settings.py
 │       ├── services/
 │       │   ├── webdav.py      # all WebDAV I/O
 │       │   ├── extraction.py  # pypdf text + metadata
 │       │   ├── ai.py          # LLM call, prompt, response parsing
+│       │   ├── ai_tasks.py    # named endpoints, task chains, fallback
+│       │   ├── transcribe.py  # pages -> markdown (the extraction task)
 │       │   ├── crypto.py      # Fernet encrypt/decrypt for stored secrets
 │       │   └── router.py      # approve / trash / revert orchestration
 │       └── jobs/
@@ -118,6 +121,9 @@ ai-document-router/
 | `proposal_error` | str \| null | |
 | `ocr_status` | enum | `not_needed` \| `pending` \| `ready` \| `failed` — see 6.2a |
 | `ocr_error` | str \| null | why no searchable copy could be made |
+| `extracted_markdown` | str \| null | what the extraction task read off the pages (6.3a) |
+| `extraction_model` | str \| null | which endpoint · model read it |
+| `extraction_error` | str \| null | why extraction was skipped or failed; filing falls back to the text layer |
 | `error_message` | str \| null | set when `status = failed` |
 
 **`proposal`** — one-to-one with document, replaced wholesale on regeneration.
@@ -158,11 +164,27 @@ ai-document-router/
 | `trash_folder_path` | str |
 | `filename_pattern` | str \| null — regex, soft validation |
 | `filename_pattern_hint` | str \| null |
-| `ai_endpoint_url` | str |
-| `ai_model_name` | str |
-| `vision_model_names` | list[str] — extra models offered on the comparison view only |
 | `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
-| `ai_api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
+
+**`ai_endpoint`** — one place a model request can be sent. Any number of them (6.3a).
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `name` | str, unique — the user's own label ("Workshop PC", "Infomaniak") |
+| `base_url` | str |
+| `api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
+| `created_at` | datetime |
+
+**`ai_task_step`** — one rung of one task's fallback chain.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `task` | enum `extraction` \| `filing` |
+| `position` | int — 0 is tried first |
+| `endpoint_id` | FK ai_endpoint.id |
+| `model_name` | str |
 
 **`user`** — password and OIDC are two ways into the same row.
 
@@ -268,13 +290,41 @@ export interface Settings {
   trash_folder_path: string;
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
-  ai_endpoint_url: string;
-  ai_model_name: string;
-  ai_api_key_set: boolean;      // never the key itself
+  store_ocr_text: boolean;
 }
 
-export interface SettingsUpdate extends Omit<Settings, "ai_api_key_set"> {
-  ai_api_key?: string;          // omitted or empty = leave unchanged
+export type SettingsUpdate = Settings;
+
+export type AiTask = "extraction" | "filing";
+
+export interface AiEndpoint {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key_set: boolean;         // never the key itself
+  used_by: AiTask[];            // tasks that would lose a step if this were removed
+}
+
+export interface AiEndpointWrite {
+  name: string;
+  base_url: string;
+  api_key?: string;             // omitted or empty = leave the stored key unchanged
+}
+
+export interface AiTaskStep {
+  endpoint_id: string;
+  endpoint_name: string;
+  model_name: string;
+}
+
+/** A task's endpoints in the order they are tried: the first that answers wins. */
+export interface AiTaskChain {
+  task: AiTask;
+  steps: AiTaskStep[];
+}
+
+export interface AiTaskChainUpdate {
+  steps: { endpoint_id: string; model_name: string }[];
 }
 
 export interface AuthConfig {
@@ -296,8 +346,9 @@ export interface Credentials {
 }
 
 export interface AiModelsRequest {
-  ai_endpoint_url: string;      // as typed in the form; need not be saved yet
-  ai_api_key?: string;          // omitted or empty = test with the stored key
+  base_url: string;             // as typed in the form; need not be saved yet
+  api_key?: string;             // omitted or empty = test with the saved endpoint's key
+  endpoint_id?: string;         // set once saved, so the stored key can be used
 }
 
 export interface AiModelsResponse {
@@ -329,7 +380,13 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/history/{id}/revert` | — | `{ history_entry, document }` |
 | GET | `/settings` | — | `Settings` |
 | PUT | `/settings` | `SettingsUpdate` | `Settings` |
-| POST | `/settings/ai/models` | `{ ai_endpoint_url, ai_api_key? }` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
+| GET | `/ai/endpoints` | — | `AiEndpoint[]`, by name |
+| POST | `/ai/endpoints` | `AiEndpointWrite` | `AiEndpoint` |
+| PUT | `/ai/endpoints/{id}` | `AiEndpointWrite` | `AiEndpoint` |
+| DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a task still references it |
+| GET | `/ai/tasks` | — | `AiTaskChain[]`, one per task |
+| PUT | `/ai/tasks/{task}` | `AiTaskChainUpdate` | `AiTaskChain` — replaces the chain wholesale |
+| POST | `/ai/models` | `AiModelsRequest` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
 | GET | `/health` | — | `{ status, webdav_reachable, queue_depth }` |
 | GET | `/auth/config` | — | `AuthConfig` — public |
 | GET | `/auth/me` | — | `AuthUser`, or 401 |
@@ -413,19 +470,25 @@ Only when `store_ocr_text` is on, and only for a PDF whose pages carry no text.
 
 ### 6.3 Proposal generation (`services/ai.py`)
 
+Filing is the second stage of the workflow in 6.3a; extraction is the first.
+
 Input assembled by the backend:
-- Extracted text, first 6000 characters (`pypdf`) — read from the searchable copy (6.2a)
-  when one has been made, otherwise from the file on the server. If there is still no text
-  layer, set `proposal_status=failed` and `proposal_error` to the OCR failure's own reason
-  when there is one, else `"No text layer found in this document."` The document stays fully
-  approvable by hand either way.
+- The document's text, first 6000 characters. Preferred source is `extracted_markdown` from
+  the extraction task, so the model sees headings, tables and line items rather than one
+  flat blob. When extraction is unconfigured or fails, fall back to `pypdf` over the
+  searchable copy (6.2a) if one was made, else over the file on the server, and record why
+  in `extraction_error`. If there is still no text at all, set `proposal_status=failed` and
+  `proposal_error` to the OCR failure's own reason when there is one, else
+  `"No text layer found in this document."` The document stays fully approvable by hand
+  either way.
 - The folder tree under the allowed roots, as an indented path list, depth-capped at 4.
 - Up to 8 example filenames sampled from across those folders, so the model can see the
   naming convention.
 - `filename_pattern_hint` if set.
 
-Call: `POST {ai_endpoint_url}/chat/completions`, OpenAI-compatible, `response_format` JSON,
-30-second timeout, one retry on 5xx or timeout. The model must return exactly:
+Call: `POST {endpoint.base_url}/chat/completions` for the first step of the filing chain,
+OpenAI-compatible, `response_format` JSON, 30-second timeout, one retry on 5xx or timeout.
+The model must return exactly:
 
 ```json
 {
@@ -446,6 +509,39 @@ document text) is stored on `Proposal.prompt_text` alongside the result, so the 
 can show what was actually sent (8.3.5a). `null` for proposals stored before this field
 existed. The system prompt is a fixed constant, not stored per row — the API always returns
 its current text.
+
+### 6.3a AI workflow (`services/ai_tasks.py`, `services/transcribe.py`)
+
+Reading a document and naming it are two different jobs wanting two different models, so they
+are two **tasks**:
+
+- **`extraction`** — pages rendered by `pypdfium2` and sent to a vision model (GOT-OCR 2.0,
+  Qwen-VL, and similar) as OpenAI content parts, two pages per request, asked for markdown.
+  The parts are stitched with a blank line and stored on `Document.extracted_markdown`. No
+  JSON mode and no schema: the reply is prose, and only a wrapping ```` ```markdown ```` fence
+  is stripped.
+- **`filing`** — 6.3, given that markdown.
+
+Extraction runs on **every** document, not only scans without a text layer: a markdown reading
+of a table beats a flat one whether or not the PDF happens to carry text. It is never fatal —
+an unconfigured, unreachable or failing extraction records its reason in `extraction_error`
+and filing proceeds from the text layer.
+
+Each task is configured as an **ordered chain** of `(endpoint, model)` steps. A call walks the
+chain and returns the first answer. That is the whole point: the machine at home is first
+because it is free and private, and a hosted provider sits behind it so a document still gets
+read on the days that machine is off.
+
+**Only `AIUnavailable` moves to the next step** — an endpoint problem is exactly what the next
+endpoint is for. A reply that failed validation is the model having *answered*; re-asking a
+different one would hide a problem the person needs to see and spend a second call doing it.
+An exhausted chain raises with every step's failure named. An empty chain raises
+`NoStepsConfigured`, which reads as "no endpoint is assigned to this task yet".
+
+Endpoints are named, and the name is what appears in failure messages and on the review
+screen (`"Workshop PC · qwen3"`). Deleting one is **refused** while any task still references
+it, rather than quietly shortening that chain. A chain is replaced wholesale on save, not
+diffed — it is an ordered list the user edits as a whole.
 
 ### 6.4 Approve, trash, revert (`services/router.py`)
 
@@ -475,11 +571,14 @@ Reading a document is not one thing, and there is no way to know from the outsid
 works best on a given corpus. `POST /documents/{id}/compare` runs every configured method
 against one document and reports what each proposed, so a person can judge:
 
-- **Text layer** — `pypdf`, the model in `ai_model_name`. What ordinary filing does.
-- **Tesseract OCR** — pages rendered by `pypdfium2`, read by the `tesseract` CLI (`deu+eng`),
-  then the same model. Not ocrmypdf: this wants characters, not a rewritten PDF.
-- **Vision** — one result per entry in `vision_model_names`, each sent the rendered pages as
-  OpenAI content parts with no transcription, so it is unambiguous which input it used.
+- **Text layer** — `pypdf`, flat.
+- **Tesseract OCR** — pages rendered by `pypdfium2`, read by the `tesseract` CLI (`deu+eng`).
+  Not ocrmypdf: this wants characters, not a rewritten PDF.
+- **Markdown extraction** — the production two-stage path: the extraction chain transcribes
+  the pages (6.3a), and that markdown is what gets filed.
+
+All three file through the **same** filing chain, so what is being compared is the *reading*,
+with the model that chooses the filename held constant.
 
 Synchronous and on demand — one model call per method. Nothing is stored: the document's
 own proposal is untouched, and choosing a result only fills the review form. A method that
@@ -535,7 +634,11 @@ forking it. Failures redirect to `/login?error=…` rather than rendering JSON.
 - Trash folder absolute, required, **must not be inside any allowed root** — otherwise
   trashed files become valid targets again and can cycle.
 - `filename_pattern` must compile as a regex; reject on save if it doesn't.
-- `ai_endpoint_url` must parse as `https://` (allow `http://` only for RFC1918 hosts).
+- An endpoint needs a name, unique across endpoints, and a `base_url` that parses as
+  `https://` (allow `http://` only for RFC1918 and localhost hosts — the key travels on
+  that connection).
+- Every step of a task chain needs an endpoint that exists and a non-blank model name.
+  An empty chain is valid: it means the task is switched off.
 - API key is write-only: sent only when non-empty, never returned, never logged, never put
   in the query cache or localStorage.
 
@@ -631,25 +734,33 @@ Empty: "Nothing filed yet. Approved and trashed documents show up here."
 
 One form per section, save disabled until dirty, `Discard changes` alongside, unsaved-changes
 navigation guard. Sections: Folders (allowed roots list, trash folder), Naming (pattern +
-hint, with a live regex validity check), AI (endpoint, model, API key). API key renders as
-`••••••••  (saved)` with helper text "Leave blank to keep the current key."
+hint, with a live regex validity check), AI endpoints, one card per AI task, OCR.
 
-The model field (and each "vision models to compare" entry) is a dropdown of the endpoint's
-`/models` ids, not a text field — opening it is what fetches the list, using the endpoint URL
-and API key currently in the form, so no prior step is required. It is disabled while the
-endpoint URL is empty, since there is nowhere to send the request; the API key is not
-required (some endpoints take none). Each dropdown offers `Enter a model name manually` to
-fall back to free text — for an endpoint that cannot be reached, or one that does not list the
-model actually wanted. On a fetch error the reason shows inside the open dropdown (and under
-the `Test connection` button, see below); the currently configured model still appears as an
-option so a working setting is never blanked by a failed fetch. An endpoint that answers but
-lists nothing is not an error — the dropdown then offers only the current model.
+**AI endpoints.** A list of every configured endpoint — name, URL, a `Key saved` badge, and a
+badge per task using it — with `Edit` and `Remove` on each and `Add endpoint` below. Not a
+single section form: an endpoint is its own resource, so each one saves when *it* is saved.
+The API key field renders `••••••••  (saved)` as its placeholder with helper text "Leave blank
+to keep the current key" — the key is never returned, so blank can only mean "leave it alone".
+Each form has a `Test connection` button that lists the endpoint's `/models` using the URL
+currently *typed*, not the one saved, since finding out the URL is wrong is the point; a saved
+endpoint's stored key is used when the key field is blank. Removing asks for confirmation, and
+the backend's refusal ("still assigned to the filing task") is surfaced verbatim.
 
-AI also has a `Test connection` button that explicitly GETs the endpoint's `/models` with the
-values currently in the form — the URL being tested is the one typed, not the one saved, since
-finding out the URL is wrong is the point. It shares its result with the dropdowns above (so
-opening one after a successful test does not re-fetch) and additionally toasts success or
-failure.
+**AI tasks.** One card per task (6.3a), each an ordered list of steps labelled `First choice`,
+`Fallback 1`, `Fallback 2`… with move-up / move-down / remove, and `Add fallback`. Above them,
+"Tried top to bottom. The first endpoint that answers is used; the rest are there for when it
+can't be reached." An empty chain says what happens instead — extraction falls back to the
+PDF's own text layer; filing proposes nothing at all. Each step picks an endpoint from the
+saved ones and then a model.
+
+The model field is a dropdown of that endpoint's `/models` ids, not a text field — opening it
+is what fetches the list, so no prior step is required, and one list is fetched per endpoint
+and shared across both task cards. It is disabled until an endpoint is chosen, since there is
+nowhere to send the request. Each dropdown offers `Enter a model name manually` to fall back
+to free text — for an endpoint that cannot be reached, or one that does not list the model
+actually wanted. On a fetch error the reason shows inside the open dropdown; the currently
+configured model still appears as an option so a working setting is never blanked by a failed
+fetch. An endpoint that answers but lists nothing is not an error.
 
 ### 8.8 Queue behaviour
 

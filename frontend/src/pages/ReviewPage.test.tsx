@@ -53,11 +53,7 @@ const SETTINGS: Settings = {
   trash_folder_path: "/Trash",
   filename_pattern: null,
   filename_pattern_hint: null,
-  ai_endpoint_url: "https://ai.example.com/v1",
-  ai_model_name: "test-model",
-  vision_model_names: [],
   store_ocr_text: true,
-  ai_api_key_set: true,
 };
 
 const FOLDER_CONTEXT: FolderContext = {
@@ -127,9 +123,9 @@ describe("ReviewPage queue overview", () => {
     vi.mocked(apiClient.compareDocument).mockResolvedValue({
       results: [
         {
-          method: "vision",
+          method: "markdown",
           model_name: "qwen2.5vl:7b",
-          label: "Vision · qwen2.5vl:7b",
+          label: "Markdown · Local · qwen2.5vl:7b",
           text_preview: "",
           proposal: {
             suggested_name: "2026.04.16 Helvetia Police",

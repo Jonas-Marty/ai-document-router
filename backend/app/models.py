@@ -42,6 +42,18 @@ class HistoryAction(enum.StrEnum):
     trashed = "trashed"
 
 
+class AiTask(enum.StrEnum):
+    """The two jobs a model can be given, in the order they run.
+
+    Split because they want different models: reading a page well is a vision problem, and
+    choosing a filename from what was read is a text one. Keeping them separate is what lets
+    the reading happen on a local box and the choosing happen anywhere.
+    """
+
+    extraction = "extraction"
+    filing = "filing"
+
+
 class Document(SQLModel, table=True):
     __tablename__ = "document"
 
@@ -61,6 +73,13 @@ class Document(SQLModel, table=True):
     ocr_status: OcrStatus = OcrStatus.not_needed
     ocr_error: str | None = None
     error_message: str | None = None
+    # What the extraction task read off the pages, kept so re-running the filing task (a
+    # regenerate, a changed folder list) does not pay for the pages to be read again.
+    extracted_markdown: str | None = None
+    extraction_model: str | None = None
+    # Set when extraction was configured and still failed. Not fatal on its own: filing falls
+    # back to the PDF's own text layer, and this says why the better input is missing.
+    extraction_error: str | None = None
 
 
 class Proposal(SQLModel, table=True):
@@ -105,18 +124,46 @@ class AppSettings(SQLModel, table=True):
     trash_folder_path: str = ""
     filename_pattern: str | None = None
     filename_pattern_hint: str | None = None
-    ai_endpoint_url: str = ""
-    ai_model_name: str = ""
-    # Extra models offered on the review screen's method comparison, read from the same
-    # endpoint and key as ai_model_name. Empty means "don't offer a vision comparison";
-    # nothing here ever runs on a poller tick.
-    vision_model_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # When a scanned document has no text layer, OCR one in and file that copy instead of
     # the original. Settable rather than always-on because it is the only thing in this app
     # that writes *content* to WebDAV, and the person whose archive it is should be able to
     # stop it without redeploying.
     store_ocr_text: bool = True
-    ai_api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
+
+
+class AiEndpoint(SQLModel, table=True):
+    """One OpenAI-compatible server, named by the person who added it.
+
+    Named rather than positional because these are chosen from lists in the UI and quoted
+    back in failure messages: "Couldn't reach Local Ollama" is something you can act on,
+    where a URL or an id is something you have to go look up first.
+    """
+
+    __tablename__ = "ai_endpoint"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    base_url: str
+    api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
+    created_at: datetime
+
+
+class AiTaskStep(SQLModel, table=True):
+    """One (endpoint, model) pair to try for a task, and when to try it.
+
+    The rows for a task form a fallback chain in `position` order: a self-hosted model first,
+    a hosted provider behind it, so a document still gets read when the machine at home is
+    off. Both the endpoint and the model are per step -- the same endpoint can appear twice
+    with different models, and the same model name can mean different things on two servers.
+    """
+
+    __tablename__ = "ai_task_step"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    task: AiTask = Field(index=True)
+    position: int
+    endpoint_id: str = Field(foreign_key="ai_endpoint.id", index=True)
+    model_name: str
 
 
 class User(SQLModel, table=True):

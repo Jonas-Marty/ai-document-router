@@ -108,22 +108,31 @@ export const namingFormSchema = z.object({
 
 export type NamingFormValues = z.infer<typeof namingFormSchema>;
 
-// SPEC 7.3's exact https/private-network-http rule lives in services/settings.py
-// (_validate_ai_endpoint_url, with real RFC1918/localhost matching) -- reproducing that
-// precisely here would drift the moment one side changes. This is feedback only: catch the
+// SPEC 7.3's exact https/private-network-http rule lives in services/ai_tasks.py
+// (validate_endpoint_url, with real RFC1918/localhost matching) -- reproducing that precisely
+// here would drift the moment one side changes. This is feedback only: catch the
 // obviously-wrong case (no scheme at all) client-side, and let the save's own error message
-// (which is authoritative) explain a rejected private-network http:// URL.
-export const aiFormSchema = z.object({
-  ai_endpoint_url: z
+// (which is authoritative) explain a rejected public http:// URL.
+export const endpointFormSchema = z.object({
+  name: z.string().refine((value) => value.trim().length > 0, "Give the endpoint a name."),
+  base_url: z
     .string()
-    .min(1, "AI endpoint URL is required.")
     .refine((value) => /^https?:\/\//.test(value.trim()), "Must start with http:// or https://."),
-  ai_model_name: z.string().min(1, "Model name is required."),
-  // Not validated beyond "not blank": these are only ever offered on the comparison view,
-  // where a name the endpoint does not serve shows up as that method's error -- which is
-  // the honest place for it, and cheaper than keeping a list of valid names in sync.
-  vision_model_names: z.array(z.object({ value: z.string() })),
-  ai_api_key: z.string(), // empty = leave unchanged
+  api_key: z.string(), // empty = leave the stored key unchanged
 });
 
-export type AiFormValues = z.infer<typeof aiFormSchema>;
+export type EndpointFormValues = z.infer<typeof endpointFormSchema>;
+
+// SPEC 6.3a: a task is an ordered list of (endpoint, model) steps. An empty list is valid --
+// it means the task is unconfigured, which extraction is allowed to be -- so the only rule
+// here is that a step someone did add has to be complete enough to call.
+export const chainFormSchema = z.object({
+  steps: z.array(
+    z.object({
+      endpoint_id: z.string().min(1, "Choose an endpoint."),
+      model_name: z.string().refine((value) => value.trim().length > 0, "Choose a model."),
+    }),
+  ),
+});
+
+export type ChainFormValues = z.infer<typeof chainFormSchema>;

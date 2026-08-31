@@ -1,7 +1,12 @@
 import { ApiError, NETWORK_ERROR_CODE } from "./errors";
 import type {
+  AiEndpoint,
+  AiEndpointWrite,
   AiModelsRequest,
   AiModelsResponse,
+  AiTask,
+  AiTaskChain,
+  AiTaskChainUpdate,
   ApiErrorBody,
   ApproveRequest,
   AuthConfig,
@@ -49,6 +54,12 @@ export interface ApiClient {
   getSettings(): Promise<Settings>;
   updateSettings(body: SettingsUpdate): Promise<Settings>;
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
+  listAiEndpoints(): Promise<AiEndpoint[]>;
+  createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint>;
+  updateAiEndpoint(id: string, body: AiEndpointWrite): Promise<AiEndpoint>;
+  deleteAiEndpoint(id: string): Promise<void>;
+  listAiTasks(): Promise<AiTaskChain[]>;
+  updateAiTask(task: AiTask, body: AiTaskChainUpdate): Promise<AiTaskChain>;
   getAuthConfig(): Promise<AuthConfig>;
   getCurrentUser(): Promise<AuthUser>;
   login(body: Credentials): Promise<AuthUser>;
@@ -140,7 +151,31 @@ export class HttpApiClient implements ApiClient {
   }
 
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse> {
-    return this.request<AiModelsResponse>("POST", "/settings/ai/models", body);
+    return this.request<AiModelsResponse>("POST", "/ai/models", body);
+  }
+
+  listAiEndpoints(): Promise<AiEndpoint[]> {
+    return this.request<AiEndpoint[]>("GET", "/ai/endpoints");
+  }
+
+  createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint> {
+    return this.request<AiEndpoint>("POST", "/ai/endpoints", body);
+  }
+
+  updateAiEndpoint(id: string, body: AiEndpointWrite): Promise<AiEndpoint> {
+    return this.request<AiEndpoint>("PUT", `/ai/endpoints/${id}`, body);
+  }
+
+  deleteAiEndpoint(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/ai/endpoints/${id}`);
+  }
+
+  listAiTasks(): Promise<AiTaskChain[]> {
+    return this.request<AiTaskChain[]>("GET", "/ai/tasks");
+  }
+
+  updateAiTask(task: AiTask, body: AiTaskChainUpdate): Promise<AiTaskChain> {
+    return this.request<AiTaskChain>("PUT", `/ai/tasks/${task}`, body);
   }
 
   getAuthConfig(): Promise<AuthConfig> {

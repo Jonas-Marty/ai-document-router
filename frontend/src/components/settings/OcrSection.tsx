@@ -39,9 +39,8 @@ export function OcrSection({
   }, [isDirty, onDirtyChange]);
 
   function onSubmit(formValues: { store_ocr_text: boolean }) {
-    const { ai_api_key_set: _aiApiKeySet, ...rest } = settings;
     updateSettings.mutate(
-      { ...rest, store_ocr_text: formValues.store_ocr_text },
+      { ...settings, store_ocr_text: formValues.store_ocr_text },
       {
         onSuccess: (saved) => {
           methods.reset({ store_ocr_text: saved.store_ocr_text }, { keepDirtyValues: false });

@@ -11,6 +11,7 @@ call per document inside a single job run, while `max_instances=1` blocks the ne
 """
 
 import logging
+from dataclasses import dataclass
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlmodel import Session, select
@@ -18,6 +19,7 @@ from sqlmodel import Session, select
 from app import db
 from app.config import settings as config
 from app.models import (
+    AiTask,
     AppSettings,
     Document,
     DocumentStatus,
@@ -25,7 +27,7 @@ from app.models import (
     Proposal,
     ProposalStatus,
 )
-from app.services import ai, extraction, folders, searchable
+from app.services import ai, ai_tasks, extraction, folders, searchable, transcribe
 from app.services import settings as settings_service
 from app.services.documents import QUEUED_STATUSES
 from app.services.errors import AppError
@@ -325,34 +327,32 @@ def propose_for(
         _fail(session, document, "No allowed folders are configured yet — set them in Settings.")
         return False
 
-    extracted = already_extracted
-    if extracted is None:
-        # Only re-download when we did not just read this file (regenerate, or a document
-        # carried over from an earlier tick).
-        try:
-            data = _document_bytes(service, document)
-        except AppError as exc:
-            _fail(session, document, f"Couldn't read the file: {exc.message}")
-            return False
-        extracted = extraction.extract(data, document.original_filename, document.mime_type)
+    try:
+        reading = _read_document(session, service, document, already_extracted)
+    except AppError as exc:
+        _fail(session, document, f"Couldn't read the file: {exc.message}")
+        return False
 
-    if extracted.text_error is not None:
-        # The OCR failure's own reason when there is one: "This PDF is encrypted, so it
-        # can't be OCR'd" tells the person something they can act on, where the generic
-        # "no text layer" leaves them wondering why nothing happened.
-        _fail(session, document, document.ocr_error or extracted.text_error)
+    if reading.fatal is not None:
+        _fail(session, document, reading.fatal)
         return False
 
     tree, samples = folders.prompt_context(service, app_settings)
-    prompt = ai.build_prompt(extracted.text, tree, samples, app_settings.filename_pattern_hint)
+    prompt = ai.build_prompt(reading.text, tree, samples, app_settings.filename_pattern_hint)
+    allowed_roots = list(app_settings.allowed_root_folders)
+
+    def file_it(step: ai_tasks.ResolvedStep) -> ai.Proposal:
+        return ai.request_proposal(
+            endpoint_url=step.endpoint_url,
+            model_name=step.model_name,
+            api_key=step.api_key,
+            prompt=prompt,
+            allowed_roots=allowed_roots,
+        )
 
     try:
-        proposal = ai.request_proposal(
-            endpoint_url=app_settings.ai_endpoint_url,
-            model_name=app_settings.ai_model_name,
-            api_key=settings_service.decrypt_api_key(app_settings),
-            prompt=prompt,
-            allowed_roots=list(app_settings.allowed_root_folders),
+        proposal = ai_tasks.run_chain(
+            ai_tasks.resolve_chain(session, AiTask.filing), file_it, AiTask.filing
         )
     except ai.ProposalRejected as exc:
         _fail(session, document, exc.reason)
@@ -364,6 +364,96 @@ def propose_for(
     _store(session, document, proposal, prompt)
     logger.info("Proposal ready for %s: %s", document.webdav_path, proposal.suggested_name)
     return True
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """The text handed to the filing model, or the reason there is none."""
+
+    text: str = ""
+    fatal: str | None = None
+
+
+def _read_document(
+    session: Session,
+    service: WebDavService,
+    document: Document,
+    already_extracted: ExtractedDocument | None,
+) -> _Reading:
+    """Markdown from the extraction task when it is configured, the text layer otherwise.
+
+    A failed transcription is recorded and stepped over rather than raised: a worse reading
+    of the document still files it, where a stopped pipeline leaves it sitting in the queue.
+    """
+    if document.extracted_markdown:
+        return _Reading(_for_prompt(document.extracted_markdown))
+
+    steps = ai_tasks.resolve_chain(session, AiTask.extraction)
+    extracted = already_extracted
+
+    if not steps:
+        if extracted is None:
+            # Only re-download when we did not just read this file (regenerate, or a
+            # document carried over from an earlier tick).
+            data = _document_bytes(service, document)
+            extracted = extraction.extract(data, document.original_filename, document.mime_type)
+        return _text_layer_reading(document, extracted)
+
+    data = _document_bytes(service, document)
+    if extracted is None:
+        extracted = extraction.extract(data, document.original_filename, document.mime_type)
+
+    try:
+        transcription = transcribe.transcribe(data, steps)
+    except (AppError, extraction.RenderUnavailable) as exc:
+        reason = exc.message if isinstance(exc, AppError) else str(exc)
+        logger.warning("Extraction failed for %s: %s", document.webdav_path, reason)
+        _record_extraction(session, document, markdown=None, model=None, error=reason)
+        return _text_layer_reading(document, extracted)
+
+    if not transcription.markdown:
+        _record_extraction(
+            session, document, markdown=None, model=None, error="The model returned no text."
+        )
+        return _text_layer_reading(document, extracted)
+
+    _record_extraction(
+        session,
+        document,
+        markdown=transcription.markdown,
+        model=transcription.model_label,
+        error=None,
+    )
+    return _Reading(_for_prompt(transcription.markdown))
+
+
+def _text_layer_reading(document: Document, extracted: ExtractedDocument) -> _Reading:
+    if extracted.text_error is not None:
+        # The OCR failure's own reason when there is one: "This PDF is encrypted, so it
+        # can't be OCR'd" tells the person something they can act on, where the generic
+        # "no text layer" leaves them wondering why nothing happened.
+        return _Reading(fatal=document.ocr_error or extracted.text_error)
+    return _Reading(extracted.text)
+
+
+def _for_prompt(markdown: str) -> str:
+    """Markdown is stored whole for the review screen, but capped on the way into a prompt."""
+    return markdown[: extraction.MAX_TEXT_CHARS]
+
+
+def _record_extraction(
+    session: Session,
+    document: Document,
+    *,
+    markdown: str | None,
+    model: str | None,
+    error: str | None,
+) -> None:
+    document.extracted_markdown = markdown
+    document.extraction_model = model
+    document.extraction_error = error
+    session.add(document)
+    session.commit()
 
 
 def _document_bytes(service: WebDavService, document: Document) -> bytes:

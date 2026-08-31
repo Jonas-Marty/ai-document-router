@@ -6,13 +6,17 @@ reason, never be quietly dropped from the list.
 """
 
 import io
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from pypdf import PdfWriter
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
-from app.models import AppSettings
+from app.models import AiEndpoint, AiTask, AiTaskStep, AppSettings
 from app.services import compare, extraction, ocr
+from app.services.times import utc_now
 
 VALID_REPLY = {
     "suggested_name": "2026.04.16 Helvetia Police",
@@ -37,11 +41,33 @@ def settings(**overrides: Any) -> AppSettings:
         "id": 1,
         "allowed_root_folders": ["/Documents"],
         "trash_folder_path": "/Trash",
-        "ai_endpoint_url": "https://ai.example.com/v1",
-        "ai_model_name": "text-model",
-        "vision_model_names": [],
     }
     return AppSettings(**{**base, **overrides})
+
+
+@pytest.fixture
+def session() -> Iterator[Session]:
+    """A filing chain, and no extraction chain unless a test adds one."""
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as s:
+        s.add(
+            AiEndpoint(
+                id="ep", name="Local", base_url="https://ai.example.com/v1", created_at=utc_now()
+            )
+        )
+        s.add(AiTaskStep(task=AiTask.filing, position=0, endpoint_id="ep", model_name="text-model"))
+        s.commit()
+        yield s
+
+
+def with_extraction(session: Session, model_name: str = "qwen-vl") -> None:
+    session.add(
+        AiTaskStep(task=AiTask.extraction, position=0, endpoint_id="ep", model_name=model_name)
+    )
+    session.commit()
 
 
 class FakeWebDav:
@@ -62,7 +88,14 @@ class FakeDocument:
         self.mime_type = mime_type
 
 
-def run(monkeypatch: pytest.MonkeyPatch, *, data: bytes, app_settings: AppSettings, replies=None):
+def run(
+    monkeypatch: pytest.MonkeyPatch,
+    session: Session,
+    *,
+    data: bytes,
+    app_settings: AppSettings,
+    replies=None,
+):
     """Run compare with the LLM stubbed, capturing what each method actually sent."""
     sent: list[dict[str, Any]] = []
 
@@ -86,30 +119,37 @@ def run(monkeypatch: pytest.MonkeyPatch, *, data: bytes, app_settings: AppSettin
         )
 
     monkeypatch.setattr(compare.ai, "request_proposal", fake_request_proposal)
-    results = compare.compare(FakeWebDav(data), app_settings, FakeDocument())  # type: ignore[arg-type]
+    results = compare.compare(session, FakeWebDav(data), app_settings, FakeDocument())  # type: ignore[arg-type]
     return results, sent
 
 
-def test_reports_a_result_for_every_configured_method(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reports_a_result_for_every_method(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
     monkeypatch.setattr(ocr, "is_available", lambda: False)
-    results, _ = run(
-        monkeypatch,
-        data=blank_pdf(),
-        app_settings=settings(vision_model_names=["qwen-vl", "llava"]),
+    with_extraction(session)
+    monkeypatch.setattr(
+        compare.transcribe,
+        "transcribe",
+        lambda data, steps: compare.transcribe.Transcription(
+            markdown="# Helvetia", model_label="Local · qwen-vl"
+        ),
     )
+    results, _ = run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
 
     assert [result.method for result in results] == [
         compare.TEXT_LAYER,
         compare.OCR,
-        compare.VISION,
-        compare.VISION,
+        compare.MARKDOWN,
     ]
 
 
-def test_a_method_that_cannot_run_is_reported_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_method_that_cannot_run_is_reported_not_dropped(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
     """ "Tesseract isn't installed" is the finding, not an absence to puzzle over."""
     monkeypatch.setattr(ocr, "is_available", lambda: False)
-    results, _ = run(monkeypatch, data=blank_pdf(), app_settings=settings())
+    results, _ = run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
 
     tesseract = next(r for r in results if r.method == compare.OCR)
     assert tesseract.proposal is None
@@ -117,9 +157,11 @@ def test_a_method_that_cannot_run_is_reported_not_dropped(monkeypatch: pytest.Mo
     assert "Tesseract" in tesseract.error
 
 
-def test_a_blank_scan_reports_the_text_layer_as_unusable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_blank_scan_reports_the_text_layer_as_unusable(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
     monkeypatch.setattr(ocr, "is_available", lambda: False)
-    results, sent = run(monkeypatch, data=blank_pdf(), app_settings=settings())
+    results, sent = run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
 
     text_layer = next(r for r in results if r.method == compare.TEXT_LAYER)
     assert text_layer.proposal is None
@@ -128,39 +170,59 @@ def test_a_blank_scan_reports_the_text_layer_as_unusable(monkeypatch: pytest.Mon
     assert sent == []
 
 
-def test_the_vision_method_sends_pages_and_no_transcription(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_markdown_method_files_from_the_transcription(
+    monkeypatch: pytest.MonkeyPatch, session: Session
 ) -> None:
-    """Handing the model text as well as the image would make it impossible to tell which
-    of the two it actually used."""
+    """The comparison is of readings, not of models: the filing model is the same one the
+    other methods used, so a difference in the result is a difference in what it was given."""
     monkeypatch.setattr(ocr, "is_available", lambda: False)
-    _, sent = run(
-        monkeypatch, data=blank_pdf(2), app_settings=settings(vision_model_names=["qwen-vl"])
+    with_extraction(session)
+    monkeypatch.setattr(
+        compare.transcribe,
+        "transcribe",
+        lambda data, steps: compare.transcribe.Transcription(
+            markdown="# Helvetia\n\n| Premium | 480.00 |", model_label="Local · qwen-vl"
+        ),
     )
+    results, sent = run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
 
-    vision = next(call for call in sent if call["model_name"] == "qwen-vl")
-    assert vision["images"] is not None
-    assert len(vision["images"]) == 2
-    assert all(image.startswith(b"\x89PNG") for image in vision["images"])
-    assert "(no text could be extracted)" in vision["prompt"]
+    markdown = next(r for r in results if r.method == compare.MARKDOWN)
+    assert markdown.proposal is not None
+    assert "| Premium | 480.00 |" in markdown.text_preview
+    assert "qwen-vl" in markdown.label
+    call = next(c for c in sent if "| Premium | 480.00 |" in c["prompt"])
+    assert call["model_name"] == "text-model"
+
+
+def test_the_markdown_method_says_when_no_extraction_endpoint_is_assigned(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    monkeypatch.setattr(ocr, "is_available", lambda: False)
+    results, _ = run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
+
+    markdown = next(r for r in results if r.method == compare.MARKDOWN)
+    assert markdown.proposal is None
+    assert "extraction task" in (markdown.error or "")
 
 
 def test_ocr_text_is_proposed_with_the_configured_text_model(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, session: Session
 ) -> None:
     monkeypatch.setattr(ocr, "is_available", lambda: True)
     monkeypatch.setattr(ocr, "read_pages", lambda pages, **kw: "Helvetia Versicherungspolice")
-    results, sent = run(monkeypatch, data=blank_pdf(), app_settings=settings())
+    results, sent = run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
 
     tesseract = next(r for r in results if r.method == compare.OCR)
     assert tesseract.proposal is not None
     assert tesseract.text_preview == "Helvetia Versicherungspolice"
     ocr_call = next(call for call in sent if "Helvetia Versicherungspolice" in call["prompt"])
     # Text, not pixels: this method's whole claim is that Tesseract did the reading.
-    assert ocr_call["images"] is None
+    assert "images" not in ocr_call
 
 
-def test_a_rejected_proposal_becomes_that_method_s_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_rejected_proposal_becomes_that_method_s_error(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
     from app.services.ai import ProposalRejected
 
     monkeypatch.setattr(ocr, "is_available", lambda: True)
@@ -169,28 +231,31 @@ def test_a_rejected_proposal_becomes_that_method_s_error(monkeypatch: pytest.Mon
     def replies(kwargs: dict[str, Any]):
         return ProposalRejected("The model chose '/Nope', which is outside your folders.")
 
-    results, _ = run(monkeypatch, data=blank_pdf(), app_settings=settings(), replies=replies)
+    results, _ = run(
+        monkeypatch, session, data=blank_pdf(), app_settings=settings(), replies=replies
+    )
 
     tesseract = next(r for r in results if r.method == compare.OCR)
     assert tesseract.proposal is None
     assert "outside your folders" in (tesseract.error or "")
 
 
-def test_a_non_pdf_cannot_be_rendered_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_non_pdf_cannot_be_rendered_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
     monkeypatch.setattr(ocr, "is_available", lambda: True)
-    results, _ = run(
-        monkeypatch,
-        data=b"\xff\xd8\xff not a pdf",
-        app_settings=settings(vision_model_names=["qwen-vl"]),
-    )
+    with_extraction(session)
+    results, _ = run(monkeypatch, session, data=b"\xff\xd8\xff not a pdf", app_settings=settings())
 
     for result in results:
-        if result.method in (compare.OCR, compare.VISION):
+        if result.method in (compare.OCR, compare.MARKDOWN):
             assert result.proposal is None
             assert "rendered" in (result.error or "")
 
 
-def test_nothing_is_written_back_to_the_document(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nothing_is_written_back_to_the_document(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
     """Comparing is a read. The document's own proposal is decided by the poller and the
     person, never by having looked at alternatives."""
     monkeypatch.setattr(ocr, "is_available", lambda: False)
@@ -198,7 +263,7 @@ def test_nothing_is_written_back_to_the_document(monkeypatch: pytest.MonkeyPatch
     before = vars(document).copy()
 
     monkeypatch.setattr(compare.ai, "request_proposal", lambda **kw: None)
-    compare.compare(FakeWebDav(blank_pdf()), settings(), document)  # type: ignore[arg-type]
+    compare.compare(session, FakeWebDav(blank_pdf()), settings(), document)  # type: ignore[arg-type]
 
     assert vars(document) == before
 

@@ -2,14 +2,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NavigationGuardProvider, useConfirmNavigation } from "@/hooks/useNavigationGuard";
-import { ApiError } from "@/services/api/errors";
 import type { Settings } from "@/services/api/types";
 import SettingsPage from "./SettingsPage";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getSettings: vi.fn(), updateSettings: vi.fn(), listAiModels: vi.fn() },
+  apiClient: {
+    getSettings: vi.fn(),
+    updateSettings: vi.fn(),
+    listAiModels: vi.fn(),
+    listAiEndpoints: vi.fn(),
+    listAiTasks: vi.fn(),
+  },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -38,11 +43,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     trash_folder_path: "/Documents/.trash",
     filename_pattern: null,
     filename_pattern_hint: null,
-    ai_endpoint_url: "https://ollama.local:11434",
-    ai_model_name: "llama3",
-    vision_model_names: [],
     store_ocr_text: true,
-    ai_api_key_set: true,
     ...overrides,
   };
 }
@@ -91,6 +92,15 @@ async function renderReadyPage() {
 }
 
 describe("SettingsPage", () => {
+  beforeEach(() => {
+    // The AI cards render on every one of these tests; they have their own suites.
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([]);
+    vi.mocked(apiClient.listAiTasks).mockResolvedValue([
+      { task: "extraction", steps: [] },
+      { task: "filing", steps: [] },
+    ]);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -124,7 +134,9 @@ describe("SettingsPage", () => {
     // SectionCard's title is a styled div, not a semantic heading (shadcn's CardTitle).
     expect(await screen.findByText("Folders")).toBeInTheDocument();
     expect(screen.getByText("Naming")).toBeInTheDocument();
-    expect(screen.getByText("AI")).toBeInTheDocument();
+    expect(screen.getByText("AI endpoints")).toBeInTheDocument();
+    expect(await screen.findByText("Extraction — read the pages")).toBeInTheDocument();
+    expect(screen.getByText("Filing — choose the filename")).toBeInTheDocument();
     expect(screen.getByText("OCR")).toBeInTheDocument();
   });
 
@@ -146,10 +158,9 @@ describe("SettingsPage", () => {
     // The rest of the settings ride along untouched -- every section PUTs the whole object,
     // so a section that dropped a field it does not own would silently clear it.
     expect(payload).toMatchObject({
-      ai_model_name: "llama3",
+      allowed_root_folders: ["/Documents/Finance", "/Documents/Medical"],
       trash_folder_path: "/Documents/.trash",
     });
-    expect(payload).not.toHaveProperty("ai_api_key_set");
   });
 
   it("saves Folders and clears dirty state so Save disables again", async () => {
@@ -175,10 +186,6 @@ describe("SettingsPage", () => {
       allowed_root_folders: ["/Documents/Legal", "/Documents/Medical"],
       trash_folder_path: "/Documents/.trash",
     });
-    // ai_api_key_set must never leak into the update payload -- it isn't part of
-    // SettingsUpdate and the backend only ignores it by convention (CLAUDE.md rule 5).
-    expect(payload).not.toHaveProperty("ai_api_key_set");
-
     await waitFor(() =>
       expect(nth(screen.getAllByRole("button", { name: "Save" }), 0)).toBeDisabled(),
     );
@@ -261,190 +268,6 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByText("Duplicate folder.")).toBeInTheDocument();
     expect(apiClient.updateSettings).not.toHaveBeenCalled();
-  });
-
-  it("omits the API key from the save payload when left blank, and includes it when typed", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    // Model is a dropdown by default now -- switch to manual entry rather than opening it,
-    // so this test (which only cares about the API key payload) does not also need to mock
-    // listAiModels.
-    await user.click(screen.getByRole("button", { name: /enter a model name manually/i }));
-    const modelInput = screen.getByLabelText("Model");
-    await user.clear(modelInput);
-    await user.type(modelInput, "llama3.1");
-
-    vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ ai_model_name: "llama3.1" }));
-    await user.click(sectionSave("AI"));
-
-    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
-    let payload = vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0];
-    expect(payload).not.toHaveProperty("ai_api_key");
-
-    vi.mocked(apiClient.updateSettings).mockClear();
-    const keyInput = screen.getByLabelText("API key");
-    await user.type(keyInput, "sk-secret-value");
-    vi.mocked(apiClient.updateSettings).mockResolvedValue(settings());
-    await user.click(sectionSave("AI"));
-
-    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
-    payload = vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0];
-    expect(payload).toMatchObject({ ai_api_key: "sk-secret-value" });
-
-    // The key never lands in the query cache: Settings has no ai_api_key field, and the
-    // field itself is cleared back to blank after a successful save (CLAUDE.md rule 5).
-    await waitFor(() => expect(keyInput).toHaveValue(""));
-    expect(JSON.stringify(window.localStorage)).not.toContain("sk-secret-value");
-  });
-
-  it("tests the endpoint currently typed in the form and offers its models in a dropdown", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    // Typed, not saved: finding out the URL is wrong is the reason to press Test.
-    const endpoint = screen.getByLabelText("Endpoint URL");
-    await user.clear(endpoint);
-    await user.type(endpoint, "https://api.infomaniak.com/2/ai/1/openai/v1");
-    await user.click(screen.getByRole("button", { name: /test connection/i }));
-
-    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
-    expect(vi.mocked(apiClient.listAiModels).mock.calls[0]?.[0]).toEqual({
-      ai_endpoint_url: "https://api.infomaniak.com/2/ai/1/openai/v1",
-    });
-
-    expect(await screen.findByText("2 models offered by this endpoint.")).toBeInTheDocument();
-    const picker = await screen.findByRole("combobox", { name: "Model" });
-    expect(picker).toHaveTextContent("llama3");
-  });
-
-  it("sends the typed API key with the test, and falls back to the stored one when blank", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: [] });
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    await user.type(screen.getByLabelText("API key"), "sk-typed");
-    await user.click(screen.getByRole("button", { name: /test connection/i }));
-
-    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
-    expect(vi.mocked(apiClient.listAiModels).mock.calls[0]?.[0]).toMatchObject({
-      ai_api_key: "sk-typed",
-    });
-    // An endpoint that answers with nothing still leaves the dropdown up -- it just has only
-    // the already-configured model in it, since that is all there is to offer.
-    expect(await screen.findByText(/listed no models/i)).toBeInTheDocument();
-    expect(await screen.findByRole("combobox", { name: "Model" })).toHaveTextContent("llama3");
-  });
-
-  it("shows why the test failed, leaving the current model selected", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockRejectedValue(
-      new ApiError("ai_unavailable", "The AI endpoint returned 404 for .../models.", 503),
-    );
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    await user.click(screen.getByRole("button", { name: /test connection/i }));
-
-    expect(
-      await screen.findByText("The AI endpoint returned 404 for .../models."),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveTextContent("llama3");
-  });
-
-  it("fetches the model list when the Model dropdown is opened, without needing Test Connection", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    expect(apiClient.listAiModels).not.toHaveBeenCalled();
-    await user.click(await screen.findByRole("combobox", { name: "Model" }));
-
-    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
-    expect(await screen.findByRole("option", { name: "qwen3" })).toBeInTheDocument();
-  });
-
-  it("disables the Model dropdown while the endpoint URL is empty", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings({ ai_endpoint_url: "" }));
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    expect(await screen.findByRole("combobox", { name: "Model" })).toBeDisabled();
-
-    await user.type(screen.getByLabelText("Endpoint URL"), "https://ollama.local:11434");
-
-    expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled();
-  });
-
-  it("offers a dropdown of the endpoint's models for each vision model to compare", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({
-      models: ["llama3", "qwen2.5vl:7b"],
-    });
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    await user.click(screen.getByRole("button", { name: /add vision model/i }));
-    const picker = await screen.findByRole("combobox", { name: "Vision model 1" });
-    await user.click(picker);
-
-    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
-    await user.click(await screen.findByRole("option", { name: "qwen2.5vl:7b" }));
-
-    expect(picker).toHaveTextContent("qwen2.5vl:7b");
-
-    vi.mocked(apiClient.updateSettings).mockResolvedValue(
-      settings({ vision_model_names: ["qwen2.5vl:7b"] }),
-    );
-    await user.click(sectionSave("AI"));
-
-    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
-    expect(vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0]).toMatchObject({
-      vision_model_names: ["qwen2.5vl:7b"],
-    });
-  });
-
-  it("picks a model from the dropdown, which dirties the form and saves that model", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    await user.click(screen.getByRole("button", { name: /test connection/i }));
-    const picker = await screen.findByRole("combobox", { name: "Model" });
-    await user.click(picker);
-    await user.click(await screen.findByRole("option", { name: "qwen3" }));
-
-    vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ ai_model_name: "qwen3" }));
-    await user.click(sectionSave("AI"));
-
-    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
-    expect(vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0]).toMatchObject({
-      ai_model_name: "qwen3",
-    });
-  });
-
-  it("can fall back to typing a model name the endpoint does not list", async () => {
-    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
-    const user = userEvent.setup();
-    await renderReadyPage();
-
-    await user.click(screen.getByRole("button", { name: /test connection/i }));
-    await screen.findByRole("combobox", { name: "Model" });
-
-    await user.click(screen.getByRole("button", { name: /enter a model name manually/i }));
-
-    const modelInput = screen.getByLabelText("Model");
-    expect(modelInput).toHaveValue("llama3");
-    await user.clear(modelInput);
-    await user.type(modelInput, "custom/model");
-    expect(modelInput).toHaveValue("custom/model");
   });
 
   it("arms the navigation guard once any section is dirty, and disarms after a successful save", async () => {

@@ -122,7 +122,7 @@ def compare_methods(
     is chosen.
     """
     document = documents_service.get_document(session, document_id)
-    results = compare_service.compare(webdav, app_settings, document)
+    results = compare_service.compare(session, webdav, app_settings, document)
     return CompareResponse(results=[_to_method_read(result) for result in results])
 
 
