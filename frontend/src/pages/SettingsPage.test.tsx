@@ -268,6 +268,10 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     await renderReadyPage();
 
+    // Model is a dropdown by default now -- switch to manual entry rather than opening it,
+    // so this test (which only cares about the API key payload) does not also need to mock
+    // listAiModels.
+    await user.click(screen.getByRole("button", { name: /enter a model name manually/i }));
     const modelInput = screen.getByLabelText("Model");
     await user.clear(modelInput);
     await user.type(modelInput, "llama3.1");
@@ -330,12 +334,13 @@ describe("SettingsPage", () => {
     expect(vi.mocked(apiClient.listAiModels).mock.calls[0]?.[0]).toMatchObject({
       ai_api_key: "sk-typed",
     });
-    // An endpoint that answers with nothing is not a picker -- the field stays typeable.
+    // An endpoint that answers with nothing still leaves the dropdown up -- it just has only
+    // the already-configured model in it, since that is all there is to offer.
     expect(await screen.findByText(/listed no models/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("Model")).toHaveValue("llama3");
+    expect(await screen.findByRole("combobox", { name: "Model" })).toHaveTextContent("llama3");
   });
 
-  it("shows why the test failed and leaves the model as a text field", async () => {
+  it("shows why the test failed, leaving the current model selected", async () => {
     vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
     vi.mocked(apiClient.listAiModels).mockRejectedValue(
       new ApiError("ai_unavailable", "The AI endpoint returned 404 for .../models.", 503),
@@ -348,7 +353,60 @@ describe("SettingsPage", () => {
     expect(
       await screen.findByText("The AI endpoint returned 404 for .../models."),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Model")).toHaveValue("llama3");
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveTextContent("llama3");
+  });
+
+  it("fetches the model list when the Model dropdown is opened, without needing Test Connection", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["llama3", "qwen3"] });
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    expect(apiClient.listAiModels).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("combobox", { name: "Model" }));
+
+    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
+    expect(await screen.findByRole("option", { name: "qwen3" })).toBeInTheDocument();
+  });
+
+  it("disables the Model dropdown while the endpoint URL is empty", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings({ ai_endpoint_url: "" }));
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    expect(await screen.findByRole("combobox", { name: "Model" })).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Endpoint URL"), "https://ollama.local:11434");
+
+    expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled();
+  });
+
+  it("offers a dropdown of the endpoint's models for each vision model to compare", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({
+      models: ["llama3", "qwen2.5vl:7b"],
+    });
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    await user.click(screen.getByRole("button", { name: /add vision model/i }));
+    const picker = await screen.findByRole("combobox", { name: "Vision model 1" });
+    await user.click(picker);
+
+    await waitFor(() => expect(apiClient.listAiModels).toHaveBeenCalled());
+    await user.click(await screen.findByRole("option", { name: "qwen2.5vl:7b" }));
+
+    expect(picker).toHaveTextContent("qwen2.5vl:7b");
+
+    vi.mocked(apiClient.updateSettings).mockResolvedValue(
+      settings({ vision_model_names: ["qwen2.5vl:7b"] }),
+    );
+    await user.click(sectionSave("AI"));
+
+    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0]).toMatchObject({
+      vision_model_names: ["qwen2.5vl:7b"],
+    });
   });
 
   it("picks a model from the dropdown, which dirties the form and saves that model", async () => {

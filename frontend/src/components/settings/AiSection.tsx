@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Loader2, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useFieldArray, useForm } from "react-hook-form";
+import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,113 @@ import { ApiError } from "@/services/api/errors";
 import type { Settings } from "@/services/api/types";
 import { SectionCard } from "./SectionCard";
 import { type AiFormValues, aiFormSchema } from "./settingsSchemas";
+
+/** A saved/typed value that the endpoint's list may not (yet, or ever) contain still belongs
+ * in the options -- dropping it would blank a working setting the moment the picker appeared,
+ * or before it has fetched anything at all. */
+function optionsWithCurrent(models: string[] | undefined, current: string): string[] {
+  const known = models ?? [];
+  return current && !known.includes(current) ? [current, ...known] : known;
+}
+
+/** One model dropdown: the Model field and each "vision models to compare" row all share
+ * this. Fetching is lazy -- opening the dropdown is what triggers it, not a prior click on
+ * Test Connection, so `onOpen` is called every time and it is up to the caller (the shared
+ * `useListAiModels` mutation) to no-op once it already has a result. Free text stays reachable
+ * behind a toggle: an endpoint that cannot be reached, or one that does not list the model you
+ * actually want, must still be configurable (CLAUDE.md rule 8 -- no picker can be the only
+ * way in). */
+function ModelPicker({
+  id,
+  ariaLabel,
+  value,
+  onChange,
+  options,
+  disabled,
+  isPending,
+  isError,
+  errorMessage,
+  onOpen,
+  manualMode,
+  onToggleManual,
+}: {
+  id?: string;
+  ariaLabel?: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  disabled: boolean;
+  isPending: boolean;
+  isError: boolean;
+  errorMessage: string | null;
+  onOpen: () => void;
+  manualMode: boolean;
+  onToggleManual: () => void;
+}) {
+  if (manualMode) {
+    return (
+      <div className="space-y-1">
+        <Input
+          id={id}
+          aria-label={ariaLabel}
+          className="font-mono"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-sm"
+          onClick={onToggleManual}
+        >
+          Choose from the endpoint's list
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <Select
+        value={value}
+        onValueChange={onChange}
+        disabled={disabled}
+        onOpenChange={(open) => {
+          if (open) onOpen();
+        }}
+      >
+        <SelectTrigger id={id} aria-label={ariaLabel} className="w-full font-mono">
+          {isPending ? (
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              Loading models…
+            </span>
+          ) : (
+            <SelectValue placeholder="Choose a model" />
+          )}
+        </SelectTrigger>
+        <SelectContent>
+          {/* An item still renders for the current value even on error or an empty result --
+           * dropping it would leave Radix with nothing to resolve the trigger's label from,
+           * blanking a perfectly valid, already-saved model name. */}
+          {isError && <p className="px-2 py-1.5 text-sm text-destructive">{errorMessage}</p>}
+          {options.length === 0 ? (
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">No models found.</p>
+          ) : (
+            options.map((model) => (
+              <SelectItem key={model} value={model} className="font-mono">
+                {model}
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+      <Button type="button" variant="link" className="h-auto p-0 text-sm" onClick={onToggleManual}>
+        Enter a model name manually
+      </Button>
+    </div>
+  );
+}
 
 /** SPEC 8.7's AI section. The key itself is never returned by the API (CLAUDE.md rule 5:
  * write-only) -- `ai_api_key` always starts and (after a save) ends empty; only
@@ -40,9 +147,10 @@ export function AiSection({
 }) {
   const updateSettings = useUpdateSettings();
   const listModels = useListAiModels();
-  // Free text is the fallback, not the exception: an endpoint that cannot be reached (or one
-  // that serves a model it does not list) must still be configurable.
   const [enterModelManually, setEnterModelManually] = useState(false);
+  // Keyed by useFieldArray's row id, not index: rows can be removed, and an index-based set
+  // would silently relabel a later row's manual toggle onto an earlier one.
+  const [manualVisionRows, setManualVisionRows] = useState<Set<string>>(new Set());
   // See FoldersSection's comment: `values` must stay reference-stable across incidental
   // re-renders, not a fresh object every time.
   const values = useMemo(
@@ -61,23 +169,35 @@ export function AiSection({
   });
   const {
     register,
+    control,
     handleSubmit,
     getValues,
-    setValue,
     watch,
     formState: { errors, isDirty },
   } = methods;
 
   const models = listModels.data?.models;
   const modelName = watch("ai_model_name");
-  const visionModels = useFieldArray({ control: methods.control, name: "vision_model_names" });
-  const showModelPicker = models !== undefined && models.length > 0 && !enterModelManually;
-  // A saved model the endpoint does not list still belongs in the options -- dropping it
-  // would blank a working setting the moment the picker appeared.
-  const modelOptions = useMemo(() => {
-    if (models === undefined) return [];
-    return modelName && !models.includes(modelName) ? [modelName, ...models] : models;
-  }, [models, modelName]);
+  const endpointUrl = watch("ai_endpoint_url");
+  const visionModels = useFieldArray({ control, name: "vision_model_names" });
+  // Fetching a model list needs somewhere to send the request -- the key is optional (plenty
+  // of self-hosted endpoints take none, and the backend falls back to the saved one anyway).
+  const canFetchModels = endpointUrl.trim().length > 0;
+  const modelErrorMessage =
+    listModels.error instanceof ApiError
+      ? listModels.error.message
+      : "Couldn't reach the AI endpoint.";
+
+  // Shared by every dropdown: only actually fetches once (until it errors, when the next
+  // open tries again), no matter which picker's `onOpen` triggered it.
+  function fetchModelsIfNeeded() {
+    if (!canFetchModels || listModels.isPending || listModels.data !== undefined) return;
+    const typedKey = getValues("ai_api_key").trim();
+    listModels.mutate({
+      ai_endpoint_url: getValues("ai_endpoint_url").trim(),
+      ...(typedKey ? { ai_api_key: typedKey } : {}),
+    });
+  }
 
   function onTest() {
     const typedKey = getValues("ai_api_key").trim();
@@ -88,7 +208,6 @@ export function AiSection({
       },
       {
         onSuccess: ({ models: found }) => {
-          setEnterModelManually(false);
           toast.success(
             found.length > 0
               ? `Endpoint reachable — ${found.length} model${found.length === 1 ? "" : "s"} available`
@@ -163,44 +282,23 @@ export function AiSection({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ai_model_name">Model</Label>
-          {showModelPicker ? (
-            <Select
-              value={modelName}
-              onValueChange={(value) =>
-                setValue("ai_model_name", value, { shouldDirty: true, shouldValidate: true })
-              }
-            >
-              <SelectTrigger id="ai_model_name" className="w-full font-mono">
-                <SelectValue placeholder="Choose a model" />
-              </SelectTrigger>
-              <SelectContent>
-                {modelOptions.map((model) => (
-                  <SelectItem key={model} value={model} className="font-mono">
-                    {model}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              id="ai_model_name"
-              className="font-mono"
-              aria-invalid={!!errors.ai_model_name}
-              {...register("ai_model_name")}
-            />
-          )}
+          <ModelPicker
+            id="ai_model_name"
+            value={modelName}
+            onChange={(value) =>
+              methods.setValue("ai_model_name", value, { shouldDirty: true, shouldValidate: true })
+            }
+            options={optionsWithCurrent(models, modelName)}
+            disabled={!canFetchModels}
+            isPending={listModels.isPending}
+            isError={listModels.isError}
+            errorMessage={modelErrorMessage}
+            onOpen={fetchModelsIfNeeded}
+            manualMode={enterModelManually}
+            onToggleManual={() => setEnterModelManually((current) => !current)}
+          />
           {errors.ai_model_name && (
             <p className="text-sm text-destructive">{errors.ai_model_name.message}</p>
-          )}
-          {models !== undefined && models.length > 0 && (
-            <Button
-              type="button"
-              variant="link"
-              className="h-auto p-0 text-sm"
-              onClick={() => setEnterModelManually(!enterModelManually)}
-            >
-              {showModelPicker ? "Enter a model name manually" : "Choose from the endpoint's list"}
-            </Button>
           )}
         </div>
         <div className="space-y-2">
@@ -212,13 +310,38 @@ export function AiSection({
           </p>
           <div className="space-y-2">
             {visionModels.fields.map((field, index) => (
-              <div key={field.id} className="flex items-center gap-2">
-                <Input
-                  className="font-mono"
-                  aria-label={`Vision model ${index + 1}`}
-                  placeholder="qwen2.5vl:7b"
-                  {...register(`vision_model_names.${index}.value`)}
-                />
+              <div key={field.id} className="flex items-start gap-2">
+                <div className="flex-1">
+                  <Controller
+                    control={control}
+                    name={`vision_model_names.${index}.value`}
+                    render={({ field: controllerField }) => (
+                      <ModelPicker
+                        ariaLabel={`Vision model ${index + 1}`}
+                        value={controllerField.value}
+                        onChange={controllerField.onChange}
+                        options={optionsWithCurrent(models, controllerField.value)}
+                        disabled={!canFetchModels}
+                        isPending={listModels.isPending}
+                        isError={listModels.isError}
+                        errorMessage={modelErrorMessage}
+                        onOpen={fetchModelsIfNeeded}
+                        manualMode={manualVisionRows.has(field.id)}
+                        onToggleManual={() =>
+                          setManualVisionRows((current) => {
+                            const next = new Set(current);
+                            if (next.has(field.id)) {
+                              next.delete(field.id);
+                            } else {
+                              next.add(field.id);
+                            }
+                            return next;
+                          })
+                        }
+                      />
+                    )}
+                  />
+                </div>
                 <Button
                   type="button"
                   variant="ghost"
@@ -257,13 +380,7 @@ export function AiSection({
             {listModels.isPending && <Loader2 className="animate-spin" />}
             Test connection
           </Button>
-          {listModels.isError && (
-            <p className="text-sm text-destructive">
-              {listModels.error instanceof ApiError
-                ? listModels.error.message
-                : "Couldn't reach the AI endpoint."}
-            </p>
-          )}
+          {listModels.isError && <p className="text-sm text-destructive">{modelErrorMessage}</p>}
           {models !== undefined && (
             <p className="text-sm text-muted-foreground">
               {models.length > 0
