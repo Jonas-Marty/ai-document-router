@@ -361,7 +361,7 @@ def propose_for(
         _fail(session, document, exc.message)
         return False
 
-    _store(session, document, proposal)
+    _store(session, document, proposal, prompt)
     logger.info("Proposal ready for %s: %s", document.webdav_path, proposal.suggested_name)
     return True
 
@@ -380,7 +380,7 @@ def _document_bytes(service: WebDavService, document: Document) -> bytes:
     return b"".join(service.read_stream(document.webdav_path))
 
 
-def _store(session: Session, document: Document, proposal: ai.Proposal) -> None:
+def _store(session: Session, document: Document, proposal: ai.Proposal, prompt: str) -> None:
     """Replace any existing proposal wholesale (SPEC 4.1) inside one transaction."""
     existing = session.exec(select(Proposal).where(Proposal.document_id == document.id)).first()
     if existing is not None:
@@ -401,6 +401,7 @@ def _store(session: Session, document: Document, proposal: ai.Proposal) -> None:
             reasoning_text=proposal.reasoning_text,
             model_name=proposal.model_name,
             created_at=to_storage(utc_now()),
+            prompt_text=prompt,
         )
     )
     document.proposal_status = ProposalStatus.ready

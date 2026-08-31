@@ -8,6 +8,7 @@ import { trimStemOnBlur } from "@/lib/naming";
 import { relativeTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { ConfidenceBadge, isLowConfidence } from "./ConfidenceBadge";
+import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
 import type { ReviewFormValues } from "./reviewFormSchema";
 import { SiblingList } from "./SiblingList";
@@ -143,6 +144,7 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
       </div>
 
       {document.proposal && <ReasoningBlock text={document.proposal.reasoning_text} />}
+      {document.proposal && <PromptDetails proposal={document.proposal} />}
 
       <div className="space-y-1.5">
         <Label>Files already in this folder</Label>

@@ -441,6 +441,12 @@ Validate the response: name has no extension and no illegal characters, folder i
 allowed root, date parses or is null, confidence is clamped to 0.0–1.0. On any validation
 failure, `proposal_status=failed` with the reason — never store a half-valid proposal.
 
+The exact user message built for the request (folder tree, sample filenames, naming hint,
+document text) is stored on `Proposal.prompt_text` alongside the result, so the review screen
+can show what was actually sent (8.3.5a). `null` for proposals stored before this field
+existed. The system prompt is a fixed constant, not stored per row — the API always returns
+its current text.
+
 ### 6.4 Approve, trash, revert (`services/router.py`)
 
 **Approve** — synchronous, the user is waiting.
@@ -575,6 +581,12 @@ filename and size shown above, muted.
 4. Target folder — breadcrumb display + "Choose folder" button.
 5. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
    "Show more".
+5a. **What was sent to the AI** — collapsed by default behind a "Show what was sent to the
+    AI" toggle. Expanded, it shows the fixed system instructions and the document-specific
+    prompt (folder tree, sample filenames, naming hint, document text) that produced this
+    proposal (6.3), each in its own scrollable monospace block. If the document-specific part
+    wasn't recorded (a proposal from before this existed), say so instead of showing nothing.
+    Lets someone judge a bad proposal and tune Settings instead of guessing.
 6. **Files already in this folder** — up to 5 siblings, filename (monospace) and date.
    Re-fetches with a 300 ms debounce whenever the target folder changes; it must always show
    the *currently selected* folder, not the AI's original suggestion. This block is the
@@ -622,12 +634,22 @@ navigation guard. Sections: Folders (allowed roots list, trash folder), Naming (
 hint, with a live regex validity check), AI (endpoint, model, API key). API key renders as
 `••••••••  (saved)` with helper text "Leave blank to keep the current key."
 
-AI has a `Test connection` button that GETs the endpoint's `/models` with the values currently
-in the form — the URL being tested is the one typed, not the one saved, since finding out the
-URL is wrong is the point. On success the model field becomes a dropdown of the returned ids,
-with `Enter a model name manually` to fall back to free text; on failure the reason shows
-inline under the button and the field stays a text input. An endpoint that answers but lists
-nothing is not an error.
+The model field (and each "vision models to compare" entry) is a dropdown of the endpoint's
+`/models` ids, not a text field — opening it is what fetches the list, using the endpoint URL
+and API key currently in the form, so no prior step is required. It is disabled while the
+endpoint URL is empty, since there is nowhere to send the request; the API key is not
+required (some endpoints take none). Each dropdown offers `Enter a model name manually` to
+fall back to free text — for an endpoint that cannot be reached, or one that does not list the
+model actually wanted. On a fetch error the reason shows inside the open dropdown (and under
+the `Test connection` button, see below); the currently configured model still appears as an
+option so a working setting is never blanked by a failed fetch. An endpoint that answers but
+lists nothing is not an error — the dropdown then offers only the current model.
+
+AI also has a `Test connection` button that explicitly GETs the endpoint's `/models` with the
+values currently in the form — the URL being tested is the one typed, not the one saved, since
+finding out the URL is wrong is the point. It shares its result with the dropdowns above (so
+opening one after a successful test does not re-fetch) and additionally toasts success or
+failure.
 
 ### 8.8 Queue behaviour
 

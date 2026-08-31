@@ -10,6 +10,7 @@ from app.models import (
     OcrStatus,
     ProposalStatus,
 )
+from app.services.ai import SYSTEM_PROMPT
 from app.services.extraction import extension_of
 from app.services.times import from_storage
 
@@ -21,6 +22,12 @@ class AIProposalRead(BaseModel):
     confidence_score: float
     reasoning_text: str
     model_name: str
+    # SPEC 8.3.5a: what was actually sent for this proposal, so the review screen can show it.
+    # prompt_text is None for proposals stored before this field existed, and for the
+    # /compare endpoint's in-memory results, which are never persisted. system_prompt has a
+    # default because it is the same constant for every proposal, never per-row state.
+    prompt_text: str | None = None
+    system_prompt: str = SYSTEM_PROMPT
 
 
 class DocumentRead(BaseModel):

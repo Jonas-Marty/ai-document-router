@@ -75,6 +75,10 @@ class Proposal(SQLModel, table=True):
     reasoning_text: str
     model_name: str
     created_at: datetime
+    # The exact user message built for this proposal (folder tree, sample filenames, naming
+    # hint, document text) -- SPEC 8.3.5a. Nullable because proposals stored before this field
+    # existed have nothing to backfill it with.
+    prompt_text: str | None = None
 
 
 class HistoryEntry(SQLModel, table=True):

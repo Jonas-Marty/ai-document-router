@@ -33,6 +33,8 @@ const baseDocument: Document = {
     confidence_score: 0.92,
     reasoning_text: "Looks like an invoice.",
     model_name: "test-model",
+    prompt_text: "Folders available (choose exactly one):\n/Documents/Finance",
+    system_prompt: "You file scanned documents.",
   },
   proposal_error: null,
   ocr_status: "not_needed",
@@ -121,6 +123,49 @@ describe("ReviewForm", () => {
     expect(screen.getByText("/Documents/Finance")).toBeInTheDocument();
   });
 
+  it("reveals what was sent to the AI only once asked, and hides it again on request", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const user = userEvent.setup();
+    render(<Harness document={baseDocument} />);
+
+    expect(screen.queryByText("You file scanned documents.")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /show what was sent to the ai/i }));
+    expect(screen.getByText("You file scanned documents.")).toBeInTheDocument();
+    expect(screen.getByText(/Folders available \(choose exactly one\):/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /hide what was sent to the ai/i }));
+    expect(screen.queryByText("You file scanned documents.")).not.toBeInTheDocument();
+  });
+
+  it("explains when the document-specific prompt wasn't recorded for an older proposal", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const user = userEvent.setup();
+    render(
+      <Harness
+        document={{
+          ...baseDocument,
+          proposal: {
+            suggested_name: "2026.05.18 Test Invoice",
+            target_folder_path: "/Documents/Finance",
+            document_date: "2026-05-18",
+            confidence_score: 0.92,
+            reasoning_text: "Looks like an invoice.",
+            model_name: "test-model",
+            prompt_text: null,
+            system_prompt: "You file scanned documents.",
+          },
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /show what was sent to the ai/i }));
+
+    expect(screen.getByText(/wasn't recorded for this proposal/i)).toBeInTheDocument();
+  });
+
   it("shows the SPEC 7.4 low-confidence banner below the 0.60 threshold", async () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
@@ -133,6 +178,8 @@ describe("ReviewForm", () => {
         confidence_score: 0.4,
         reasoning_text: "Looks like an invoice.",
         model_name: "test-model",
+        prompt_text: "Folders available (choose exactly one):\n/Documents/Finance",
+        system_prompt: "You file scanned documents.",
       },
     };
     render(<Harness document={lowConfidence} />);

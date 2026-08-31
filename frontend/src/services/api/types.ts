@@ -15,6 +15,10 @@ export interface AIProposal {
   confidence_score: number; // 0.0-1.0
   reasoning_text: string; // plain text, may contain newlines -- not markdown
   model_name: string;
+  // What was actually sent for this proposal (SPEC 8.3.5a). prompt_text is null for
+  // proposals stored before this field existed.
+  prompt_text: string | null;
+  system_prompt: string;
 }
 
 export interface Document {

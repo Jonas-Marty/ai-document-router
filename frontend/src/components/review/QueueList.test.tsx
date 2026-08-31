@@ -12,6 +12,8 @@ function proposal(overrides: Partial<AIProposal> = {}): AIProposal {
     confidence_score: 0.9,
     reasoning_text: "Invoice header.",
     model_name: "test-model",
+    prompt_text: null,
+    system_prompt: "You file scanned documents.",
     ...overrides,
   };
 }
