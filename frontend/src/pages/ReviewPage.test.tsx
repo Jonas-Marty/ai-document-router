@@ -40,6 +40,8 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
       model_name: "test-model",
     },
     proposal_error: null,
+    ocr_status: "not_needed",
+    ocr_error: null,
     ...overrides,
   };
 }
@@ -52,6 +54,7 @@ const SETTINGS: Settings = {
   ai_endpoint_url: "https://ai.example.com/v1",
   ai_model_name: "test-model",
   vision_model_names: [],
+  store_ocr_text: true,
   ai_api_key_set: true,
 };
 

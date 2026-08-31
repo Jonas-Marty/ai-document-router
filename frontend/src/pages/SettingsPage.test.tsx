@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +23,15 @@ function nth<T>(items: T[], index: number): T {
   return item;
 }
 
+/** The Save button belonging to one named section, found through the form it sits in.
+ * "the last Save button" used to mean AI's, right up until a fourth section was added
+ * below it -- which is not what any of these tests were ever trying to say. */
+function sectionSave(title: string): HTMLElement {
+  const form = screen.getByText(title, { selector: "div" }).closest("form");
+  if (form === null) throw new Error(`No form around the '${title}' section.`);
+  return within(form).getByRole("button", { name: "Save" });
+}
+
 function settings(overrides: Partial<Settings> = {}): Settings {
   return {
     allowed_root_folders: ["/Documents/Finance", "/Documents/Medical"],
@@ -32,6 +41,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     ai_endpoint_url: "https://ollama.local:11434",
     ai_model_name: "llama3",
     vision_model_names: [],
+    store_ocr_text: true,
     ai_api_key_set: true,
     ...overrides,
   };
@@ -107,7 +117,7 @@ describe("SettingsPage", () => {
     expect(await screen.findByDisplayValue("/Documents/Finance")).toBeInTheDocument();
   });
 
-  it("renders all three sections once settings load", async () => {
+  it("renders every section once settings load", async () => {
     vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
     renderPage();
 
@@ -115,6 +125,31 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("Folders")).toBeInTheDocument();
     expect(screen.getByText("Naming")).toBeInTheDocument();
     expect(screen.getByText("AI")).toBeInTheDocument();
+    expect(screen.getByText("OCR")).toBeInTheDocument();
+  });
+
+  it("turns the searchable-copy setting off and saves it", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    const toggle = screen.getByLabelText("File a searchable copy of scans");
+    expect(toggle).toBeChecked();
+
+    vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ store_ocr_text: false }));
+    await user.click(toggle);
+    await user.click(sectionSave("OCR"));
+
+    await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
+    const payload = vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0];
+    expect(payload).toMatchObject({ store_ocr_text: false });
+    // The rest of the settings ride along untouched -- every section PUTs the whole object,
+    // so a section that dropped a field it does not own would silently clear it.
+    expect(payload).toMatchObject({
+      ai_model_name: "llama3",
+      trash_folder_path: "/Documents/.trash",
+    });
+    expect(payload).not.toHaveProperty("ai_api_key_set");
   });
 
   it("saves Folders and clears dirty state so Save disables again", async () => {
@@ -238,9 +273,7 @@ describe("SettingsPage", () => {
     await user.type(modelInput, "llama3.1");
 
     vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ ai_model_name: "llama3.1" }));
-    // AI is the last section rendered, so its Save button is the last one in document order.
-    const aiSaveButtons = screen.getAllByRole("button", { name: "Save" });
-    await user.click(nth(aiSaveButtons, aiSaveButtons.length - 1));
+    await user.click(sectionSave("AI"));
 
     await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
     let payload = vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0];
@@ -250,8 +283,7 @@ describe("SettingsPage", () => {
     const keyInput = screen.getByLabelText("API key");
     await user.type(keyInput, "sk-secret-value");
     vi.mocked(apiClient.updateSettings).mockResolvedValue(settings());
-    const aiSaveButtonsAfterKey = screen.getAllByRole("button", { name: "Save" });
-    await user.click(nth(aiSaveButtonsAfterKey, aiSaveButtonsAfterKey.length - 1));
+    await user.click(sectionSave("AI"));
 
     await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
     payload = vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0];
@@ -331,8 +363,7 @@ describe("SettingsPage", () => {
     await user.click(await screen.findByRole("option", { name: "qwen3" }));
 
     vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ ai_model_name: "qwen3" }));
-    const saveButtons = screen.getAllByRole("button", { name: "Save" });
-    await user.click(nth(saveButtons, saveButtons.length - 1));
+    await user.click(sectionSave("AI"));
 
     await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
     expect(vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0]).toMatchObject({

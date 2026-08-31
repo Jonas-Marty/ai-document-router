@@ -64,6 +64,7 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
         ai_endpoint_url=settings.ai_endpoint_url,
         ai_model_name=settings.ai_model_name,
         vision_model_names=settings.vision_model_names,
+        store_ocr_text=settings.store_ocr_text,
         ai_api_key_set=settings.ai_api_key_encrypted is not None,
     )
 
@@ -88,6 +89,8 @@ def update_settings(session: Session, payload: SettingsUpdate, secret_key: str) 
     settings.vision_model_names = [
         name.strip() for name in payload.vision_model_names if name.strip()
     ]
+
+    settings.store_ocr_text = payload.store_ocr_text
 
     if payload.ai_api_key:
         settings.ai_api_key_encrypted = crypto.encrypt(secret_key, payload.ai_api_key)

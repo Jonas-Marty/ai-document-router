@@ -60,6 +60,24 @@ MULTISTATUS_XML = """<?xml version="1.0"?>
 """
 
 
+SINGLE_FILE_XML = """<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/remote.php/dav/files/jonas/Documents/invoice.pdf</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:getlastmodified>Fri, 21 Aug 2026 12:30:00 GMT</d:getlastmodified>
+        <d:getcontentlength>54321</d:getcontentlength>
+        <d:getcontenttype>application/pdf</d:getcontenttype>
+        <d:resourcetype/>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>
+"""
+
+
 def build_service(handler: object) -> WebDavService:
     http_client = httpx.Client(
         transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
@@ -119,6 +137,45 @@ class TestRealListingParse:
 
         assert seen[0].method == "PROPFIND"
         assert str(seen[0].url).startswith(f"{BASE_URL}/Documents")
+
+
+class TestRealReplace:
+    """The first content-write in this codebase, checked on the wire rather than on a fake.
+
+    A PUT is the one operation where getting the request wrong silently damages a document
+    rather than raising, so what actually leaves the process matters more here than usual.
+    """
+
+    def test_sends_a_put_with_the_bytes_to_the_right_url(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            # webdav4 answers `exists` with a PROPFIND, not a HEAD.
+            if request.method == "PROPFIND":
+                return httpx.Response(207, text=SINGLE_FILE_XML)
+            return httpx.Response(204)
+
+        build_service(handler).replace(
+            "/Documents/invoice.pdf", b"%PDF-1.7 ocred", "application/pdf"
+        )
+
+        put = next(request for request in seen if request.method == "PUT")
+        assert str(put.url) == f"{BASE_URL}/Documents/invoice.pdf"
+        assert put.content == b"%PDF-1.7 ocred"
+        assert put.headers["content-type"] == "application/pdf"
+
+    def test_does_not_put_when_the_file_is_not_there(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(404)
+
+        with pytest.raises(NotFoundError):
+            build_service(handler).replace("/Documents/gone.pdf", b"bytes")
+
+        assert [request.method for request in seen] == ["PROPFIND"]
 
 
 class TestRealErrorMapping:

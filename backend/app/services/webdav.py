@@ -4,12 +4,14 @@ Two rules from CLAUDE.md are structural here rather than conventional:
 
 1. There is no delete. `Client.remove` is deliberately never wrapped.
 2. There is no overwrite. `move()` always sends `Overwrite: F`; a destination that already
-   exists surfaces as a conflict instead of clobbering the file.
+   exists surfaces as a conflict instead of clobbering the file. `replace()` is the single,
+   narrow exception -- see its docstring.
 
 Every path crossing this boundary is normalized and checked against the permitted roots,
 because `..` handed to webdav4 escapes the base URL's own path prefix (see paths.py).
 """
 
+import io
 import logging
 import threading
 import time
@@ -255,6 +257,39 @@ class WebDavService:
         # A move changes the *contents* of both containing directories, not the paths moved.
         invalidate(parent_of(source))
         invalidate(parent_of(destination))
+
+    def replace(self, path: str, data: bytes, content_type: str | None = None) -> None:
+        """Write bytes over a file that must already be there.
+
+        The only method in this module that sends content, and shaped so it cannot quietly
+        become a general-purpose upload: the destination has to exist already, so this can
+        replace a file but never create one somewhere unexpected, and there is no variant
+        that takes a folder and a name.
+
+        Its one caller is approve's OCR write-back, replacing the file the MOVE put at this
+        path moments earlier with a searchable copy of that same document. CLAUDE.md rule 2
+        is about a move clobbering a file someone else put somewhere; this overwrites our
+        own, on purpose, with the same document plus a text layer. Rule 1 is untouched --
+        nothing here deletes, and a failure leaves the original exactly where it was filed.
+        """
+        normalized = self._check(path)
+        # Live, uncached, and for the same reason approve re-checks before its move: acting
+        # on a stale "yes, that exists" is how you write over the wrong thing.
+        if not self.exists(normalized):
+            raise NotFoundError(f"There is no file at '{normalized}' to replace.")
+
+        headers = {"Content-Type": content_type} if content_type else None
+        with _translate_errors():
+            self._client.upload_fileobj(
+                io.BytesIO(data),
+                self._wire(normalized),
+                overwrite=True,
+                size=len(data),
+                headers=headers,
+            )
+
+        # The file's size and etag changed, so the parent's cached listing is now wrong.
+        invalidate(parent_of(normalized))
 
     def mkdir(self, path: str) -> None:
         """Create a single directory. Its parent must already exist."""

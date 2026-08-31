@@ -66,6 +66,8 @@ class FakeClient:
         self.mkdir_calls: list[str] = []
         self.raise_on_ls: Exception | None = None
         self.raise_on_move: Exception | None = None
+        self.raise_on_upload: Exception | None = None
+        self.upload_calls: list[tuple[str, bytes, bool, dict[str, str] | None]] = []
         self.opened: list[FakeHandle] = []
 
     def ls(self, path: str, detail: bool = True) -> list[dict[str, Any]]:
@@ -92,6 +94,21 @@ class FakeClient:
         if path in self.existing:
             raise ResourceAlreadyExists(path)
         self.existing.add(path)
+
+    def upload_fileobj(
+        self,
+        file_obj: Any,
+        to_path: str,
+        overwrite: bool = False,
+        callback: Any = None,
+        chunk_size: int | None = None,
+        size: int | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.upload_calls.append((to_path, file_obj.read(), overwrite, headers))
+        if self.raise_on_upload is not None:
+            raise self.raise_on_upload
+        self.existing.add(to_path)
 
     @contextmanager
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
@@ -341,6 +358,67 @@ class TestMove:
 
         with pytest.raises(WebDAVConflict):
             service.move("/Documents/a.pdf", "/Documents/b.pdf")
+
+
+class TestReplace:
+    """The one method in the service that sends content. It is narrow on purpose."""
+
+    def test_writes_over_a_file_that_is_already_there(
+        self, service: WebDavService, fake: FakeClient
+    ) -> None:
+        fake.existing.add("Documents/filed.pdf")
+
+        service.replace("/Documents/filed.pdf", b"ocred-bytes", "application/pdf")
+
+        assert fake.upload_calls == [
+            ("Documents/filed.pdf", b"ocred-bytes", True, {"Content-Type": "application/pdf"})
+        ]
+
+    def test_refuses_a_path_with_nothing_at_it(
+        self, service: WebDavService, fake: FakeClient
+    ) -> None:
+        """The guard that keeps this from being a general upload: it can only ever replace.
+
+        Without it, a wrong path would quietly create a file somewhere nobody asked for --
+        which is the whole reason approve does the MOVE first and replaces its own result.
+        """
+        with pytest.raises(NotFoundError):
+            service.replace("/Documents/never-existed.pdf", b"bytes")
+
+        assert fake.upload_calls == []
+
+    def test_rejects_a_path_outside_the_permitted_roots(self, service: WebDavService) -> None:
+        with pytest.raises(OutsideAllowedRootsError):
+            service.replace("/Elsewhere/filed.pdf", b"bytes")
+
+    def test_rejects_an_escape_before_it_reaches_the_client(
+        self, service: WebDavService, fake: FakeClient
+    ) -> None:
+        # normalize_path refuses '..' outright rather than resolving it, so this never even
+        # gets as far as the roots check -- see paths.py.
+        with pytest.raises(ValueError, match="'\\.\\.' segments"):
+            service.replace("/Documents/../Secrets/filed.pdf", b"bytes")
+
+        assert fake.upload_calls == []
+
+    def test_invalidates_the_parent_listing(self, service: WebDavService, fake: FakeClient) -> None:
+        """The file's size and etag just changed, so a cached listing is now wrong."""
+        fake.existing.add("Documents/filed.pdf")
+        fake.listings["Documents"] = [_entry("Documents/filed.pdf", "file", size=10)]
+        service.list_dir("/Documents")
+
+        service.replace("/Documents/filed.pdf", b"longer-ocred-bytes")
+        service.list_dir("/Documents")
+
+        assert fake.ls_calls == ["Documents", "Documents"]
+
+    def test_takes_no_folder_and_name(self) -> None:
+        """A shape check, deliberately: `replace(path, data)` cannot become `upload(dir,
+        name, data)` without someone editing this test and thinking about why it is here."""
+        import inspect
+
+        parameters = inspect.signature(WebDavService.replace).parameters
+        assert list(parameters) == ["self", "path", "data", "content_type"]
 
 
 class TestMkdirP:

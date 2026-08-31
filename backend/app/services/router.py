@@ -17,17 +17,19 @@ from app.models import (
     DocumentStatus,
     HistoryAction,
     HistoryEntry,
+    OcrStatus,
     Proposal,
 )
-from app.services import naming
+from app.services import naming, searchable
 from app.services.documents import get_document
 from app.services.errors import (
+    AppError,
     FilenameCollision,
     NotRevertible,
     ValidationError,
     WebDAVConflict,
 )
-from app.services.extraction import extension_of
+from app.services.extraction import extension_of, sha256
 from app.services.paths import assert_within_allowed_roots, normalize_path
 from app.services.times import to_storage, utc_now
 from app.services.webdav import WebDavService, parent_of
@@ -78,6 +80,8 @@ def approve(
             f"'{stem}{extension}' already exists in {folder}. Choose a different name."
         ) from exc
 
+    _store_searchable_copy(webdav, app_settings, document, destination)
+
     entry = _record_history(
         session,
         document=document,
@@ -96,6 +100,55 @@ def approve(
 
     logger.info("Approved %s -> %s", source, destination)
     return document, entry
+
+
+def _store_searchable_copy(
+    webdav: WebDavService,
+    app_settings: AppSettings,
+    document: Document,
+    destination: str,
+) -> None:
+    """Replace the file we just filed with its OCR'd copy, when one is waiting.
+
+    Order matters as much here as it does for the move above. The MOVE happens first and
+    unchanged -- same collision check, same Overwrite: F -- so the only file this ever
+    writes over is the one we put at `destination` moments ago. That is why it is a replace
+    of our own file rather than an upload to a path that may hold someone else's, and why
+    CLAUDE.md rule 1 is untouched: nothing is deleted, and PUT-then-delete-the-original was
+    never on the table.
+
+    It also cannot fail the approve. By this point the document is correctly filed; losing
+    a text layer is not a reason to tell someone their filing did not happen, and what stays
+    behind on failure is exactly what would have been filed before this existed.
+    """
+    if not app_settings.store_ocr_text or document.ocr_status is not OcrStatus.ready:
+        return
+
+    data = searchable.load(document.content_hash)
+    if data is None:
+        logger.info("No searchable copy cached for %s; filed the original.", document.id)
+        return
+
+    try:
+        webdav.replace(destination, data, document.mime_type)
+    except AppError as exc:
+        logger.warning("Couldn't store the searchable copy at %s: %s", destination, exc.message)
+        return
+
+    # Discarded before content_hash is reassigned below -- the cache is keyed by the hash of
+    # the *original* bytes, and dropping it afterwards would look for a file that never
+    # existed and quietly leave the real entry behind.
+    searchable.discard(document.content_hash)
+
+    # The record now describes the file that is actually there. content_hash in particular:
+    # the poller dedupes queued documents by it, and a hash of bytes no longer on the server
+    # would make a re-ingest of this document look like a new one.
+    document.content_hash = sha256(data)
+    document.file_size_bytes = len(data)
+    # Accurate rather than merely tidy -- the filed document has a text layer now, so if it
+    # is reverted back into the queue there is nothing left to OCR.
+    document.ocr_status = OcrStatus.not_needed
+    logger.info("Filed %s with its OCR text layer.", destination)
 
 
 def skip(session: Session, document_id: str) -> Document:
@@ -151,6 +204,11 @@ def trash(
         action=HistoryAction.trashed,
         document_date=None,
     )
+    # Nobody is going to file this, so the cached searchable copy has no claimant left.
+    # Dropping it is cache housekeeping, not the WebDAV delete rule 1 forbids -- the
+    # document itself is in the trash folder, intact.
+    searchable.discard(document.content_hash)
+
     document.webdav_path = destination
     document.status = DocumentStatus.trashed
     session.add(document)

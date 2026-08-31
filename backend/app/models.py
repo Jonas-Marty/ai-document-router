@@ -24,6 +24,19 @@ class ProposalStatus(enum.StrEnum):
     failed = "failed"
 
 
+class OcrStatus(enum.StrEnum):
+    """Whether a searchable copy of a document exists, is coming, or was never needed.
+
+    `not_needed` covers both "this already has a text layer" and "this is not a PDF", which
+    are the same thing from here: there is nothing to add and nothing to wait for.
+    """
+
+    not_needed = "not_needed"
+    pending = "pending"
+    ready = "ready"
+    failed = "failed"
+
+
 class HistoryAction(enum.StrEnum):
     moved = "moved"
     trashed = "trashed"
@@ -45,6 +58,8 @@ class Document(SQLModel, table=True):
     skip_count: int = 0
     proposal_status: ProposalStatus = ProposalStatus.pending
     proposal_error: str | None = None
+    ocr_status: OcrStatus = OcrStatus.not_needed
+    ocr_error: str | None = None
     error_message: str | None = None
 
 
@@ -92,6 +107,11 @@ class AppSettings(SQLModel, table=True):
     # endpoint and key as ai_model_name. Empty means "don't offer a vision comparison";
     # nothing here ever runs on a poller tick.
     vision_model_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # When a scanned document has no text layer, OCR one in and file that copy instead of
+    # the original. Settable rather than always-on because it is the only thing in this app
+    # that writes *content* to WebDAV, and the person whose archive it is should be able to
+    # stop it without redeploying.
+    store_ocr_text: bool = True
     ai_api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
 
 

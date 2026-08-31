@@ -35,6 +35,8 @@ const baseDocument: Document = {
     model_name: "test-model",
   },
   proposal_error: null,
+  ocr_status: "not_needed",
+  ocr_error: null,
 };
 
 const emptySettings: Settings = {
@@ -45,6 +47,7 @@ const emptySettings: Settings = {
   ai_endpoint_url: "http://localhost:11434",
   ai_model_name: "test-model",
   vision_model_names: [],
+  store_ocr_text: true,
   ai_api_key_set: false,
 };
 
@@ -155,6 +158,47 @@ describe("ReviewForm", () => {
     // SPEC 8.8: "full manual approvability" -- fields are present and editable even without
     // a proposal.
     expect(screen.getByLabelText(/file name/i)).toBeEnabled();
+  });
+
+  it("says a searchable copy will be filed when one is ready, and stays quiet otherwise", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const { unmount } = render(<Harness document={baseDocument} />);
+    expect(screen.queryByText(/searchable copy/i)).not.toBeInTheDocument();
+    unmount();
+
+    render(<Harness document={{ ...baseDocument, ocr_status: "ready" }} />);
+    expect(await screen.findByText(/a searchable copy is filed in its place/i)).toBeInTheDocument();
+  });
+
+  it("says nothing about a searchable copy when the setting is off", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue({
+      ...emptySettings,
+      store_ocr_text: false,
+    });
+    render(<Harness document={{ ...baseDocument, ocr_status: "ready" }} />);
+
+    // The copy exists -- it was made before the setting was turned off -- but approve will
+    // not upload it, so promising the person a searchable file would be a lie.
+    await screen.findByLabelText(/file name/i);
+    expect(screen.queryByText(/a searchable copy is filed in its place/i)).not.toBeInTheDocument();
+  });
+
+  it("explains an OCR failure and that the document is filed as it is", () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    render(
+      <Harness
+        document={{
+          ...baseDocument,
+          ocr_status: "failed",
+          ocr_error: "This PDF is encrypted, so it can't be OCR'd.",
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/This PDF is encrypted, so it can't be OCR'd\./)).toBeInTheDocument();
   });
 
   it("shows a blocking error for a forbidden character as the user types (mode: onChange)", async () => {

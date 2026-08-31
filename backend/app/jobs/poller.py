@@ -1,9 +1,11 @@
-"""Scan the watch folder and generate proposals.
+"""Scan the watch folder, OCR what needs it, and generate proposals.
 
 SPEC 6.2 rule 4 is the important one: the poller only ever reads. It never moves or deletes
-anything -- filing happens when the user approves, not here.
+anything -- filing happens when the user approves, not here. The OCR phase keeps that rule:
+it writes the searchable copy it produces to the data volume, not to WebDAV. Uploading it
+is approve's job, after the move that puts the document where it belongs.
 
-Both phases are capped per tick. A first run against a populated watch folder (the target
+Every phase is capped per tick. A first run against a populated watch folder (the target
 Nextcloud has 52 scans sitting in it) would otherwise download every file and make one LLM
 call per document inside a single job run, while `max_instances=1` blocks the next tick.
 """
@@ -15,8 +17,15 @@ from sqlmodel import Session, select
 
 from app import db
 from app.config import settings as config
-from app.models import AppSettings, Document, DocumentStatus, Proposal, ProposalStatus
-from app.services import ai, extraction, folders
+from app.models import (
+    AppSettings,
+    Document,
+    DocumentStatus,
+    OcrStatus,
+    Proposal,
+    ProposalStatus,
+)
+from app.services import ai, extraction, folders, searchable
 from app.services import settings as settings_service
 from app.services.documents import QUEUED_STATUSES
 from app.services.errors import AppError
@@ -74,7 +83,14 @@ def run_once() -> None:
             # Carry the bytes we just read straight into the proposal step, so a document
             # ingested this tick is not downloaded a second time to extract the same text.
             fresh = ingest(session, service, app_settings)
+            # Before proposals, not after: a document we just OCR'd has text for the first
+            # time, and the whole point is that its proposal is built from that text rather
+            # than from the "no text layer" it would otherwise be stuck with.
+            for document_id in ocr_pending(session, service, app_settings):
+                # Its cached extraction predates the text layer, so it must not be reused.
+                fresh.pop(document_id, None)
             generate_proposals(session, service, app_settings, fresh)
+            searchable.prune(config.ocr_cache_max_age_days)
     except Exception:
         logger.exception("Poller tick failed.")
 
@@ -170,11 +186,101 @@ def _record(
         # Still fully approvable by hand -- SPEC 6.3.
         document.proposal_status = ProposalStatus.failed
         document.proposal_error = extracted.text_error
+        if extracted.mime_type == extraction.PDF_MIME:
+            # A PDF whose pages carry no text is exactly what OCR is for. Decided here,
+            # where the bytes have just been read, rather than making the OCR phase
+            # download every queued document to find out. It re-checks anyway.
+            document.ocr_status = OcrStatus.pending
 
     session.add(document)
     session.commit()
     logger.info("Ingested %s (%d bytes).", entry.path, extracted.file_size_bytes)
     return document, extracted
+
+
+def ocr_pending(session: Session, service: WebDavService, app_settings: AppSettings) -> list[str]:
+    """Produce a searchable copy for queued documents whose pages carry no text.
+
+    Here rather than in approve because ocrmypdf takes tens of seconds to minutes, and
+    approve is synchronous with a person waiting on it (SPEC 6.4). The copy waits on the
+    data volume until they file the document. Returns the ids that were OCR'd this tick.
+    """
+    if not app_settings.store_ocr_text:
+        return []
+    if not searchable.is_available():
+        logger.debug("ocrmypdf is not installed; skipping the OCR phase.")
+        return []
+
+    pending = session.exec(
+        select(Document)
+        .where(Document.ocr_status == OcrStatus.pending)
+        # Same reason proposals are limited this way: a document already filed is not going
+        # to be reviewed again, and OCRing it would spend minutes on nobody's behalf.
+        .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
+        .order_by(Document.discovered_at)  # type: ignore[arg-type]
+        .limit(config.poller_ocr_batch)
+    ).all()
+
+    return [document.id for document in pending if ocr_for(session, service, document)]
+
+
+def ocr_for(session: Session, service: WebDavService, document: Document) -> bool:
+    """OCR one document and cache the result. Returns True when a copy was produced.
+
+    Like proposals, every failure lands on a status and a readable message rather than an
+    exception: a document nobody could OCR is still filed by hand, just without a text layer.
+    """
+    try:
+        data = b"".join(service.read_stream(document.webdav_path))
+    except AppError as exc:
+        _fail_ocr(session, document, f"Couldn't read the file: {exc.message}")
+        return False
+
+    extracted = extraction.extract(data, document.original_filename, document.mime_type)
+    # Re-checked here rather than trusted from ingest. The migration that introduced this
+    # column had to guess for documents already in the queue, and spending minutes adding a
+    # text layer to a page that already has one is the one outcome worth a second read.
+    if extracted.mime_type != extraction.PDF_MIME or extracted.has_usable_text:
+        document.ocr_status = OcrStatus.not_needed
+        document.ocr_error = None
+        session.add(document)
+        session.commit()
+        return False
+
+    try:
+        output = searchable.build(data)
+    except searchable.SearchableUnavailable as exc:
+        _fail_ocr(session, document, str(exc))
+        return False
+
+    searchable.store(document.content_hash, output)
+    document.ocr_status = OcrStatus.ready
+    document.ocr_error = None
+    # The document failed its proposal on "no text layer" at ingest, and that is no longer
+    # true -- there is text now. Putting it back to pending is what lets the proposal phase
+    # later in this same tick read it. Only when it failed: a proposal that already
+    # succeeded is not improved by being thrown away.
+    if document.proposal_status is ProposalStatus.failed:
+        document.proposal_status = ProposalStatus.pending
+        document.proposal_error = None
+    session.add(document)
+    session.commit()
+
+    logger.info(
+        "OCR ready for %s (%d bytes -> %d).",
+        document.webdav_path,
+        document.file_size_bytes,
+        len(output),
+    )
+    return True
+
+
+def _fail_ocr(session: Session, document: Document, reason: str) -> None:
+    document.ocr_status = OcrStatus.failed
+    document.ocr_error = reason
+    session.add(document)
+    session.commit()
+    logger.info("OCR failed for %s: %s", document.webdav_path, reason)
 
 
 def generate_proposals(
@@ -224,14 +330,17 @@ def propose_for(
         # Only re-download when we did not just read this file (regenerate, or a document
         # carried over from an earlier tick).
         try:
-            data = b"".join(service.read_stream(document.webdav_path))
+            data = _document_bytes(service, document)
         except AppError as exc:
             _fail(session, document, f"Couldn't read the file: {exc.message}")
             return False
         extracted = extraction.extract(data, document.original_filename, document.mime_type)
 
     if extracted.text_error is not None:
-        _fail(session, document, extracted.text_error)
+        # The OCR failure's own reason when there is one: "This PDF is encrypted, so it
+        # can't be OCR'd" tells the person something they can act on, where the generic
+        # "no text layer" leaves them wondering why nothing happened.
+        _fail(session, document, document.ocr_error or extracted.text_error)
         return False
 
     tree, samples = folders.prompt_context(service, app_settings)
@@ -255,6 +364,20 @@ def propose_for(
     _store(session, document, proposal)
     logger.info("Proposal ready for %s: %s", document.webdav_path, proposal.suggested_name)
     return True
+
+
+def _document_bytes(service: WebDavService, document: Document) -> bytes:
+    """The searchable copy when one is waiting, otherwise the file on the server.
+
+    Not an optimisation: until the document is filed, the cache is the only place the OCR
+    text exists. Reading the original here instead would have the app OCR a scan, keep the
+    result, and still tell the person no text layer could be found.
+    """
+    if document.ocr_status is OcrStatus.ready:
+        cached = searchable.load(document.content_hash)
+        if cached is not None:
+            return cached
+    return b"".join(service.read_stream(document.webdav_path))
 
 
 def _store(session: Session, document: Document, proposal: ai.Proposal) -> None:

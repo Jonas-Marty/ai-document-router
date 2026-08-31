@@ -30,6 +30,8 @@ function doc(id: string, overrides: Partial<Document> = {}): Document {
     proposal_status: "ready",
     proposal: proposal(),
     proposal_error: null,
+    ocr_status: "not_needed",
+    ocr_error: null,
     ...overrides,
   };
 }
@@ -76,11 +78,11 @@ describe("QueueList", () => {
       doc("1", {
         proposal_status: "failed",
         proposal: null,
-        proposal_error: "No text layer found — OCR isn't set up yet.",
+        proposal_error: "No text layer found in this document.",
       }),
     ]);
 
-    expect(screen.getByText("No text layer found — OCR isn't set up yet.")).toBeInTheDocument();
+    expect(screen.getByText("No text layer found in this document.")).toBeInTheDocument();
   });
 
   it("marks the document being reviewed and flags skipped ones", () => {

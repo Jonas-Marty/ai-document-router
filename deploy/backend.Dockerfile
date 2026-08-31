@@ -34,16 +34,28 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Tesseract backs the "classical OCR" method on the review screen's comparison view. Just
-# the engine and its language data -- German first, since these are Swiss business
-# documents. Deliberately not ocrmypdf: its job is rewriting a PDF to carry a text layer,
-# which this app never wants, and it would drag ghostscript, qpdf, unpaper and pngquant in
-# for nothing. Pages are rendered by pypdfium2 in-process and handed to the tesseract CLI.
+# Two OCR paths, deliberately, because they want different things.
+#
+# tesseract alone backs the review screen's comparison view, which wants the *characters*
+# off a page: pypdfium2 renders in-process and the CLI reads the PNGs. Measured at 86 MB
+# with the deu/eng language data.
+#
+# ocrmypdf (a Python dependency, see backend/pyproject.toml) backs the searchable copy that
+# gets filed in place of a scan, which wants a *file* carrying a text layer. That is its
+# job, and it needs ghostscript present even when --output-type pdf keeps it away from the
+# page images. Measured at 215 MB on top of the tesseract layer, most of it ghostscript.
+# Bought knowingly: composing a PDF around invisible positioned glyphs by hand is not a
+# thing to reinvent for an archive somebody has to read in ten years.
+#
+# unpaper, pngquant and jbig2enc are all deliberately absent -- they serve --clean and
+# --optimize, and services/searchable.py passes --optimize 0 so the filed document's pixels
+# are the scanner's pixels.
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes \
         tesseract-ocr \
         tesseract-ocr-deu \
         tesseract-ocr-eng \
+        ghostscript \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root. The uid is fixed so the named volume's ownership stays stable across rebuilds --

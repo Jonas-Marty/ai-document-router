@@ -26,7 +26,10 @@ MAX_TEXT_CHARS = 6000
 MIN_MEANINGFUL_TEXT_CHARS = 50
 
 PDF_MIME = "application/pdf"
-NO_TEXT_LAYER_MESSAGE = "No text layer found — OCR isn't set up yet."
+# Deliberately says nothing about OCR: this module only knows what pypdf could read.
+# Whether anything is going to be done about it is the poller's business, and it
+# substitutes the OCR failure's own reason when there is one.
+NO_TEXT_LAYER_MESSAGE = "No text layer found in this document."
 
 
 @dataclass(frozen=True)

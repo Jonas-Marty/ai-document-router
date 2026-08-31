@@ -116,6 +116,8 @@ ai-document-router/
 | `skip_count` | int | default 0 |
 | `proposal_status` | enum | `pending` \| `ready` \| `failed` |
 | `proposal_error` | str \| null | |
+| `ocr_status` | enum | `not_needed` \| `pending` \| `ready` \| `failed` — see 6.2a |
+| `ocr_error` | str \| null | why no searchable copy could be made |
 | `error_message` | str \| null | set when `status = failed` |
 
 **`proposal`** — one-to-one with document, replaced wholesale on regeneration.
@@ -159,6 +161,7 @@ ai-document-router/
 | `ai_endpoint_url` | str |
 | `ai_model_name` | str |
 | `vision_model_names` | list[str] — extra models offered on the comparison view only |
+| `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
 | `ai_api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
 
 **`user`** — password and OIDC are two ways into the same row.
@@ -222,6 +225,8 @@ export interface Document {
   proposal_status: ProposalStatus;
   proposal: AIProposal | null;
   proposal_error: string | null;
+  ocr_status: OcrStatus;
+  ocr_error: string | null;
 }
 
 export interface FolderNode {
@@ -375,19 +380,45 @@ APScheduler interval job inside the API process, every `POLL_INTERVAL_SECONDS` (
 
 1. List the watch folder. For each file not already tracked (by path + `content_hash`),
    create a `document` with `status=pending`, `proposal_status=pending`.
-2. For each document with `proposal_status=pending`, generate a proposal (6.3).
-3. Skip files still being written: ignore anything whose last-modified is under 10 seconds
+2. For each queued document with `ocr_status=pending`, produce a searchable copy (6.2a).
+3. For each document with `proposal_status=pending`, generate a proposal (6.3).
+4. Skip files still being written: ignore anything whose last-modified is under 10 seconds
    old, and anything with a `.part`/`.tmp`/`.crdownload` extension.
-4. Never delete or move anything. The poller only reads.
+5. Never delete or move anything on the server. The poller only reads. The searchable copy
+   it produces is written to the data volume, not to WebDAV — uploading it is approve's job
+   (6.4), after the move that puts the document where it belongs.
 
-Jobs are serialized (`max_instances=1`) so a slow LLM call can't stack runs.
+Jobs are serialized (`max_instances=1`) so a slow LLM call can't stack runs. Each phase is
+capped per tick: `POLLER_INGEST_BATCH` (20), `POLLER_OCR_BATCH` (2), `POLLER_PROPOSAL_BATCH`
+(5). OCR gets the smallest cap because it is the slowest by an order of magnitude.
+
+### 6.2a Searchable copies (`services/searchable.py`)
+
+Only when `store_ocr_text` is on, and only for a PDF whose pages carry no text.
+
+1. `ocrmypdf --output-type pdf --skip-text --optimize 0 -l deu+eng` over the original bytes.
+   `--output-type pdf` grafts a text layer onto the original page images rather than
+   rewriting the file through ghostscript, so the archived pixels are the scanner's pixels;
+   `--optimize 0` keeps pngquant and jbig2enc away from them.
+2. The result is cached on the data volume at `OCR_CACHE_DIR`, keyed by `content_hash`.
+   Nothing is uploaded here.
+3. `ocr_status` becomes `ready`. A document whose proposal had failed on "no text layer" goes
+   back to `proposal_status=pending`, so the proposal in the same tick is built from the OCR
+   text rather than from the failure.
+4. `not_needed` when the document turns out to have a text layer already, or is not a PDF.
+   `failed` records why, and that reason is what the proposal reports instead of the generic
+   "no text layer".
+5. Cached copies older than `OCR_CACHE_MAX_AGE_DAYS` (14) are pruned each tick — the backstop
+   for a document that is never filed.
 
 ### 6.3 Proposal generation (`services/ai.py`)
 
 Input assembled by the backend:
-- Extracted text, first 6000 characters (`pypdf`). If the PDF has no text layer, set
-  `proposal_status=failed`, `proposal_error="No text layer found — OCR isn't set up yet."`
-  The document stays fully approvable by hand.
+- Extracted text, first 6000 characters (`pypdf`) — read from the searchable copy (6.2a)
+  when one has been made, otherwise from the file on the server. If there is still no text
+  layer, set `proposal_status=failed` and `proposal_error` to the OCR failure's own reason
+  when there is one, else `"No text layer found in this document."` The document stays fully
+  approvable by hand either way.
 - The folder tree under the allowed roots, as an indented path list, depth-capped at 4.
 - Up to 8 example filenames sampled from across those folders, so the model can see the
   naming convention.
@@ -696,8 +727,6 @@ and requires re-entering it — document this in the README.
   by registering; there is no invite, reset-password, or delete-user flow yet)
 - More than one OIDC provider at a time
 - Bulk selection or batch approval
-- OCR in the *filing* path (a PDF with no text layer still fails its proposal and is handled
-  manually; Tesseract exists only as one method on the comparison view)
 - Splitting a multi-page PDF into several documents — every page in a file is one document
 - Editing or moving files after filing, other than revert
 - Notifications, email, scheduling, analytics

@@ -3,6 +3,9 @@
 
 export type DocumentStatus = "pending" | "skipped" | "moved" | "trashed" | "failed";
 export type ProposalStatus = "pending" | "ready" | "failed";
+/** `not_needed` covers both "already has a text layer" and "not a PDF": either way there is
+ * nothing to add and nothing to wait for. */
+export type OcrStatus = "not_needed" | "pending" | "ready" | "failed";
 export type HistoryAction = "moved" | "trashed";
 
 export interface AIProposal {
@@ -27,6 +30,8 @@ export interface Document {
   proposal_status: ProposalStatus;
   proposal: AIProposal | null;
   proposal_error: string | null;
+  ocr_status: OcrStatus;
+  ocr_error: string | null;
 }
 
 export interface QueueResponse {
@@ -124,6 +129,7 @@ export interface Settings {
   ai_endpoint_url: string;
   ai_model_name: string;
   vision_model_names: string[]; // extra models offered in the review screen's comparison
+  store_ocr_text: boolean; // file a searchable copy of a scan instead of the original
   ai_api_key_set: boolean; // never the key itself
 }
 

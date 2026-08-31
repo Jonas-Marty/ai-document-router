@@ -17,6 +17,10 @@ services:
       # win over env_file, so the container always writes to the volume below rather than to
       # a path inside its own ephemeral filesystem. Four slashes: `sqlite:///` + `/data/app.db`.
       DATABASE_URL: sqlite:////data/app.db
+      # Same reasoning, same volume: a searchable copy waits here between the poller making
+      # it and approve filing it. The `./data/ocr` default is relative to WORKDIR /app,
+      # which the non-root user cannot write and which does not survive the container.
+      OCR_CACHE_DIR: /data/ocr
     volumes:
       # This is what makes the database outlive the container. `docker compose down` and a
       # subsequent `up` recreate the container against the same volume; only an explicit

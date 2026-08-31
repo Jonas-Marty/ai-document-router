@@ -34,9 +34,25 @@ class Settings(BaseSettings):
     # backlog drains over subsequent ticks.
     poller_ingest_batch: int = 20
     poller_proposal_batch: int = 5
+    # Much smaller than the others on purpose: OCRing a whole document is tens of seconds
+    # where a proposal is a few, and a tick that spent minutes in ocrmypdf would leave newly
+    # scanned files unnoticed. The backlog drains over subsequent ticks.
+    poller_ocr_batch: int = 2
     # SPEC 6.2: ignore anything written within the last few seconds, in case the scanner is
     # still uploading it.
     poller_min_file_age_seconds: int = 10
+
+    # --- ocr ----------------------------------------------------------------
+    # Where a searchable copy waits between the poller producing it and approve filing it.
+    # Under the same volume as the database, because a copy that vanished on restart would
+    # silently file the original instead -- losing the text layer with nothing to show for it.
+    ocr_cache_dir: str = "./data/ocr"
+    # Generous: a 20-page scan on a CPU-only container is minutes, and a timeout here means
+    # the document is filed without a text layer, which is worse than waiting.
+    ocr_timeout_seconds: float = 600.0
+    # A cached copy nobody claimed is a document that was trashed, or one sitting skipped
+    # forever. Bounded by age rather than count so the cache cannot grow without limit.
+    ocr_cache_max_age_days: int = 14
 
     # --- auth ---------------------------------------------------------------
     # Where the browser reaches this app. Only used to build the OIDC redirect URI and to

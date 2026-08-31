@@ -12,7 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings as config
 from app.jobs import poller
-from app.models import AppSettings, Document, DocumentStatus, Proposal, ProposalStatus
+from app.models import AppSettings, Document, DocumentStatus, OcrStatus, Proposal, ProposalStatus
 from app.services import ai
 from app.services.times import utc_now
 from app.services.webdav import WebDavEntry
@@ -170,7 +170,10 @@ class TestIngest:
         document = session.exec(select(Document)).one()
         assert document.proposal_status == ProposalStatus.failed
         assert document.proposal_error is not None
-        assert "OCR" in document.proposal_error
+        assert "No text layer" in document.proposal_error
+        # A PDF with no text is exactly what the OCR phase is for, so ingest queues it there
+        # rather than leaving it as a document nothing will ever look at again.
+        assert document.ocr_status == OcrStatus.pending
         # Still fully approvable by hand.
         assert document.status == DocumentStatus.pending
 
@@ -213,6 +216,318 @@ class TestNoDoubleDownload:
         poller.generate_proposals(session, service, app_settings)  # type: ignore[arg-type]
 
         assert service.read_paths == []  # nothing pending: the blank PDF already failed
+
+
+class TestOcrPhase:
+    """The phase that produces a searchable copy, between ingest and proposals."""
+
+    def _scan(self, session: Session, **overrides: Any) -> Document:
+        fields: dict[str, Any] = {
+            "webdav_path": "/Test-Inbox/scan.pdf",
+            "original_filename": "scan.pdf",
+            "mime_type": "application/pdf",
+            "file_size_bytes": 100,
+            "content_hash": "a" * 64,
+            "scanned_at": datetime(2026, 8, 21, 9, 0),
+            "discovered_at": datetime(2026, 8, 21, 9, 1),
+            "status": DocumentStatus.pending,
+            "proposal_status": ProposalStatus.failed,
+            "proposal_error": "No text layer found in this document.",
+            "ocr_status": OcrStatus.pending,
+        }
+        fields.update(overrides)
+        document = Document(**fields)
+        session.add(document)
+        session.commit()
+        return document
+
+    def _no_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.extraction import NO_TEXT_LAYER_MESSAGE, ExtractedDocument
+
+        monkeypatch.setattr(
+            poller.extraction,
+            "extract",
+            lambda *a, **k: ExtractedDocument(
+                content_hash="a" * 64,
+                file_size_bytes=100,
+                mime_type="application/pdf",
+                page_count=1,
+                text="",
+                text_error=NO_TEXT_LAYER_MESSAGE,
+            ),
+        )
+
+    def test_caches_the_copy_and_reopens_the_proposal(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._scan(session)
+        self._no_text(monkeypatch)
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+        monkeypatch.setattr(poller.searchable, "build", lambda data, **k: b"%PDF searchable")
+
+        assert poller.ocr_pending(session, FakeService([]), app_settings) == [document.id]  # type: ignore[arg-type]
+
+        session.refresh(document)
+        assert document.ocr_status == OcrStatus.ready
+        assert poller.searchable.load(document.content_hash) == b"%PDF searchable"
+        # The reason it failed -- no text layer -- is no longer true, so it goes back in the
+        # queue for a proposal instead of staying failed forever.
+        assert document.proposal_status == ProposalStatus.pending
+        assert document.proposal_error is None
+
+    def test_leaves_an_already_successful_proposal_alone(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._scan(session, proposal_status=ProposalStatus.ready, proposal_error=None)
+        self._no_text(monkeypatch)
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+        monkeypatch.setattr(poller.searchable, "build", lambda data, **k: b"%PDF searchable")
+
+        poller.ocr_pending(session, FakeService([]), app_settings)  # type: ignore[arg-type]
+
+        session.refresh(document)
+        assert document.proposal_status == ProposalStatus.ready
+
+    def test_a_document_that_turns_out_to_have_text_is_not_ocred(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The migration had to guess for documents already in the queue. Spending minutes
+        adding a text layer to a page that has one is the outcome worth a second read."""
+        from app.services.extraction import ExtractedDocument
+
+        document = self._scan(session)
+        monkeypatch.setattr(
+            poller.extraction,
+            "extract",
+            lambda *a, **k: ExtractedDocument(
+                content_hash="a" * 64,
+                file_size_bytes=100,
+                mime_type="application/pdf",
+                page_count=1,
+                text="Swisscom Rechnung " * 10,
+                text_error=None,
+            ),
+        )
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+
+        def must_not_run(data: bytes, **kwargs: Any) -> bytes:
+            raise AssertionError("ocrmypdf must not run for a document that already has text")
+
+        monkeypatch.setattr(poller.searchable, "build", must_not_run)
+
+        assert poller.ocr_pending(session, FakeService([]), app_settings) == []  # type: ignore[arg-type]
+
+        session.refresh(document)
+        assert document.ocr_status == OcrStatus.not_needed
+
+    def test_a_failure_lands_on_a_status_with_a_reason(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._scan(session)
+        self._no_text(monkeypatch)
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+
+        def fail(data: bytes, **kwargs: Any) -> bytes:
+            raise poller.searchable.SearchableUnavailable("This PDF is encrypted.")
+
+        monkeypatch.setattr(poller.searchable, "build", fail)
+
+        assert poller.ocr_pending(session, FakeService([]), app_settings) == []  # type: ignore[arg-type]
+
+        session.refresh(document)
+        assert document.ocr_status == OcrStatus.failed
+        assert document.ocr_error == "This PDF is encrypted."
+
+    def test_does_nothing_when_the_setting_is_off(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing may write to someone's document store because a default said so."""
+        document = self._scan(session)
+        app_settings.store_ocr_text = False
+        session.add(app_settings)
+        session.commit()
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+
+        def must_not_run(data: bytes, **kwargs: Any) -> bytes:
+            raise AssertionError("OCR must not run with the setting off")
+
+        monkeypatch.setattr(poller.searchable, "build", must_not_run)
+
+        assert poller.ocr_pending(session, FakeService([]), app_settings) == []  # type: ignore[arg-type]
+        session.refresh(document)
+        assert document.ocr_status == OcrStatus.pending
+
+    def test_skips_a_document_that_has_already_been_filed(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._scan(session, status=DocumentStatus.moved)
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+
+        assert poller.ocr_pending(session, FakeService([]), app_settings) == []  # type: ignore[arg-type]
+
+    def test_is_capped_per_tick(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OCR is minutes, not seconds -- an uncapped phase would starve the other two."""
+        for index in range(4):
+            self._scan(
+                session,
+                webdav_path=f"/Test-Inbox/scan{index}.pdf",
+                content_hash=f"{index}" * 64,
+            )
+        self._no_text(monkeypatch)
+        monkeypatch.setattr(config, "poller_ocr_batch", 2)
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+        monkeypatch.setattr(poller.searchable, "build", lambda data, **k: b"%PDF searchable")
+
+        assert len(poller.ocr_pending(session, FakeService([]), app_settings)) == 2  # type: ignore[arg-type]
+
+    def test_the_proposal_is_built_from_the_ocred_copy_not_the_original(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cache is the only place the OCR text exists until the document is filed.
+
+        Reading the server copy here would have the app OCR a scan, keep the result, and
+        then still tell the person no text layer could be found.
+        """
+        document = self._scan(
+            session, ocr_status=OcrStatus.ready, proposal_status=ProposalStatus.pending
+        )
+        poller.searchable.store(document.content_hash, b"%PDF searchable")
+        service = FakeService([])
+
+        seen: list[bytes] = []
+
+        def capture(data: bytes, filename: str, mime: str | None = None) -> Any:
+            from app.services.extraction import ExtractedDocument
+
+            seen.append(data)
+            return ExtractedDocument(
+                content_hash="h",
+                file_size_bytes=len(data),
+                mime_type="application/pdf",
+                page_count=1,
+                text="Swisscom Rechnung " * 10,
+                text_error=None,
+            )
+
+        monkeypatch.setattr(poller.extraction, "extract", capture)
+        monkeypatch.setattr(
+            poller.ai,
+            "request_proposal",
+            lambda **kwargs: ai.Proposal(
+                suggested_name="2026-08-21_Swisscom",
+                target_folder_path="/Documents/Finance",
+                document_date=None,
+                confidence_score=0.9,
+                reasoning_text="Invoice header.",
+                model_name="m",
+            ),
+        )
+
+        assert poller.propose_for(session, service, app_settings, document) is True  # type: ignore[arg-type]
+        assert seen == [b"%PDF searchable"]
+        assert service.read_paths == []
+
+    def test_a_document_nobody_could_ocr_says_why_on_its_proposal(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "No text layer found" is true but useless; the OCR failure is the actionable bit."""
+        document = self._scan(
+            session,
+            ocr_status=OcrStatus.failed,
+            ocr_error="This PDF is encrypted, so it can't be OCR'd.",
+            proposal_status=ProposalStatus.pending,
+        )
+        self._no_text(monkeypatch)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is False  # type: ignore[arg-type]
+
+        session.refresh(document)
+        assert document.proposal_error == "This PDF is encrypted, so it can't be OCR'd."
+
+
+class TestFullTick:
+    """The three phases in the order run_once runs them.
+
+    This is where the OCR write-back actually earns its keep: a scan with no text layer has
+    to come out of one tick with a proposal built from the text OCR found, not with the "no
+    text layer" failure it arrived with. The phases are individually covered above; what is
+    checked here is that they are wired together in the right order.
+    """
+
+    def test_a_scan_with_no_text_layer_is_ocred_and_proposed_in_one_tick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.services.extraction import NO_TEXT_LAYER_MESSAGE, ExtractedDocument
+
+        engine = create_engine(
+            "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as setup:
+            setup.add(
+                AppSettings(id=1, allowed_root_folders=["/Documents"], trash_folder_path="/Trash")
+            )
+            setup.commit()
+
+        monkeypatch.setattr(poller.db, "engine", engine)
+        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
+        monkeypatch.setattr(poller, "build_service", lambda s: FakeService([entry("scan.pdf")]))
+
+        # The scan reads as image-only until it has been through OCR, and as text after.
+        ocred = {"done": False}
+
+        def extract(data: bytes, filename: str, mime: str | None = None) -> ExtractedDocument:
+            if data == b"%PDF searchable":
+                return ExtractedDocument(
+                    content_hash="h",
+                    file_size_bytes=len(data),
+                    mime_type="application/pdf",
+                    page_count=1,
+                    text="Swisscom Rechnung " * 10,
+                    text_error=None,
+                )
+            return ExtractedDocument(
+                content_hash="a" * 64,
+                file_size_bytes=len(data),
+                mime_type="application/pdf",
+                page_count=1,
+                text="",
+                text_error=NO_TEXT_LAYER_MESSAGE,
+            )
+
+        def build(data: bytes, **kwargs: Any) -> bytes:
+            ocred["done"] = True
+            return b"%PDF searchable"
+
+        monkeypatch.setattr(poller.extraction, "extract", extract)
+        monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
+        monkeypatch.setattr(poller.searchable, "build", build)
+        monkeypatch.setattr(
+            poller.ai,
+            "request_proposal",
+            lambda **kwargs: ai.Proposal(
+                suggested_name="2026.08.21 Swisscom Rechnung",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.9,
+                reasoning_text="Invoice header.",
+                model_name="m",
+            ),
+        )
+
+        poller.run_once()
+
+        assert ocred["done"] is True
+        with Session(engine) as check:
+            document = check.exec(select(Document)).one()
+            assert document.ocr_status == OcrStatus.ready
+            # Not still stuck on the failure it was given at ingest.
+            assert document.proposal_status == ProposalStatus.ready
+            assert document.proposal_error is None
+            proposal = check.exec(select(Proposal)).one()
+            assert proposal.suggested_name == "2026.08.21 Swisscom Rechnung"
 
 
 class TestProposals:

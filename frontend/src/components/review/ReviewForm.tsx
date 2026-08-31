@@ -76,6 +76,18 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
         </div>
       )}
 
+      {settings?.store_ocr_text && document.ocr_status === "ready" && (
+        <p className="text-sm text-muted-foreground">
+          This scan had no text layer, so a searchable copy is filed in its place. The pages are
+          unchanged — only invisible text is added.
+        </p>
+      )}
+      {document.ocr_status === "failed" && document.ocr_error && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          Couldn't make this scan searchable: {document.ocr_error} It will be filed as it is.
+        </p>
+      )}
+
       <div className="space-y-1.5">
         <Label htmlFor="review-document-date">Document date</Label>
         <Input id="review-document-date" type="date" {...register("documentDate")} />

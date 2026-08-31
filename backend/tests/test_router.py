@@ -17,17 +17,21 @@ from app.models import (
     DocumentStatus,
     HistoryAction,
     HistoryEntry,
+    OcrStatus,
     Proposal,
     ProposalStatus,
 )
 from app.services import router as router_service
+from app.services import searchable
 from app.services.errors import (
     FilenameCollision,
     NotRevertible,
     OutsideAllowedRootsError,
     ValidationError,
     WebDAVConflict,
+    WebDAVUnreachable,
 )
+from app.services.extraction import sha256
 
 WATCH = "/Test-Inbox"
 ROOT = "/Test-Outbox"
@@ -42,6 +46,13 @@ class FakeWebDav:
         self.moves: list[tuple[str, str]] = []
         self.mkdirs: list[str] = []
         self.fail_move: Exception | None = None
+        self.replaced: list[tuple[str, bytes, str | None]] = []
+        self.fail_replace: Exception | None = None
+
+    def replace(self, path: str, data: bytes, content_type: str | None = None) -> None:
+        if self.fail_replace is not None:
+            raise self.fail_replace
+        self.replaced.append((path, data, content_type))
 
     def exists(self, path: str) -> bool:
         return path in self.existing
@@ -319,6 +330,143 @@ class TestApprove:
                 final_folder_path=ROOT,
                 document_date=None,
             )
+
+
+class TestSearchableWriteBack:
+    """Filing a scan stores its OCR'd copy in place of the original.
+
+    The order is the safety argument: the MOVE happens first, unchanged, with its collision
+    check and Overwrite: F intact, and only then is the file *we just put there* replaced.
+    Nothing is deleted, and nothing someone else put anywhere is ever written over.
+    """
+
+    HASH = "c" * 64
+
+    def _ready_scan(self, session: Session) -> Document:
+        document = make_document(session)
+        document.content_hash = self.HASH
+        document.ocr_status = OcrStatus.ready
+        session.add(document)
+        session.commit()
+        searchable.store(self.HASH, b"%PDF-1.7 searchable")
+        return document
+
+    def _approve(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings, document: Document
+    ) -> None:
+        router_service.approve(
+            session,
+            webdav,
+            app_settings,
+            document.id,
+            final_name="2026.08.21 Swisscom Rechnung",
+            final_folder_path=ROOT,
+            document_date=date(2026, 8, 21),
+        )
+
+    def test_replaces_the_filed_file_after_the_move(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = self._ready_scan(session)
+
+        self._approve(session, webdav, app_settings, document)
+
+        destination = f"{ROOT}/2026.08.21 Swisscom Rechnung.pdf"
+        assert webdav.moves == [(f"{WATCH}/scan.pdf", destination)]
+        # The path replaced is the move's destination, not the source and not anything else.
+        assert webdav.replaced == [(destination, b"%PDF-1.7 searchable", "application/pdf")]
+
+    def test_updates_the_record_to_describe_what_is_actually_there(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = self._ready_scan(session)
+
+        self._approve(session, webdav, app_settings, document)
+
+        session.refresh(document)
+        assert document.content_hash == sha256(b"%PDF-1.7 searchable")
+        assert document.file_size_bytes == len(b"%PDF-1.7 searchable")
+        # It has a text layer now, so a revert back into the queue has nothing left to OCR.
+        assert document.ocr_status == OcrStatus.not_needed
+
+    def test_drops_the_cached_copy_once_it_is_filed(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        """Keyed by the *original* hash. Discarding after content_hash is reassigned would
+        look for a file that never existed and leave the real entry behind forever."""
+        document = self._ready_scan(session)
+
+        self._approve(session, webdav, app_settings, document)
+
+        assert searchable.load(self.HASH) is None
+
+    def test_a_failed_upload_does_not_fail_the_approve(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        """By this point the document is filed. Losing a text layer is not a reason to tell
+        someone their filing did not happen -- what stays behind is the original, correctly
+        placed, which is exactly what would have been filed before this feature existed."""
+        document = self._ready_scan(session)
+        webdav.fail_replace = WebDAVUnreachable("Can't reach the WebDAV server.")
+
+        self._approve(session, webdav, app_settings, document)
+
+        session.refresh(document)
+        assert document.status == DocumentStatus.moved
+        assert document.webdav_path == f"{ROOT}/2026.08.21 Swisscom Rechnung.pdf"
+        assert session.exec(select(HistoryEntry)).one().action == HistoryAction.moved
+        # The record still describes the original, because the original is what is there.
+        assert document.content_hash == self.HASH
+
+    def test_files_the_original_when_the_setting_is_off(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = self._ready_scan(session)
+        app_settings.store_ocr_text = False
+        session.add(app_settings)
+        session.commit()
+
+        self._approve(session, webdav, app_settings, document)
+
+        assert webdav.replaced == []
+        assert webdav.moves != []
+
+    def test_files_the_original_when_no_copy_was_ever_made(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        """A document that already had a text layer is the ordinary case, and it must reach
+        the server byte-for-byte as it arrived."""
+        document = make_document(session)
+
+        self._approve(session, webdav, app_settings, document)
+
+        assert webdav.replaced == []
+
+    def test_files_the_original_when_the_cache_entry_has_gone(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        """The volume was wiped, or prune got there first. The move still stands."""
+        document = self._ready_scan(session)
+        searchable.discard(self.HASH)
+
+        self._approve(session, webdav, app_settings, document)
+
+        assert webdav.replaced == []
+        session.refresh(document)
+        assert document.status == DocumentStatus.moved
+
+    def test_trashing_drops_the_cached_copy(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        """Nobody is going to file it. The document itself is in the trash folder, intact --
+        this is cache housekeeping, not the WebDAV delete rule 1 forbids."""
+        document = self._ready_scan(session)
+
+        router_service.trash(session, webdav, app_settings, document.id)
+
+        assert searchable.load(self.HASH) is None
+        assert webdav.replaced == []
+        assert webdav.moves == [(f"{WATCH}/scan.pdf", f"{TRASH}/scan.pdf")]
 
 
 class TestWasOverridden:

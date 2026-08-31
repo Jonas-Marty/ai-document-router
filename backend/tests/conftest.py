@@ -30,6 +30,19 @@ def no_poller(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def isolated_ocr_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Keep the searchable-copy cache out of the real data volume.
+
+    services/searchable.py creates its directory on first use, so without this a test run
+    would leave (and read) files under backend/data/ocr -- and one test's leftovers would be
+    the next one's cache hit.
+    """
+    monkeypatch.setattr(config, "ocr_cache_dir", str(tmp_path_factory.mktemp("ocr-cache")))
+
+
+@pytest.fixture(autouse=True)
 def clean_webdav_cache() -> Iterator[None]:
     """The listing cache is module-level, so it would otherwise leak between tests."""
     webdav.clear_cache()

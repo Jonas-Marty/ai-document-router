@@ -745,3 +745,71 @@ meaningful. One line of "why" each; not a full ADR log.
 - **`vision_model_names` is a plain list with no validation beyond "not blank".** A name the
   endpoint does not serve surfaces as that method's error on the comparison view, which is
   the honest place for it and cheaper than keeping a copy of the endpoint's catalogue in sync.
+
+## M12 — Searchable copies on file
+
+- **The MOVE happens first, and then we replace our own file.** CLAUDE.md rule 1 rules out
+  PUT-to-destination-then-DELETE-source, so the sequence is: move the original exactly as
+  before — same pre-move collision check, same `Overwrite: F` — and only then PUT the OCR'd
+  bytes over the path we just created. Nothing is deleted, the only file ever written over is
+  one this app put there seconds earlier, and a failed PUT leaves the original correctly
+  filed. Rule 2 is about a *move* clobbering someone else's file; this is neither a move nor
+  someone else's file.
+- **`webdav.replace()` requires the destination to already exist.** That single precondition
+  is what keeps the first content-write in this codebase from quietly becoming a general
+  upload: it can replace a file but never create one somewhere unexpected, and there is no
+  overload taking a folder and a name. A shape test asserts the signature so widening it has
+  to be a deliberate act.
+- **The write-back can never fail an approve.** By the time it runs the document is filed.
+  Losing a text layer is not a reason to tell someone their filing did not happen, and what
+  remains on failure is exactly what would have been filed before this existed.
+- **OCR runs in the poller, not in approve.** ocrmypdf is tens of seconds to minutes; approve
+  is synchronous with a person waiting (SPEC 6.4). The copy is cached on the data volume,
+  keyed by `content_hash`, and approve only uploads bytes that are already sitting there.
+  `OCR_CACHE_DIR` is overridden to `/data/ocr` in both compose files for the same reason
+  `DATABASE_URL` is: the `./data/ocr` default resolves under WORKDIR `/app`, which the
+  non-root user cannot write and which does not survive the container.
+- **ocrmypdf, despite M11 deciding against it.** M11 wanted the *characters* off a page and
+  got them for 86 MB by rendering with pypdfium2 and piping PNGs to the tesseract CLI. This
+  wants a *file* carrying a text layer, which is precisely ocrmypdf's job; tesseract's own
+  PDF output re-encodes the page images, and composing a PDF around invisible positioned
+  glyphs by hand is not a thing to reinvent for an archive. Measured: the backend image goes
+  from 336 MB to **479 MB** — less than the 215 MB ocrmypdf and ghostscript cost standalone,
+  because pypdfium2, pillow, cryptography and pydantic were already in it.
+- **`--output-type pdf --optimize 0`.** The first grafts a text layer onto the original page
+  images with pikepdf instead of rewriting the file through ghostscript; the second keeps
+  pngquant and jbig2enc away from them. Together they are the reason it is safe to file this
+  over someone's scan: the archived pixels are the scanner's pixels, and only invisible text
+  is added. A test asserts both flags.
+- **Only PDFs with no text layer.** The survey found 49 of 52 real scans already carry one,
+  and those are filed byte-for-byte as they arrived. `ocr_status` is decided at ingest, where
+  the bytes have just been read, but re-checked before ocrmypdf runs — the migration had to
+  guess for documents already in the queue, and spending minutes adding a text layer to a
+  page that has one is the one outcome worth a second read.
+- **The OCR text feeds the proposal.** Otherwise the app would read every word off a scan,
+  keep the result, and still report "no text layer found". The OCR phase runs before the
+  proposal phase in the same tick, puts a document that failed on "no text layer" back to
+  `pending`, and `propose_for` extracts from the cached copy rather than re-downloading. A
+  proposal that already succeeded is left alone — it is not improved by being thrown away.
+- **`NO_TEXT_LAYER_MESSAGE` no longer mentions OCR.** "No text layer found — OCR isn't set up
+  yet" became false the moment OCR was set up. `extraction.py` only knows what pypdf could
+  read, so it says that and nothing more; the poller substitutes the OCR failure's own reason
+  when there is one, because "This PDF is encrypted, so it can't be OCR'd" is actionable
+  where the generic message is not.
+- **`store_ocr_text` is a setting, defaulting on.** On, because someone filing scans wants
+  the next ones searchable without hunting for a switch. A setting at all, because this is
+  the only thing in the app that writes file *content* to WebDAV, and the person whose
+  archive it is should be able to stop it without a redeploy. Its own Settings section rather
+  than a line under AI: it is not about the model.
+- **A native checkbox, not shadcn's.** shadcn's Checkbox is a Radix package, and CLAUDE.md
+  rule 8 puts a new runtime dependency behind a question. One control does not justify one.
+- **The cache is pruned by age, not by count.** 14 days, each tick. It is the backstop for
+  every path that never reaches approve or trash — a document skipped indefinitely, a folder
+  taken out of scope, a container replaced mid-review. Deleting from this cache is not the
+  WebDAV delete rule 1 forbids: nothing in it is the only copy of anything, and a dropped
+  entry just means the next tick OCRs the document again.
+- **Approve discards the cache entry before reassigning `content_hash`.** The key is the hash
+  of the *original* bytes; discarding afterwards would look for a file that never existed and
+  leave the real entry to age out. `content_hash` and `file_size_bytes` are updated to
+  describe what is actually on the server, because the poller dedupes queued documents by
+  hash and a stale one would make a re-ingest look like a new document.

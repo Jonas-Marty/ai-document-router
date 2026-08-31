@@ -2,13 +2,14 @@ import { useCallback, useState } from "react";
 import { AiSection } from "@/components/settings/AiSection";
 import { FoldersSection } from "@/components/settings/FoldersSection";
 import { NamingSection } from "@/components/settings/NamingSection";
+import { OcrSection } from "@/components/settings/OcrSection";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSetNavigationGuard } from "@/hooks/useNavigationGuard";
 import { useSettings } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
 
-type SectionName = "folders" | "naming" | "ai";
+type SectionName = "folders" | "naming" | "ai" | "ocr";
 
 export default function SettingsPage() {
   const settings = useSettings();
@@ -16,6 +17,7 @@ export default function SettingsPage() {
     folders: false,
     naming: false,
     ai: false,
+    ocr: false,
   });
 
   const anyDirty = Object.values(dirtySections).some(Boolean);
@@ -31,6 +33,10 @@ export default function SettingsPage() {
   );
   const onAiDirtyChange = useCallback(
     (dirty: boolean) => setDirtySections((prev) => ({ ...prev, ai: dirty })),
+    [],
+  );
+  const onOcrDirtyChange = useCallback(
+    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, ocr: dirty })),
     [],
   );
 
@@ -52,6 +58,7 @@ export default function SettingsPage() {
           <FoldersSection settings={settings.data} onDirtyChange={onFoldersDirtyChange} />
           <NamingSection settings={settings.data} onDirtyChange={onNamingDirtyChange} />
           <AiSection settings={settings.data} onDirtyChange={onAiDirtyChange} />
+          <OcrSection settings={settings.data} onDirtyChange={onOcrDirtyChange} />
         </>
       ) : null}
     </div>
@@ -61,6 +68,7 @@ export default function SettingsPage() {
 function SettingsSkeleton() {
   return (
     <div className="space-y-4" aria-busy="true">
+      <Skeleton className="h-40 w-full" />
       <Skeleton className="h-40 w-full" />
       <Skeleton className="h-40 w-full" />
       <Skeleton className="h-40 w-full" />

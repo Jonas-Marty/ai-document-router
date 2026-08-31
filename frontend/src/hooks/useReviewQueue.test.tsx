@@ -26,6 +26,8 @@ function doc(id: string): Document {
     proposal_status: "ready",
     proposal: null,
     proposal_error: null,
+    ocr_status: "not_needed",
+    ocr_error: null,
   };
 }
 

@@ -19,6 +19,10 @@ dependencies = [
     "httpx>=0.28",
     "pypdfium2>=5.13.0",
     "pillow>=12.3.0",
+    # Only ever invoked as a CLI (services/searchable.py), not imported -- but declared as a
+    # project dependency rather than an apt package so the version is pinned by uv.lock like
+    # everything else. It needs ghostscript from apt; see deploy/backend.Dockerfile.
+    "ocrmypdf>=17.11.0",
 ]
 
 [dependency-groups]
