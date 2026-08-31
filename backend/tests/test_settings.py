@@ -31,6 +31,7 @@ def test_get_settings_returns_seeded_defaults(client: TestClient) -> None:
         "filename_pattern_hint": None,
         "ai_endpoint_url": "",
         "ai_model_name": "",
+        "vision_model_names": [],
         "ai_api_key_set": False,
     }
 

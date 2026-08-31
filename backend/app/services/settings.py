@@ -28,6 +28,18 @@ def get_settings(session: Session) -> AppSettings:
     return settings
 
 
+def decrypt_api_key(settings: AppSettings) -> str | None:
+    """The stored AI key in the clear, for the one moment a request needs it.
+
+    Lives here rather than with whichever caller needs it so the decrypt happens in exactly
+    one place -- CLAUDE.md rule 5 is about the key never leaking, and that is easier to hold
+    when there is a single function to look at.
+    """
+    if settings.ai_api_key_encrypted is None:
+        return None
+    return crypto.decrypt(config.secret_key, settings.ai_api_key_encrypted)
+
+
 def permitted_roots(settings: AppSettings) -> list[str]:
     """Every path tree the app may touch: allowed roots plus the deliberate exceptions.
 
@@ -51,6 +63,7 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
         filename_pattern_hint=settings.filename_pattern_hint,
         ai_endpoint_url=settings.ai_endpoint_url,
         ai_model_name=settings.ai_model_name,
+        vision_model_names=settings.vision_model_names,
         ai_api_key_set=settings.ai_api_key_encrypted is not None,
     )
 
@@ -69,6 +82,12 @@ def update_settings(session: Session, payload: SettingsUpdate, secret_key: str) 
     settings.filename_pattern_hint = payload.filename_pattern_hint
     settings.ai_endpoint_url = payload.ai_endpoint_url
     settings.ai_model_name = payload.ai_model_name
+    # Blank entries are dropped rather than rejected: the form appends an empty row when
+    # someone presses Add and then changes their mind, and failing the whole save over a
+    # row they never filled in would be a strange thing to do to them.
+    settings.vision_model_names = [
+        name.strip() for name in payload.vision_model_names if name.strip()
+    ]
 
     if payload.ai_api_key:
         settings.ai_api_key_encrypted = crypto.encrypt(secret_key, payload.ai_api_key)

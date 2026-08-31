@@ -13,6 +13,7 @@ vi.mock("@/services/api/client", () => ({
     getSettings: vi.fn(),
     getDocumentContentUrl: (id: string) => `/api/v1/documents/${id}/content`,
     retryFailedProposals: vi.fn(),
+    compareDocument: vi.fn(),
   },
 }));
 
@@ -50,6 +51,7 @@ const SETTINGS: Settings = {
   filename_pattern_hint: null,
   ai_endpoint_url: "https://ai.example.com/v1",
   ai_model_name: "test-model",
+  vision_model_names: [],
   ai_api_key_set: true,
 };
 
@@ -113,6 +115,41 @@ describe("ReviewPage queue overview", () => {
     await user.click(await screen.findByRole("button", { name: /retry failed/i }));
 
     await waitFor(() => expect(apiClient.retryFailedProposals).toHaveBeenCalled());
+  });
+
+  it("fills the review form from the comparison method that was picked", async () => {
+    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    vi.mocked(apiClient.compareDocument).mockResolvedValue({
+      results: [
+        {
+          method: "vision",
+          model_name: "qwen2.5vl:7b",
+          label: "Vision · qwen2.5vl:7b",
+          text_preview: "",
+          proposal: {
+            suggested_name: "2026.04.16 Helvetia Police",
+            target_folder_path: "/Documents/Insurance",
+            document_date: "2026-04-16",
+            confidence_score: 0.95,
+            reasoning_text: "Reads the letterhead directly.",
+            model_name: "qwen2.5vl:7b",
+          },
+          error: null,
+          duration_ms: 3100,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /compare methods/i }));
+    await user.click(await screen.findByRole("button", { name: /use this/i }));
+
+    // Filled in, not approved -- and still editable, because "nearly right" is the point
+    // of having a review step at all.
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("2026.04.16 Helvetia Police")).toBeInTheDocument(),
+    );
+    expect(screen.getByDisplayValue("2026-04-16")).toBeInTheDocument();
   });
 
   it("lists every open document and jumps to the one that is picked", async () => {

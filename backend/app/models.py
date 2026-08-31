@@ -88,6 +88,10 @@ class AppSettings(SQLModel, table=True):
     filename_pattern_hint: str | None = None
     ai_endpoint_url: str = ""
     ai_model_name: str = ""
+    # Extra models offered on the review screen's method comparison, read from the same
+    # endpoint and key as ai_model_name. Empty means "don't offer a vision comparison";
+    # nothing here ever runs on a poller tick.
+    vision_model_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     ai_api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
 
 

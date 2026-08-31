@@ -119,6 +119,10 @@ export const aiFormSchema = z.object({
     .min(1, "AI endpoint URL is required.")
     .refine((value) => /^https?:\/\//.test(value.trim()), "Must start with http:// or https://."),
   ai_model_name: z.string().min(1, "Model name is required."),
+  // Not validated beyond "not blank": these are only ever offered on the comparison view,
+  // where a name the endpoint does not serve shows up as that method's error -- which is
+  // the honest place for it, and cheaper than keeping a list of valid names in sync.
+  vision_model_names: z.array(z.object({ value: z.string() })),
   ai_api_key: z.string(), // empty = leave unchanged
 });
 

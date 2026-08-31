@@ -8,6 +8,7 @@ import { ActionBar } from "@/components/review/ActionBar";
 import type { DesktopDocumentPaneHandle } from "@/components/review/DesktopDocumentPane";
 import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
 import { DocumentViewer } from "@/components/review/DocumentViewer";
+import { MethodComparison } from "@/components/review/MethodComparison";
 import { QueuePanel } from "@/components/review/QueuePanel";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
 import { ReviewForm } from "@/components/review/ReviewForm";
@@ -22,6 +23,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   documentContentUrl,
   useApproveDocument,
+  useCompareDocument,
   useRegenerateDocument,
   useRetryFailedProposals,
   useSkipDocument,
@@ -140,6 +142,7 @@ function DocumentReview({
 }) {
   const isDesktop = useIsDesktop();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const viewerRef = useRef<DesktopDocumentPaneHandle>(null);
@@ -185,6 +188,14 @@ function DocumentReview({
   const skipMutation = useSkipDocument();
   const trashMutation = useTrashDocument();
   const regenerateMutation = useRegenerateDocument();
+  const compareMutation = useCompareDocument();
+
+  function openComparison() {
+    setCompareOpen(true);
+    // Re-run every time rather than caching: the reason to open this twice is that a model
+    // or a folder changed in Settings since the last look.
+    compareMutation.mutate(document.id);
+  }
 
   function handleApprove(values: ReviewFormValues) {
     setApproveError(null);
@@ -254,16 +265,28 @@ function DocumentReview({
         folderContext={folderContext}
         onChooseFolder={() => setPickerOpen(true)}
       />
-      {document.proposal_status === "failed" && (
+      <div className="flex flex-wrap items-center gap-4">
+        {document.proposal_status === "failed" && (
+          <button
+            type="button"
+            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+            onClick={() => regenerateMutation.mutate(document.id)}
+            disabled={regenerateMutation.isPending}
+          >
+            {regenerateMutation.isPending ? "Retrying…" : "Try again"}
+          </button>
+        )}
+        {/* Offered whatever the proposal status: the interesting question is often "could
+            something else have read this better", which a *successful* proposal raises just
+            as much as a failed one. */}
         <button
           type="button"
           className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-          onClick={() => regenerateMutation.mutate(document.id)}
-          disabled={regenerateMutation.isPending}
+          onClick={openComparison}
         >
-          {regenerateMutation.isPending ? "Retrying…" : "Try again"}
+          Compare methods
         </button>
-      )}
+      </div>
     </FormProvider>
   );
 
@@ -300,6 +323,30 @@ function DocumentReview({
         }
       />
       <ShortcutCheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />
+      <MethodComparison
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        extension={document.extension}
+        results={compareMutation.data?.results}
+        isPending={compareMutation.isPending}
+        error={
+          compareMutation.error
+            ? compareMutation.error instanceof ApiError
+              ? compareMutation.error.message
+              : "Couldn't compare the methods."
+            : null
+        }
+        onUse={(result) => {
+          if (!result.proposal) return;
+          // setValue, not reset: this is an offer to start from, and every field stays
+          // editable and validated exactly as if it had been typed.
+          const options = { shouldValidate: true, shouldDirty: true };
+          methods.setValue("name", result.proposal.suggested_name, options);
+          methods.setValue("folderPath", result.proposal.target_folder_path, options);
+          methods.setValue("documentDate", result.proposal.document_date ?? "", options);
+          toast.success(`Filled in from ${result.label}`);
+        }}
+      />
     </>
   );
 

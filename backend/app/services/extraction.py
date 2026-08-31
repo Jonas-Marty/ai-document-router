@@ -11,6 +11,7 @@ import logging
 import mimetypes
 from dataclasses import dataclass
 
+import pypdfium2 as pdfium
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
@@ -66,6 +67,46 @@ def extension_of(filename: str) -> str:
     if not dot or not suffix:
         return ""
     return f".{suffix.lower()}"
+
+
+# What a vision model or Tesseract is shown. Two pages because the useful signal on a
+# scanned document -- letterhead, date, subject line, amount -- is almost always on the
+# first, and the second is cheap insurance against a cover sheet.
+MAX_RENDERED_PAGES = 2
+# 150 DPI is the point where Tesseract stops improving on printed text. Higher costs a
+# vision model real tokens for no gain.
+RENDER_DPI = 150
+
+
+class RenderUnavailable(Exception):
+    """The document could not be turned into page images."""
+
+
+def render_pages(
+    data: bytes, max_pages: int = MAX_RENDERED_PAGES, dpi: int = RENDER_DPI
+) -> list[bytes]:
+    """Render the first pages of a PDF to PNG bytes.
+
+    Shared by both routes that need pixels -- the vision model and Tesseract -- so a
+    document is rasterised once and read twice, and the two are compared on identical input
+    rather than on whatever each library happened to decode.
+    """
+    try:
+        pdf = pdfium.PdfDocument(data)
+    except Exception as exc:  # noqa: BLE001 - pdfium raises assorted types on a bad file
+        raise RenderUnavailable(f"This PDF couldn't be rendered: {exc}") from exc
+
+    try:
+        pages = []
+        for index in range(min(len(pdf), max_pages)):
+            page = pdf[index]
+            image = page.render(scale=dpi / 72).to_pil()
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            pages.append(buffer.getvalue())
+        return pages
+    finally:
+        pdf.close()
 
 
 def extract(

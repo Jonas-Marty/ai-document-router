@@ -8,8 +8,8 @@ import logging
 
 from app.models import AppSettings
 from app.schemas import FolderContext, FolderNode, SiblingFile
-from app.services import naming
-from app.services.errors import NotFoundError, ValidationError, WebDAVConflict
+from app.services import ai, naming
+from app.services.errors import AppError, NotFoundError, ValidationError, WebDAVConflict
 from app.services.paths import assert_within_allowed_roots, normalize_path
 from app.services.times import from_storage
 from app.services.webdav import WebDavEntry, WebDavService
@@ -133,3 +133,38 @@ def _node_for(webdav: WebDavService, path: str) -> FolderNode:
         children=None,
         file_count=file_count,
     )
+
+
+def prompt_context(
+    service: WebDavService, app_settings: AppSettings
+) -> tuple[list[str], list[str]]:
+    """The folder tree and a sample of existing filenames, for SPEC 6.3's prompt.
+
+    Descends rather than listing only the roots: SPEC 6.3 wants filenames "sampled from
+    across those folders", and a setup that files everything into a subfolder (say
+    /Archive/2026) has no files at the root at all -- sampling only there would send the
+    model an empty list and lose the naming convention entirely.
+    """
+    tree: list[str] = []
+    samples: list[str] = []
+
+    for root in app_settings.allowed_root_folders:
+        tree.append(root)
+        frontier = [(root, 0)]
+        while frontier:
+            path, depth = frontier.pop(0)
+            if depth >= ai.MAX_TREE_DEPTH:
+                continue
+            try:
+                entries = service.list_dir(path)
+            except AppError as exc:
+                logger.debug("Could not list %s for prompt context: %s", path, exc.message)
+                continue
+            for entry in entries:
+                if entry.is_dir:
+                    tree.append(entry.path)
+                    frontier.append((entry.path, depth + 1))
+                elif len(samples) < ai.MAX_SAMPLE_FILENAMES:
+                    samples.append(entry.name)
+
+    return tree, samples

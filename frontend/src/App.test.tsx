@@ -73,6 +73,7 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
           filename_pattern_hint: null,
           ai_endpoint_url: "",
           ai_model_name: "",
+          vision_model_names: [],
           ai_api_key_set: false,
         }),
       );

@@ -65,6 +65,22 @@ class RetriedResponse(BaseModel):
     retried: int
 
 
+class MethodResultRead(BaseModel):
+    """One way of reading a document, and what it proposed."""
+
+    method: str  # "text_layer" | "ocr" | "vision"
+    model_name: str
+    label: str
+    text_preview: str
+    proposal: AIProposalRead | None
+    error: str | None
+    duration_ms: int
+
+
+class CompareResponse(BaseModel):
+    results: list[MethodResultRead]
+
+
 class DocumentResponse(BaseModel):
     document: DocumentRead
 
@@ -102,6 +118,7 @@ class SettingsRead(BaseModel):
     filename_pattern_hint: str | None
     ai_endpoint_url: str
     ai_model_name: str
+    vision_model_names: list[str]
     ai_api_key_set: bool
 
 
@@ -112,6 +129,7 @@ class SettingsUpdate(BaseModel):
     filename_pattern_hint: str | None = None
     ai_endpoint_url: str
     ai_model_name: str
+    vision_model_names: list[str] = []
     ai_api_key: str | None = None
 
 

@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 from app import db
 from app.config import settings as config
 from app.models import AppSettings, Document, DocumentStatus, Proposal, ProposalStatus
-from app.services import ai, extraction
+from app.services import ai, extraction, folders
 from app.services import settings as settings_service
 from app.services.documents import QUEUED_STATUSES
 from app.services.errors import AppError
@@ -234,14 +234,14 @@ def propose_for(
         _fail(session, document, extracted.text_error)
         return False
 
-    tree, samples = _folder_context(service, app_settings)
+    tree, samples = folders.prompt_context(service, app_settings)
     prompt = ai.build_prompt(extracted.text, tree, samples, app_settings.filename_pattern_hint)
 
     try:
         proposal = ai.request_proposal(
             endpoint_url=app_settings.ai_endpoint_url,
             model_name=app_settings.ai_model_name,
-            api_key=_api_key(app_settings),
+            api_key=settings_service.decrypt_api_key(app_settings),
             prompt=prompt,
             allowed_roots=list(app_settings.allowed_root_folders),
         )
@@ -255,49 +255,6 @@ def propose_for(
     _store(session, document, proposal)
     logger.info("Proposal ready for %s: %s", document.webdav_path, proposal.suggested_name)
     return True
-
-
-def _api_key(app_settings: AppSettings) -> str | None:
-    if app_settings.ai_api_key_encrypted is None:
-        return None
-    from app.services import crypto
-
-    return crypto.decrypt(config.secret_key, app_settings.ai_api_key_encrypted)
-
-
-def _folder_context(
-    service: WebDavService, app_settings: AppSettings
-) -> tuple[list[str], list[str]]:
-    """The folder tree and a sample of existing filenames, for SPEC 6.3's prompt.
-
-    Descends rather than listing only the roots: SPEC 6.3 wants filenames "sampled from
-    across those folders", and a setup that files everything into a subfolder (say
-    /Archive/2026) has no files at the root at all -- sampling only there would send the
-    model an empty list and lose the naming convention entirely.
-    """
-    tree: list[str] = []
-    samples: list[str] = []
-
-    for root in app_settings.allowed_root_folders:
-        tree.append(root)
-        frontier = [(root, 0)]
-        while frontier:
-            path, depth = frontier.pop(0)
-            if depth >= ai.MAX_TREE_DEPTH:
-                continue
-            try:
-                entries = service.list_dir(path)
-            except AppError as exc:
-                logger.debug("Could not list %s for prompt context: %s", path, exc.message)
-                continue
-            for entry in entries:
-                if entry.is_dir:
-                    tree.append(entry.path)
-                    frontier.append((entry.path, depth + 1))
-                elif len(samples) < ai.MAX_SAMPLE_FILENAMES:
-                    samples.append(entry.name)
-
-    return tree, samples
 
 
 def _store(session: Session, document: Document, proposal: ai.Proposal) -> None:

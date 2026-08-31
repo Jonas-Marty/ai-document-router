@@ -5,6 +5,7 @@ with a readable reason. There is no half-valid state, because a half-valid propo
 put a wrong folder in front of the user pre-filled and pre-trusted.
 """
 
+import base64
 import json
 import logging
 import mimetypes
@@ -121,9 +122,15 @@ def request_proposal(
     api_key: str | None,
     prompt: str,
     allowed_roots: list[str],
+    images: list[bytes] | None = None,
     client: httpx.Client | None = None,
 ) -> Proposal:
     """Call the model and validate its reply.
+
+    `images` sends rendered pages alongside the prompt, for a document whose text could not
+    be extracted -- the model reads the scan itself instead of being handed a transcription.
+    It is the same call either way: one request that returns a proposal, not an OCR step
+    bolted in front of a second one.
 
     Raises AIUnavailable if the endpoint could not be reached (after one retry), or
     ProposalRejected if it replied with something unusable.
@@ -136,7 +143,7 @@ def request_proposal(
     try:
         try:
             body = _post_with_retry(
-                url, _payload(model_name, prompt, json_mode=True), headers, http
+                url, _payload(model_name, prompt, images, json_mode=True), headers, http
             )
         except _Rejected as rejected:
             # SPEC 6.3 asks for response_format JSON, but the endpoint is whatever the user
@@ -152,7 +159,7 @@ def request_proposal(
             )
             try:
                 body = _post_with_retry(
-                    url, _payload(model_name, prompt, json_mode=False), headers, http
+                    url, _payload(model_name, prompt, images, json_mode=False), headers, http
                 )
             except _Rejected as plain:
                 raise AIUnavailable(plain.message) from plain
@@ -164,17 +171,37 @@ def request_proposal(
     return _validate(content, model_name, allowed_roots)
 
 
-def _payload(model_name: str, prompt: str, *, json_mode: bool) -> dict[str, object]:
+def _payload(
+    model_name: str, prompt: str, images: list[bytes] | None, *, json_mode: bool
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "model": model_name,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": _user_content(prompt, images)},
         ],
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     return payload
+
+
+def _user_content(prompt: str, images: list[bytes] | None) -> object:
+    """A plain string with no images, the OpenAI content-parts array with them.
+
+    Kept as a bare string in the text case rather than a one-element array: every
+    OpenAI-compatible server accepts the string form, while the parts form is exactly the
+    kind of thing a smaller local server implements only for the models that need it.
+    """
+    if not images:
+        return prompt
+    parts: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+    for image in images:
+        encoded = base64.b64encode(image).decode()
+        parts.append(
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}
+        )
+    return parts
 
 
 def list_models(

@@ -90,6 +90,17 @@ export function useRetryFailedProposals() {
   });
 }
 
+/** Read one document every configured way, for comparison.
+ *
+ * A mutation rather than a query even though it changes nothing: it costs one LLM call per
+ * method and takes seconds, so it must happen because someone pressed a button -- never
+ * because a component mounted or a cache went stale. */
+export function useCompareDocument() {
+  return useMutation({
+    mutationFn: (id: string) => apiClient.compareDocument(id),
+  });
+}
+
 export function useRegenerateDocument() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -38,6 +38,24 @@ export interface RetriedResponse {
   retried: number;
 }
 
+export type CompareMethod = "text_layer" | "ocr" | "vision";
+
+/** One way of reading a document, and what it proposed. `proposal` and `error` are
+ * mutually exclusive: a method either produced something or said why it couldn't. */
+export interface MethodResult {
+  method: CompareMethod;
+  model_name: string;
+  label: string;
+  text_preview: string;
+  proposal: AIProposal | null;
+  error: string | null;
+  duration_ms: number;
+}
+
+export interface CompareResponse {
+  results: MethodResult[];
+}
+
 export interface ApproveRequest {
   final_name: string;
   final_folder_path: string;
@@ -105,6 +123,7 @@ export interface Settings {
   filename_pattern_hint: string | null;
   ai_endpoint_url: string;
   ai_model_name: string;
+  vision_model_names: string[]; // extra models offered in the review screen's comparison
   ai_api_key_set: boolean; // never the key itself
 }
 

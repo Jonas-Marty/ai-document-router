@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +49,7 @@ export function AiSection({
     () => ({
       ai_endpoint_url: settings.ai_endpoint_url,
       ai_model_name: settings.ai_model_name,
+      vision_model_names: settings.vision_model_names.map((value) => ({ value })),
       ai_api_key: "",
     }),
     [settings],
@@ -69,6 +70,7 @@ export function AiSection({
 
   const models = listModels.data?.models;
   const modelName = watch("ai_model_name");
+  const visionModels = useFieldArray({ control: methods.control, name: "vision_model_names" });
   const showModelPicker = models !== undefined && models.length > 0 && !enterModelManually;
   // A saved model the endpoint does not list still belongs in the options -- dropping it
   // would blank a working setting the moment the picker appeared.
@@ -114,6 +116,9 @@ export function AiSection({
         ...rest,
         ai_endpoint_url: values.ai_endpoint_url.trim(),
         ai_model_name: values.ai_model_name.trim(),
+        vision_model_names: values.vision_model_names
+          .map((entry) => entry.value.trim())
+          .filter(Boolean),
         ...(typedKey ? { ai_api_key: typedKey } : {}),
       },
       {
@@ -122,6 +127,7 @@ export function AiSection({
             {
               ai_endpoint_url: saved.ai_endpoint_url,
               ai_model_name: saved.ai_model_name,
+              vision_model_names: saved.vision_model_names.map((value) => ({ value })),
               ai_api_key: "",
             },
             { keepDirtyValues: false },
@@ -196,6 +202,44 @@ export function AiSection({
               {showModelPicker ? "Enter a model name manually" : "Choose from the endpoint's list"}
             </Button>
           )}
+        </div>
+        <div className="space-y-2">
+          <Label>Vision models to compare</Label>
+          <p className="text-sm text-muted-foreground">
+            Offered on the review screen's <em>Compare methods</em> view, which reads a document
+            every configured way so you can see which is worth using. Never used for ordinary filing
+            — that always uses the model above.
+          </p>
+          <div className="space-y-2">
+            {visionModels.fields.map((field, index) => (
+              <div key={field.id} className="flex items-center gap-2">
+                <Input
+                  className="font-mono"
+                  aria-label={`Vision model ${index + 1}`}
+                  placeholder="qwen2.5vl:7b"
+                  {...register(`vision_model_names.${index}.value`)}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => visionModels.remove(index)}
+                  aria-label="Remove vision model"
+                >
+                  <X aria-hidden="true" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => visionModels.append({ value: "" })}
+          >
+            <Plus aria-hidden="true" />
+            Add vision model
+          </Button>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="ai_api_key">API key</Label>

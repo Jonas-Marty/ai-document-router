@@ -44,6 +44,7 @@ const emptySettings: Settings = {
   filename_pattern_hint: null,
   ai_endpoint_url: "http://localhost:11434",
   ai_model_name: "test-model",
+  vision_model_names: [],
   ai_api_key_set: false,
 };
 

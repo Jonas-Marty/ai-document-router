@@ -17,6 +17,8 @@ dependencies = [
     # through webdav4 anyway, but a production install (`uv sync --no-dev`) would break the
     # moment that transitive edge changed, so declare what we actually import.
     "httpx>=0.28",
+    "pypdfium2>=5.13.0",
+    "pillow>=12.3.0",
 ]
 
 [dependency-groups]
@@ -47,7 +49,7 @@ plugins = ["pydantic.mypy"]
 # webdav4 ships no py.typed marker. Confined to services/webdav.py, which is the only
 # module allowed to import it, so the untyped surface stays behind our own dataclasses.
 [[tool.mypy.overrides]]
-module = ["webdav4.*", "apscheduler.*"]
+module = ["webdav4.*", "apscheduler.*", "pypdfium2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

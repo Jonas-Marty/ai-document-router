@@ -717,3 +717,31 @@ meaningful. One line of "why" each; not a full ADR log.
   occasionally right, but it would also re-download the whole backlog from WebDAV on a save
   that changed nothing relevant. A button next to the errors it fixes is more predictable,
   and it also covers a transient AI outage, which no settings change would.
+- **Method comparison is a view, not an automatic choice.** There is no way to know from
+  outside which way of reading a scan works best on a given corpus, and the methods disagree
+  about things only the person filing the document can settle. So `compare.py` runs them all
+  and reports what each proposed; nothing scores them and nothing wins. Choosing a result
+  fills the review form via `setValue`, leaving every field editable and validated — "nearly
+  right" is the common case and the reason a review step exists at all.
+- **A method that cannot run comes back as a result carrying its reason.** "Tesseract isn't
+  installed in this image" and "the vision model refused this image" are exactly the findings
+  someone comparing methods needs. Dropping them would leave a shorter list and no way to
+  tell whether a method had been tried and failed or was never attempted.
+- **The vision method is sent pages and no transcription.** Handing a model both the image
+  and extracted text would make it impossible to attribute the result to either, which
+  defeats the only purpose of comparing them.
+- **Tesseract is invoked as a CLI over `pypdfium2`-rendered pages, not through ocrmypdf.**
+  ocrmypdf's job is rewriting a PDF to carry a text layer; this wants the characters. Buying
+  it would pull ghostscript, qpdf, unpaper and pngquant into the image for nothing. Measured:
+  `tesseract-ocr` plus `deu`/`eng` data adds **86 MB**, against the ~450 MB the ocrmypdf chain
+  costs. `pypdfium2` (3.7 MB) and `pillow` are the two new Python dependencies; both are
+  plain wheels needing no system packages. Rendering once and reading it twice also means
+  Tesseract and the vision model are compared on identical input.
+- **Comparison never runs on a poller tick.** Every method costs a model call, so it happens
+  because someone pressed a button while looking at a document. `useCompareDocument` is a
+  mutation rather than a query for the same reason: nothing may trigger it by mounting or by
+  a cache going stale, and re-opening re-runs it because the reason to look twice is that a
+  model or a folder changed in between.
+- **`vision_model_names` is a plain list with no validation beyond "not blank".** A name the
+  endpoint does not serve surfaces as that method's error on the comparison view, which is
+  the honest place for it and cheaper than keeping a copy of the endpoint's catalogue in sync.

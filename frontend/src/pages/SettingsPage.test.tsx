@@ -31,6 +31,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     filename_pattern_hint: null,
     ai_endpoint_url: "https://ollama.local:11434",
     ai_model_name: "llama3",
+    vision_model_names: [],
     ai_api_key_set: true,
     ...overrides,
   };

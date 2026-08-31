@@ -158,6 +158,7 @@ ai-document-router/
 | `filename_pattern_hint` | str \| null |
 | `ai_endpoint_url` | str |
 | `ai_model_name` | str |
+| `vision_model_names` | list[str] — extra models offered on the comparison view only |
 | `ai_api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
 
 **`user`** — password and OIDC are two ways into the same row.
@@ -313,6 +314,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/documents/{id}/approve` | `{ final_name, final_folder_path, document_date }` | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
+| POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document every configured way; stores nothing |
 | POST | `/documents/retry-failed` | — | `{ retried: number }` — every failed proposal still in the queue goes back to `pending` |
 | POST | `/documents/{id}/regenerate` | — | `{ document }` — re-runs the AI proposal |
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
@@ -429,6 +431,22 @@ trash, suffix with a timestamp rather than failing. Files are never deleted.
 `skip_count=0`, keep its existing proposal, and set `history_entry.revertible=false`. If the
 file is no longer where the history says it is, return 409 `not_revertible` and flip
 `revertible` to false so the UI stops offering it.
+
+### 6.4a Method comparison (`services/compare.py`)
+
+Reading a document is not one thing, and there is no way to know from the outside which way
+works best on a given corpus. `POST /documents/{id}/compare` runs every configured method
+against one document and reports what each proposed, so a person can judge:
+
+- **Text layer** — `pypdf`, the model in `ai_model_name`. What ordinary filing does.
+- **Tesseract OCR** — pages rendered by `pypdfium2`, read by the `tesseract` CLI (`deu+eng`),
+  then the same model. Not ocrmypdf: this wants characters, not a rewritten PDF.
+- **Vision** — one result per entry in `vision_model_names`, each sent the rendered pages as
+  OpenAI content parts with no transcription, so it is unambiguous which input it used.
+
+Synchronous and on demand — one model call per method. Nothing is stored: the document's
+own proposal is untouched, and choosing a result only fills the review form. A method that
+cannot run is a result carrying its reason, never an omission.
 
 ### 6.5 Authentication (`services/auth.py`, `services/oidc.py`)
 
@@ -678,7 +696,8 @@ and requires re-entering it — document this in the README.
   by registering; there is no invite, reset-password, or delete-user flow yet)
 - More than one OIDC provider at a time
 - Bulk selection or batch approval
-- OCR (a PDF with no text layer fails its proposal and is handled manually)
+- OCR in the *filing* path (a PDF with no text layer still fails its proposal and is handled
+  manually; Tesseract exists only as one method on the comparison view)
 - Splitting a multi-page PDF into several documents — every page in a file is one document
 - Editing or moving files after filing, other than revert
 - Notifications, email, scheduling, analytics

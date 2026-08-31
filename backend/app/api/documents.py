@@ -7,14 +7,18 @@ from fastapi.responses import StreamingResponse
 from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
 from app.models import AppSettings, ProposalStatus
 from app.schemas import (
+    AIProposalRead,
     ApproveRequest,
+    CompareResponse,
     DocumentRead,
     DocumentResponse,
     HistoryEntryRead,
+    MethodResultRead,
     QueueResponse,
     RetriedResponse,
     RoutedResponse,
 )
+from app.services import compare as compare_service
 from app.services import documents as documents_service
 from app.services import router as router_service
 from app.services.errors import NotFoundError
@@ -100,6 +104,50 @@ def regenerate_proposal(
     session.refresh(document)
 
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
+
+
+@router.post("/documents/{document_id}/compare")
+def compare_methods(
+    document_id: str,
+    session: SessionDep,
+    _user: CurrentUserDep,
+    webdav: WebDavDep,
+    app_settings: AppSettingsDep,
+) -> CompareResponse:
+    """Read one document every configured way and report what each proposed.
+
+    Synchronous and on demand: every method costs an LLM call, so this happens because
+    someone asked while looking at a document, never on a poller tick. Nothing is stored --
+    the document's own proposal is untouched, and the review form is still where a filename
+    is chosen.
+    """
+    document = documents_service.get_document(session, document_id)
+    results = compare_service.compare(webdav, app_settings, document)
+    return CompareResponse(results=[_to_method_read(result) for result in results])
+
+
+def _to_method_read(result: compare_service.MethodResult) -> MethodResultRead:
+    proposal = result.proposal
+    return MethodResultRead(
+        method=result.method,
+        model_name=result.model_name,
+        label=result.label,
+        text_preview=result.text_preview,
+        proposal=(
+            AIProposalRead(
+                suggested_name=proposal.suggested_name,
+                target_folder_path=proposal.target_folder_path,
+                document_date=proposal.document_date,
+                confidence_score=proposal.confidence_score,
+                reasoning_text=proposal.reasoning_text,
+                model_name=proposal.model_name,
+            )
+            if proposal
+            else None
+        ),
+        error=result.error,
+        duration_ms=result.duration_ms,
+    )
 
 
 @router.post("/documents/{document_id}/approve")

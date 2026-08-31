@@ -6,6 +6,7 @@ import type {
   ApproveRequest,
   AuthConfig,
   AuthUser,
+  CompareResponse,
   CreateFolderRequest,
   Credentials,
   Document,
@@ -36,6 +37,7 @@ export interface ApiClient {
   trashDocument(id: string): Promise<RoutedResponse>;
   regenerateDocument(id: string): Promise<Document>;
   retryFailedProposals(): Promise<RetriedResponse>;
+  compareDocument(id: string): Promise<CompareResponse>;
 
   getFolderTree(path?: string): Promise<FolderNode[]>;
   createFolder(body: CreateFolderRequest): Promise<FolderNode>;
@@ -103,6 +105,10 @@ export class HttpApiClient implements ApiClient {
 
   retryFailedProposals(): Promise<RetriedResponse> {
     return this.request<RetriedResponse>("POST", "/documents/retry-failed");
+  }
+
+  compareDocument(id: string): Promise<CompareResponse> {
+    return this.request<CompareResponse>("POST", `/documents/${encodeURIComponent(id)}/compare`);
   }
 
   getFolderTree(path?: string): Promise<FolderNode[]> {

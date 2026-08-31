@@ -34,6 +34,18 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# Tesseract backs the "classical OCR" method on the review screen's comparison view. Just
+# the engine and its language data -- German first, since these are Swiss business
+# documents. Deliberately not ocrmypdf: its job is rewriting a PDF to carry a text layer,
+# which this app never wants, and it would drag ghostscript, qpdf, unpaper and pngquant in
+# for nothing. Pages are rendered by pypdfium2 in-process and handed to the tesseract CLI.
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes \
+        tesseract-ocr \
+        tesseract-ocr-deu \
+        tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root. The uid is fixed so the named volume's ownership stays stable across rebuilds --
 # a fresh uid on every build would leave an existing /data unwritable.
 RUN groupadd --system --gid 1001 app \
