@@ -1,3 +1,4 @@
+import { createLogger } from "@/lib/logger";
 import { ApiError, NETWORK_ERROR_CODE } from "./errors";
 import type {
   AiEndpoint,
@@ -7,8 +8,12 @@ import type {
   AiTask,
   AiTaskChain,
   AiTaskChainUpdate,
+  AiTaskContext,
   ApiErrorBody,
   ApproveRequest,
+  AuditCategory,
+  AuditPage,
+  AuditUsage,
   AuthConfig,
   AuthUser,
   CompareResponse,
@@ -49,6 +54,8 @@ export interface ApiClient {
   getFolderContext(path: string, filename?: string): Promise<FolderContext>;
 
   getHistory(limit?: number, cursor?: string): Promise<HistoryPage>;
+  getAudit(limit?: number, cursor?: string, category?: AuditCategory): Promise<AuditPage>;
+  getAuditUsage(days?: number): Promise<AuditUsage>;
   revertHistoryEntry(id: string): Promise<RevertResponse>;
 
   getSettings(): Promise<Settings>;
@@ -60,6 +67,7 @@ export interface ApiClient {
   deleteAiEndpoint(id: string): Promise<void>;
   listAiTasks(): Promise<AiTaskChain[]>;
   updateAiTask(task: AiTask, body: AiTaskChainUpdate): Promise<AiTaskChain>;
+  getAiContext(): Promise<AiTaskContext[]>;
   getAuthConfig(): Promise<AuthConfig>;
   getCurrentUser(): Promise<AuthUser>;
   login(body: Credentials): Promise<AuthUser>;
@@ -68,6 +76,8 @@ export interface ApiClient {
 }
 
 const API_BASE = "/api/v1";
+
+const logger = createLogger("api");
 
 export class HttpApiClient implements ApiClient {
   getHealth(): Promise<HealthResponse> {
@@ -138,6 +148,14 @@ export class HttpApiClient implements ApiClient {
     return this.request<HistoryPage>("GET", `/history${query({ limit, cursor })}`);
   }
 
+  getAudit(limit?: number, cursor?: string, category?: AuditCategory): Promise<AuditPage> {
+    return this.request<AuditPage>("GET", `/audit${query({ limit, cursor, category })}`);
+  }
+
+  getAuditUsage(days?: number): Promise<AuditUsage> {
+    return this.request<AuditUsage>("GET", `/audit/usage${query({ days })}`);
+  }
+
   revertHistoryEntry(id: string): Promise<RevertResponse> {
     return this.request<RevertResponse>("POST", `/history/${encodeURIComponent(id)}/revert`);
   }
@@ -172,6 +190,10 @@ export class HttpApiClient implements ApiClient {
 
   listAiTasks(): Promise<AiTaskChain[]> {
     return this.request<AiTaskChain[]>("GET", "/ai/tasks");
+  }
+
+  getAiContext(): Promise<AiTaskContext[]> {
+    return this.request<AiTaskContext[]>("GET", "/ai/context");
   }
 
   updateAiTask(task: AiTask, body: AiTaskChainUpdate): Promise<AiTaskChain> {
@@ -212,7 +234,8 @@ export class HttpApiClient implements ApiClient {
         credentials: "same-origin",
         body: body !== undefined ? JSON.stringify(body) : undefined,
       });
-    } catch {
+    } catch (cause) {
+      logger.warn(`${method} ${path} never reached the server`, cause);
       throw new ApiError(
         NETWORK_ERROR_CODE,
         "Can't reach the server. Check your connection and try again.",
@@ -221,7 +244,14 @@ export class HttpApiClient implements ApiClient {
     }
 
     if (!response.ok) {
-      throw new ApiError(...(await parseErrorBody(response)));
+      const requestId = response.headers.get("X-Request-ID");
+      const [code, message, status] = await parseErrorBody(response);
+      // 401 is how every page load learns nobody is signed in yet, not something going wrong.
+      logger[response.status === 401 ? "debug" : "warn"](
+        `${method} ${path} ${response.status} ${code}${requestId ? ` (req ${requestId})` : ""}`,
+        message,
+      );
+      throw new ApiError(code, message, status, requestId);
     }
 
     if (response.status === 204) {

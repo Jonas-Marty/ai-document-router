@@ -35,6 +35,7 @@ from webdav4.client import (
 )
 
 from app.config import settings as config
+from app.services import metrics
 from app.services.errors import (
     AppError,
     NotFoundError,
@@ -119,7 +120,9 @@ def probe_reachable() -> bool:
         _probe_client().exists(watch_folder)
     except Exception as exc:  # noqa: BLE001 - a health probe must never propagate
         logger.debug("WebDAV health probe failed: %s", exc)
+        metrics.webdav_reachable.set(0)
         return False
+    metrics.webdav_reachable.set(1)
     return True
 
 
@@ -185,7 +188,7 @@ class WebDavService:
         if cached is not None:
             return cached
 
-        with _translate_errors():
+        with _translate_errors("list", normalized):
             raw = self._client.ls(self._wire(normalized), detail=True)
 
         entries = [
@@ -207,13 +210,13 @@ class WebDavService:
         'no collision' answer would let approve overwrite a file.
         """
         normalized = self._check(path)
-        with _translate_errors():
+        with _translate_errors("exists", normalized):
             return bool(self._client.exists(self._wire(normalized)))
 
     def stat(self, path: str) -> WebDavEntry:
         """Metadata for a single path. Never cached, for the same reason as exists()."""
         normalized = self._check(path)
-        with _translate_errors():
+        with _translate_errors("stat", normalized):
             info = self._client.info(self._wire(normalized))
         entry = self._to_entry(info)
         if entry is None:
@@ -231,7 +234,7 @@ class WebDavService:
         client = self._client
 
         def _chunks() -> Iterator[bytes]:
-            with _translate_errors(), client.open(wire, mode="rb") as handle:
+            with _translate_errors("read", normalized), client.open(wire, mode="rb") as handle:
                 while True:
                     chunk = handle.read(chunk_size)
                     if not chunk:
@@ -251,7 +254,7 @@ class WebDavService:
         source = self._check(from_path)
         destination = self._check(to_path)
 
-        with _translate_errors():
+        with _translate_errors("move", f"{source} -> {destination}"):
             self._client.move(self._wire(source), self._wire(destination), overwrite=False)
 
         # A move changes the *contents* of both containing directories, not the paths moved.
@@ -279,7 +282,7 @@ class WebDavService:
             raise NotFoundError(f"There is no file at '{normalized}' to replace.")
 
         headers = {"Content-Type": content_type} if content_type else None
-        with _translate_errors():
+        with _translate_errors("replace", normalized):
             self._client.upload_fileobj(
                 io.BytesIO(data),
                 self._wire(normalized),
@@ -294,7 +297,7 @@ class WebDavService:
     def mkdir(self, path: str) -> None:
         """Create a single directory. Its parent must already exist."""
         normalized = self._check(path)
-        with _translate_errors():
+        with _translate_errors("mkdir", normalized):
             self._client.mkdir(self._wire(normalized))
         invalidate(parent_of(normalized))
 
@@ -322,7 +325,7 @@ class WebDavService:
             if self.exists(directory):
                 continue
             try:
-                with _translate_errors():
+                with _translate_errors("mkdir", directory):
                     self._client.mkdir(self._wire(directory))
             except WebDAVConflict:
                 # Raced with someone else creating it; that is the state we wanted anyway.
@@ -425,23 +428,35 @@ def _as_str(value: Any) -> str | None:
 
 
 @contextmanager
-def _translate_errors() -> Iterator[None]:
-    """Map webdav4 and httpx failures onto the app's error envelope.
+def _translate_errors(operation: str, target: str) -> Iterator[None]:
+    """Time one operation, and map webdav4 and httpx failures onto the app's error envelope.
 
-    Ordering matters: the specific webdav4 subclasses are caught before the ClientError
-    catch-all, and connection-level httpx failures never become webdav4 exceptions at all.
+    Every call to the server passes through here, which makes it the one place a slow or
+    failing WebDAV server shows up in the log. DEBUG, because a single review screen is
+    dozens of these.
     """
+    # Ordering matters below: the specific webdav4 subclasses are caught before the ClientError
+    # catch-all, and connection-level httpx failures never become webdav4 exceptions at all.
+    started = time.perf_counter()
+    # "error" until something below says otherwise: an exception none of these branches
+    # recognise still has to be counted as a failure.
+    outcome = "error"
     try:
         yield
+        outcome = "ok"
     except (httpx.TransportError, BadGatewayError) as exc:
+        outcome = "unreachable"
         raise WebDAVUnreachable(
             "Can't reach the WebDAV server. Check that it's up and the URL is right."
         ) from exc
     except ResourceNotFound as exc:
+        outcome = "not_found"
         raise NotFoundError("That file or folder is no longer on the server.") from exc
     except (ResourceAlreadyExists, ResourceConflict) as exc:
+        outcome = "conflict"
         raise WebDAVConflict("Something is already at that location on the server.") from exc
     except ResourceLocked as exc:
+        outcome = "conflict"
         raise WebDAVConflict("That file is locked on the server. Try again shortly.") from exc
     except InsufficientStorage as exc:
         raise WebDAVError("The WebDAV server is out of storage space.") from exc
@@ -449,3 +464,10 @@ def _translate_errors() -> Iterator[None]:
         raise WebDAVError(f"The WebDAV server refused that operation: {exc}") from exc
     except ClientError as exc:
         raise WebDAVError(f"The WebDAV server rejected the request: {exc}") from exc
+    finally:
+        seconds = time.perf_counter() - started
+        metrics.webdav_operations.labels(operation, outcome).inc()
+        metrics.webdav_operation_duration.labels(operation).observe(seconds)
+        # Any answer at all, a 404 included, means the server is there.
+        metrics.webdav_reachable.set(0 if outcome == "unreachable" else 1)
+        logger.debug("WebDAV %s %s %s in %.0fms", operation, target, outcome, seconds * 1000)

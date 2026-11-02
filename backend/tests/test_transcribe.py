@@ -26,6 +26,28 @@ def pages(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
     return rendered
 
 
+class TestInstructions:
+    def test_are_sent_with_every_batch(
+        self, pages: list[bytes], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prompts: list[str] = []
+
+        def completion(**kwargs: Any) -> str:
+            prompts.append(kwargs["prompt"])
+            return "text"
+
+        monkeypatch.setattr(ai, "request_completion", completion)
+
+        transcribe.transcribe(b"%PDF", [step()], "Mostly German. Keep the umlauts.")
+
+        assert len(prompts) == 2
+        assert all(p.startswith(transcribe.USER_PROMPT) for p in prompts)
+        assert all("Mostly German. Keep the umlauts." in p for p in prompts)
+
+    def test_leave_the_prompt_alone_when_there_are_none(self) -> None:
+        assert transcribe.user_prompt(None) == transcribe.USER_PROMPT
+
+
 class TestTranscribe:
     def test_stitches_the_batches_into_one_document(
         self, pages: list[bytes], monkeypatch: pytest.MonkeyPatch

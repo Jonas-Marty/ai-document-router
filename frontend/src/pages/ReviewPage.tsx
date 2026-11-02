@@ -192,9 +192,11 @@ function DocumentReview({
 
   function openComparison() {
     setCompareOpen(true);
-    // Re-run every time rather than caching: the reason to open this twice is that a model
-    // or a folder changed in Settings since the last look.
-    compareMutation.mutate(document.id);
+    // Reopening shows the last run rather than paying for another one; "Run again" inside
+    // the overlay is there for when Settings changed since.
+    if (!compareMutation.data && !compareMutation.isPending) {
+      compareMutation.mutate(document.id);
+    }
   }
 
   function handleApprove(values: ReviewFormValues) {
@@ -266,16 +268,20 @@ function DocumentReview({
         onChooseFolder={() => setPickerOpen(true)}
       />
       <div className="flex flex-wrap items-center gap-4">
-        {document.proposal_status === "failed" && (
-          <button
-            type="button"
-            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-            onClick={() => regenerateMutation.mutate(document.id)}
-            disabled={regenerateMutation.isPending}
-          >
-            {regenerateMutation.isPending ? "Retrying…" : "Try again"}
-          </button>
-        )}
+        {/* Offered for a ready proposal too: after changing a model or the instructions in
+            Settings, the existing proposal is stale and this is how to get a fresh one. */}
+        <button
+          type="button"
+          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+          onClick={() => regenerateMutation.mutate(document.id)}
+          disabled={regenerateMutation.isPending}
+        >
+          {regenerateMutation.isPending
+            ? "Re-running…"
+            : document.proposal_status === "failed"
+              ? "Try again"
+              : "Re-run analysis"}
+        </button>
         {/* Offered whatever the proposal status: the interesting question is often "could
             something else have read this better", which a *successful* proposal raises just
             as much as a failed one. */}
@@ -329,6 +335,7 @@ function DocumentReview({
         extension={document.extension}
         results={compareMutation.data?.results}
         isPending={compareMutation.isPending}
+        onRerun={() => compareMutation.mutate(document.id)}
         error={
           compareMutation.error
             ? compareMutation.error instanceof ApiError

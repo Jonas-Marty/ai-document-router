@@ -18,7 +18,9 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.config import settings as config
-from app.models import User, UserSession
+from app.models import AuditAction, User, UserSession
+from app.services import audit, metrics
+from app.services.audit import Actor
 from app.services.errors import (
     AuthenticationRequired,
     InvalidCredentials,
@@ -121,6 +123,13 @@ def register(session: Session, email: str, password: str) -> User:
         created_at=datetime.now(UTC),
     )
     session.add(user)
+    audit.record(
+        session,
+        AuditAction.auth_registered,
+        actor=Actor.from_user(user),
+        summary=f"Registered {user.email}" + (" as the admin" if user.is_admin else ""),
+        details={"is_admin": user.is_admin, "method": "password"},
+    )
     session.commit()
     session.refresh(user)
     logger.info("Registered %s (admin=%s)", user.email, user.is_admin)
@@ -133,8 +142,42 @@ def authenticate(session: Session, email: str, password: str) -> User:
     # the same time and cannot be told apart by anyone probing for valid addresses.
     matches = verify_password(password, user.password_hash if user else None)
     if user is None or not matches:
+        # Whether the account exists is left out on purpose: the log is read by people
+        # too, and it should not answer the question the timing-safe check above refuses to.
+        record_failed_sign_in(
+            session, normalize_email(email), "password", "Wrong email or password."
+        )
         raise InvalidCredentials("Wrong email or password.")
+    record_sign_in(session, user, "password")
     return user
+
+
+def record_sign_in(session: Session, user: User, method: str) -> None:
+    audit.record(
+        session,
+        AuditAction.auth_login,
+        actor=Actor.from_user(user),
+        summary=f"Signed in with {'single sign-on' if method == 'oidc' else 'a password'}",
+        details={"method": method},
+    )
+    session.commit()
+    metrics.auth_logins.labels(method, "success").inc()
+    logger.info("Signed in %s (%s)", user.email, method)
+
+
+def record_failed_sign_in(session: Session, attempted: str, method: str, reason: str) -> None:
+    """Committed on its own: there is no other change for it to ride along with, and the
+    caller is about to raise. The address that was tried, never the password."""
+    audit.record(
+        session,
+        AuditAction.auth_login_failed,
+        actor=Actor(user_id=None, label=attempted or "unknown"),
+        summary=f"Failed sign-in: {reason}",
+        details={"method": method, "reason": reason},
+    )
+    session.commit()
+    metrics.auth_logins.labels(method, "failure").inc()
+    logger.warning("Failed sign-in for %s (%s): %s", attempted or "unknown", method, reason)
 
 
 def _find_by_email(session: Session, address: str) -> User | None:
@@ -191,6 +234,14 @@ def end_session(session: Session, token: str | None) -> None:
     record = session.get(UserSession, _token_hash(token))
     if record is not None:
         session.delete(record)
+        user = session.get(User, record.user_id)
+        if user is not None:
+            audit.record(
+                session,
+                AuditAction.auth_logout,
+                actor=Actor.from_user(user),
+                summary="Signed out",
+            )
         session.commit()
 
 

@@ -64,6 +64,22 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
     if (url.includes("/history")) {
       return Promise.resolve(healthResponse({ items: [], next_cursor: null }));
     }
+    if (url.includes("/audit/usage")) {
+      return Promise.resolve(
+        healthResponse({
+          days: 30,
+          analyses: 0,
+          comparisons: 0,
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          by_model: [],
+        }),
+      );
+    }
+    if (url.includes("/audit")) {
+      return Promise.resolve(healthResponse({ items: [], next_cursor: null }));
+    }
     if (url.includes("/ai/endpoints")) return Promise.resolve(healthResponse([]));
     if (url.includes("/ai/tasks")) {
       return Promise.resolve(
@@ -119,6 +135,19 @@ describe("routing", () => {
 
     await user.click(screen.getByRole("link", { name: /settings/i }));
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: /activity/i }));
+    expect(await screen.findByRole("heading", { name: "Activity" })).toBeInTheDocument();
+  });
+
+  it("links to Activity only for admins", async () => {
+    vi.restoreAllMocks();
+    mockApi(healthy, { ...SIGNED_IN, is_admin: false });
+    renderApp("/");
+    await screen.findByRole("heading", { name: "Review" });
+
+    expect(screen.getByRole("link", { name: /history/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /activity/i })).not.toBeInTheDocument();
   });
 });
 

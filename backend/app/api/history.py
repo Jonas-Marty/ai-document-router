@@ -1,34 +1,16 @@
-from datetime import datetime
-
 from fastapi import APIRouter, Query
 from sqlalchemy import tuple_
 from sqlmodel import select
 
+from app.api import cursors
 from app.deps import CurrentUserDep, SessionDep, WebDavDep
 from app.models import HistoryEntry
 from app.schemas import HistoryEntryRead, HistoryPage, RevertResponse
 from app.services import documents as documents_service
 from app.services import router as router_service
-from app.services.errors import ValidationError
+from app.services.audit import Actor
 
 router = APIRouter()
-
-
-def _encode_cursor(entry: HistoryEntry) -> str:
-    return f"{entry.processed_at.isoformat()}|{entry.id}"
-
-
-def _decode_cursor(cursor: str) -> tuple[datetime, str]:
-    raw_timestamp, separator, entry_id = cursor.partition("|")
-    if not separator or not entry_id:
-        raise ValidationError("That pagination cursor isn't valid.")
-    try:
-        # Parsed rather than passed through as text: processed_at is a DateTime column,
-        # and comparing it against a string only happens to work on SQLite.
-        processed_at = datetime.fromisoformat(raw_timestamp)
-    except ValueError as exc:
-        raise ValidationError("That pagination cursor isn't valid.") from exc
-    return processed_at, entry_id
 
 
 @router.get("/history")
@@ -50,7 +32,7 @@ def read_history(
     )
 
     if cursor:
-        processed_at, entry_id = _decode_cursor(cursor)
+        processed_at, entry_id = cursors.decode(cursor)
         statement = statement.where(
             tuple_(HistoryEntry.processed_at, HistoryEntry.id)  # type: ignore[arg-type]
             < (processed_at, entry_id)
@@ -59,7 +41,9 @@ def read_history(
     # One extra row tells us whether another page exists without a second count query.
     rows = session.exec(statement.limit(limit + 1)).all()
     page = rows[:limit]
-    next_cursor = _encode_cursor(page[-1]) if len(rows) > limit and page else None
+    next_cursor = (
+        cursors.encode(page[-1].processed_at, page[-1].id) if len(rows) > limit and page else None
+    )
 
     return HistoryPage(
         items=[HistoryEntryRead.from_model(entry) for entry in page],
@@ -69,9 +53,11 @@ def read_history(
 
 @router.post("/history/{history_id}/revert")
 def revert_entry(
-    history_id: str, session: SessionDep, _user: CurrentUserDep, webdav: WebDavDep
+    history_id: str, session: SessionDep, user: CurrentUserDep, webdav: WebDavDep
 ) -> RevertResponse:
-    entry, document = router_service.revert(session, webdav, history_id)
+    entry, document = router_service.revert(
+        session, webdav, history_id, actor=Actor.from_user(user)
+    )
     return RevertResponse(
         history_entry=HistoryEntryRead.from_model(entry),
         document=documents_service.to_read_schema(session, document),

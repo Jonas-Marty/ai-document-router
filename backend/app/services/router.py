@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 
 from app.models import (
     AppSettings,
+    AuditAction,
     Document,
     DocumentStatus,
     HistoryAction,
@@ -20,7 +21,8 @@ from app.models import (
     OcrStatus,
     Proposal,
 )
-from app.services import naming, searchable
+from app.services import audit, metrics, naming, searchable
+from app.services.audit import Actor
 from app.services.documents import get_document
 from app.services.errors import (
     AppError,
@@ -45,6 +47,8 @@ def approve(
     final_name: str,
     final_folder_path: str,
     document_date: date | None,
+    *,
+    actor: Actor,
 ) -> tuple[Document, HistoryEntry]:
     """File a document under a new name. Synchronous -- the user is waiting."""
     document = _require_queued(session, document_id)
@@ -80,7 +84,7 @@ def approve(
             f"'{stem}{extension}' already exists in {folder}. Choose a different name."
         ) from exc
 
-    _store_searchable_copy(webdav, app_settings, document, destination)
+    data_was_replaced = _store_searchable_copy(webdav, app_settings, document, destination)
 
     entry = _record_history(
         session,
@@ -94,10 +98,24 @@ def approve(
     document.webdav_path = destination
     document.status = DocumentStatus.moved
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_approved,
+        actor=actor,
+        document_id=document.id,
+        summary=f"Filed {document.original_filename} as {stem}{extension} in {folder}",
+        details={
+            "from": source,
+            "to": destination,
+            "was_overridden": entry.was_overridden,
+            "with_text_layer": data_was_replaced,
+        },
+    )
     session.commit()
     session.refresh(document)
     session.refresh(entry)
 
+    metrics.documents_routed.labels("moved").inc()
     logger.info("Approved %s -> %s", source, destination)
     return document, entry
 
@@ -107,8 +125,9 @@ def _store_searchable_copy(
     app_settings: AppSettings,
     document: Document,
     destination: str,
-) -> None:
-    """Replace the file we just filed with its OCR'd copy, when one is waiting.
+) -> bool:
+    """Replace the file we just filed with its OCR'd copy, when one is waiting. Returns
+    whether it did.
 
     Order matters as much here as it does for the move above. The MOVE happens first and
     unchanged -- same collision check, same Overwrite: F -- so the only file this ever
@@ -122,18 +141,18 @@ def _store_searchable_copy(
     behind on failure is exactly what would have been filed before this existed.
     """
     if not app_settings.store_ocr_text or document.ocr_status is not OcrStatus.ready:
-        return
+        return False
 
     data = searchable.load(document.content_hash)
     if data is None:
         logger.info("No searchable copy cached for %s; filed the original.", document.id)
-        return
+        return False
 
     try:
         webdav.replace(destination, data, document.mime_type)
     except AppError as exc:
         logger.warning("Couldn't store the searchable copy at %s: %s", destination, exc.message)
-        return
+        return False
 
     # Discarded before content_hash is reassigned below -- the cache is keyed by the hash of
     # the *original* bytes, and dropping it afterwards would look for a file that never
@@ -149,16 +168,26 @@ def _store_searchable_copy(
     # is reverted back into the queue there is nothing left to OCR.
     document.ocr_status = OcrStatus.not_needed
     logger.info("Filed %s with its OCR text layer.", destination)
+    return True
 
 
-def skip(session: Session, document_id: str) -> Document:
+def skip(session: Session, document_id: str, *, actor: Actor) -> Document:
     """Send a document to the back of the queue. Touches nothing on the server."""
     document = _require_queued(session, document_id)
     document.status = DocumentStatus.skipped
     document.skip_count += 1
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_skipped,
+        actor=actor,
+        document_id=document.id,
+        summary=f"Skipped {document.original_filename}",
+        details={"skip_count": document.skip_count},
+    )
     session.commit()
     session.refresh(document)
+    metrics.documents_routed.labels("skipped").inc()
     return document
 
 
@@ -167,6 +196,8 @@ def trash(
     webdav: WebDavService,
     app_settings: AppSettings,
     document_id: str,
+    *,
+    actor: Actor,
 ) -> tuple[Document, HistoryEntry]:
     """Move a document to the trash folder. Never deletes -- CLAUDE.md rule 1."""
     document = _require_queued(session, document_id)
@@ -212,16 +243,25 @@ def trash(
     document.webdav_path = destination
     document.status = DocumentStatus.trashed
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_trashed,
+        actor=actor,
+        document_id=document.id,
+        summary=f"Moved {document.original_filename} to the trash folder",
+        details={"from": source, "to": destination},
+    )
     session.commit()
     session.refresh(document)
     session.refresh(entry)
 
+    metrics.documents_routed.labels("trashed").inc()
     logger.info("Trashed %s -> %s", source, destination)
     return document, entry
 
 
 def revert(
-    session: Session, webdav: WebDavService, history_id: str
+    session: Session, webdav: WebDavService, history_id: str, *, actor: Actor
 ) -> tuple[HistoryEntry, Document]:
     """Put a filed document back where it came from (SPEC 6.4)."""
     entry = session.get(HistoryEntry, history_id)
@@ -262,10 +302,19 @@ def revert(
     entry.revertible = False
     session.add(document)
     session.add(entry)
+    audit.record(
+        session,
+        AuditAction.history_reverted,
+        actor=actor,
+        document_id=document.id,
+        summary=f"Put {entry.final_filename} back as {entry.original_filename}",
+        details={"from": current, "to": destination, "history_entry_id": entry.id},
+    )
     session.commit()
     session.refresh(document)
     session.refresh(entry)
 
+    metrics.documents_routed.labels("reverted").inc()
     logger.info("Reverted %s -> %s", current, destination)
     return entry, document
 

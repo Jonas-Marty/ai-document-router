@@ -14,6 +14,7 @@ vi.mock("@/services/api/client", () => ({
     listAiModels: vi.fn(),
     listAiEndpoints: vi.fn(),
     listAiTasks: vi.fn(),
+    getAiContext: vi.fn(),
   },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -44,6 +45,8 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     filename_pattern: null,
     filename_pattern_hint: null,
     store_ocr_text: true,
+    filing_instructions: null,
+    extraction_instructions: null,
     ...overrides,
   };
 }
@@ -137,7 +140,11 @@ describe("SettingsPage", () => {
     expect(screen.getByText("AI endpoints")).toBeInTheDocument();
     expect(await screen.findByText("Extraction — read the pages")).toBeInTheDocument();
     expect(screen.getByText("Filing — choose the filename")).toBeInTheDocument();
+    expect(screen.getByText("AI instructions")).toBeInTheDocument();
+    expect(screen.getByText("What the models are given")).toBeInTheDocument();
     expect(screen.getByText("OCR")).toBeInTheDocument();
+    // Collapsed: it walks WebDAV, so nothing is fetched until someone opens it.
+    expect(apiClient.getAiContext).not.toHaveBeenCalled();
   });
 
   it("turns the searchable-copy setting off and saves it", async () => {

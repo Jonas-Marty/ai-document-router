@@ -3,8 +3,10 @@
 from sqlalchemy import case, func
 from sqlmodel import Session, select
 
-from app.models import Document, DocumentStatus, Proposal, ProposalStatus
+from app.models import AuditAction, Document, DocumentStatus, Proposal, ProposalStatus
 from app.schemas import AIProposalRead, DocumentRead
+from app.services import audit
+from app.services.audit import Actor
 from app.services.errors import NotFoundError
 
 # SPEC 5: pending first by scanned_at, then skipped by skip_count then scanned_at. Written
@@ -44,7 +46,25 @@ def to_read_schema(session: Session, document: Document) -> DocumentRead:
     return DocumentRead.from_models(document, read_proposal(session, document.id))
 
 
-def retry_failed_proposals(session: Session) -> int:
+def request_regenerate(session: Session, document_id: str, *, actor: Actor) -> Document:
+    """Queue a fresh proposal. The poller does the work; this only resets the status."""
+    document = get_document(session, document_id)
+    document.proposal_status = ProposalStatus.pending
+    document.proposal_error = None
+    session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_regenerate_requested,
+        actor=actor,
+        document_id=document.id,
+        summary=f"Asked for a new proposal for {document.original_filename}",
+    )
+    session.commit()
+    session.refresh(document)
+    return document
+
+
+def retry_failed_proposals(session: Session, *, actor: Actor) -> int:
     """Put every failed proposal in the queue back to pending. Returns how many moved.
 
     The poller only ever looks at `pending` documents, so a proposal that failed stays failed
@@ -69,6 +89,13 @@ def retry_failed_proposals(session: Session) -> int:
         document.proposal_status = ProposalStatus.pending
         document.proposal_error = None
         session.add(document)
+    audit.record(
+        session,
+        AuditAction.documents_retry_failed,
+        actor=actor,
+        summary=f"Retried {len(failed)} failed proposal{'' if len(failed) == 1 else 's'}",
+        details={"count": len(failed), "document_ids": [document.id for document in failed]},
+    )
     session.commit()
     return len(failed)
 

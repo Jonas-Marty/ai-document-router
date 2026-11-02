@@ -841,3 +841,73 @@ meaningful. One line of "why" each; not a full ADR log.
 - **Named endpoints, and the name is what appears in errors.** "Every filing endpoint failed.
   Tried: Workshop PC · qwen3 (connection refused); Infomaniak · gpt-4o (401)" is a sentence
   someone can act on. A URL is not.
+- **Logging is configured at import in `main.py`, with stdlib only.** `LOG_LEVEL` existed but
+  nothing read it, so every INFO line in the app was dropped by Python's last-resort handler.
+  A request id, a tick id and a JSON formatter are a few dozen lines; a logging framework as a
+  runtime dependency would buy nothing this needs.
+- **The request log is plain ASGI middleware, not `BaseHTTPMiddleware`.** Document content is
+  a `StreamingResponse`; this only needs to see the status go past, not wrap the body.
+- **A tick's summary is DEBUG when the tick did nothing.** One idle line a minute would be most
+  of the INFO log and bury the ticks that ingested or proposed something.
+- **AI instructions go in the user message, not the system prompt.** The user message is what
+  `Proposal.prompt_text` stores, so the review screen shows the instructions that were in force
+  for each proposal; the system prompt stays one constant and only gains a line saying to
+  follow them unless they break the reply format.
+- **Instructions are capped at 2000 characters.** They ride along with every document, and a
+  pasted essay would quietly crowd the document out of a small local model's context.
+- **The prompt preview is `services/ai_context.py`, not a function in `ai_tasks.py`.** It needs
+  `transcribe`'s prompts, and `transcribe` imports `ai_tasks`.
+- **The preview reflects saved settings only.** Previewing unsaved form state would mean
+  posting it to a second endpoint that mirrors settings validation; saving and opening the
+  section is one click more and cannot disagree with what the poller actually does.
+- **`components/ui/textarea.tsx` differs from the CLI's output in two places.** The CLI
+  resolved the utils alias to an npm package literally called `cn` (and installed it — reverted,
+  rule 8), and emitted a React 19 function component that drops `ref`, which breaks
+  react-hook-form's `register` on React 18. It now matches `input.tsx`: `@/lib/utils` and
+  `forwardRef`.
+- **Token usage is recorded inside `services/ai.py`, before a reply is validated.** Every call
+  site hands down a recorder bound to its task and step; recording at the one place replies
+  arrive means a rejected reply, a partly transcribed document and a fallback step are all
+  counted without each caller remembering to.
+- **Usage lives on the document, not the proposal.** A failed analysis has no proposal row and
+  still spent tokens; it is also exactly the case where someone wants to know what it cost.
+- **A missing `usage` block is counted, not ignored.** Local servers often omit it. Reporting
+  "≥ 1.2K" with the number of silent calls is honest; reporting 1.2K is not.
+- **Audit events are written in the same transaction as the change.** `audit.record` only adds
+  the row; the service's own commit makes both real. A separate commit could leave an event
+  for a move that failed, or a filed document with no event.
+- **Services take `actor` as a required keyword, with no default.** A default of "system" would
+  let a new call site silently misattribute a person's action to the poller; a missing
+  argument fails at type-check time instead.
+- **`audit_event.actor_user_id` is not a foreign key, and the email is copied.** The log has to
+  survive the account it names, and show who it was at the time.
+- **`audit_event.action` is a plain string column, not a SQLAlchemy `Enum`.** SQLAlchemy stores
+  enum member *names* (`document_approved`); the dotted value is what gets filtered and read.
+- **The Activity page is admin-only.** The log records other people's sign-in addresses and
+  every settings change; on a single-user instance the owner is the admin anyway.
+- **The filter's "AI" category is analyses and comparisons, not endpoint edits.** Endpoints and
+  chains are configuration and sit with Settings; "AI" answers "what did the models do".
+- **Activity shows usage as stat tiles and a list, not a chart.** Four headline numbers and a
+  short per-model list; a chart would need a time series the page does not otherwise want.
+- **`formatTokens` moved to `lib/tokens.ts` and uses `K`/`M`.** The review line and the Activity
+  tiles format the same numbers and should agree; `M` because a month of tokens passes a million.
+- **Audit retention defaults to a year and runs in the poller tick.** Next to the searchable-copy
+  prune, with no second scheduler job; an event a year old answers nothing a person will ask.
+- **`/metrics` is off until `METRICS_TOKEN` is set, and then takes a bearer token.** It names the
+  AI endpoints and shows queue sizes, and Prometheus cannot sign in with a cookie. 404 while off,
+  so an instance that never opted in does not advertise it.
+- **One prometheus_client registry, no multiprocess mode.** The API is one uvicorn worker with
+  the poller in-process (the scaling note in the README), so one process sees every count.
+- **The HTTP `route` label is the template without `/api/v1`.** This FastAPI stores the route's
+  own path on the scope, not the prefixed one; every router is mounted under the same prefix, so
+  the short template is still unambiguous, and rebuilding the prefix would be guesswork.
+- **AI metrics use one `step` label (`Endpoint · model`), not separate endpoint and model labels.**
+  It is how Settings, the review screen and the audit log already name a step, and the recorder
+  that counts tokens only carries that label.
+- **Document counts are collected at scrape time from the database, not kept as gauges.**
+  Statuses change in the poller, router and documents services; a gauge adjusted at each would
+  drift the first time one was missed.
+- **`webdav_reachable` is set by every WebDAV operation and the `/health` probe, never by a
+  scrape.** A scrape that did network I/O would be slow exactly when WebDAV is down, which is
+  when the metric matters.
+

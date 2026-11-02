@@ -307,6 +307,16 @@ class TestPrompt:
         assert "YYYY-MM-DD_Sender_Type" in prompt
         assert "Swisscom invoice text" in prompt
 
+    def test_includes_instructions_before_the_document(self) -> None:
+        prompt = ai.build_prompt("the document", ["/a"], [], None, "Receipts go to /a/Belege.")
+
+        instructions_at = prompt.index(ai.INSTRUCTIONS_HEADING)
+        assert prompt.index("Receipts go to /a/Belege.") > instructions_at
+        assert prompt.index("Document text:") > instructions_at
+
+    def test_omits_the_instructions_section_when_there_are_none(self) -> None:
+        assert ai.INSTRUCTIONS_HEADING not in ai.build_prompt("t", ["/a"], [], None, None)
+
     def test_caps_tree_depth(self) -> None:
         deep = "/a/b/c/d/e/f"
         assert deep not in ai.build_prompt("t", ["/a", deep], [], None)
@@ -399,3 +409,134 @@ def test_list_models_keeps_the_api_base_hint_for_a_non_json_error() -> None:
 def test_list_models_reports_the_reason_the_endpoint_gave() -> None:
     with pytest.raises(AIUnavailable, match="tier does not include models"):
         models_response({"error": {"message": "tier does not include models"}}, status=403)
+
+
+class TestUsage:
+    """Token counts are read off every reply and added up per analysis, per task."""
+
+    @staticmethod
+    def _proposal(body: dict[str, Any], meter: ai.UsageMeter, label: str = "Hosted · m") -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=body)
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            request_proposal(
+                endpoint_url="https://ai.example.com/v1",
+                model_name="m",
+                api_key=None,
+                prompt="p",
+                allowed_roots=ROOTS,
+                client=client,
+                usage=meter.scope("filing", label),
+            )
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            None,
+            "lots",
+            {"total_tokens": 120},
+            {"prompt_tokens": 100},
+            {"prompt_tokens": "100", "completion_tokens": 20},
+            {"prompt_tokens": True, "completion_tokens": 20},
+            {"prompt_tokens": -1, "completion_tokens": 20},
+        ],
+    )
+    def test_unusable_usage_reads_as_unreported(self, usage: object) -> None:
+        assert ai._extract_usage({"usage": usage}) is None
+
+    def test_reads_prompt_and_completion_tokens(self) -> None:
+        usage = ai._extract_usage({"usage": {"prompt_tokens": 100, "completion_tokens": 20}})
+
+        assert usage == ai.TokenUsage(prompt_tokens=100, completion_tokens=20)
+        assert usage.total_tokens == 120
+
+    def test_a_rejected_reply_still_counts(self) -> None:
+        """The model answered unusably, and that answer was paid for all the same."""
+        meter = ai.UsageMeter()
+        body = {
+            **completion({**VALID_REPLY, "target_folder_path": "/Elsewhere"}),
+            "usage": {"prompt_tokens": 900, "completion_tokens": 40},
+        }
+
+        with pytest.raises(ProposalRejected):
+            self._proposal(body, meter)
+
+        summary = meter.summary()
+        assert summary is not None and summary.filing is not None
+        assert summary.filing.total_tokens == 940
+        assert summary.extraction is None
+
+    def test_a_completion_call_is_recorded_under_its_task(self) -> None:
+        meter = ai.UsageMeter()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "# Page"}}],
+                    "usage": {"prompt_tokens": 1500, "completion_tokens": 300},
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            ai.request_completion(
+                endpoint_url="https://ai.example.com/v1",
+                model_name="vl",
+                api_key=None,
+                system_prompt="s",
+                prompt="p",
+                client=client,
+                usage=meter.scope("extraction", "Local · vl"),
+            )
+
+        summary = meter.summary()
+        assert summary is not None and summary.extraction is not None
+        assert summary.extraction.prompt_tokens == 1500
+        assert summary.extraction.completion_tokens == 300
+
+    def test_an_unreachable_endpoint_records_nothing(self) -> None:
+        meter = ai.UsageMeter()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused")
+
+        with (
+            httpx.Client(transport=httpx.MockTransport(handler)) as client,
+            pytest.raises(AIUnavailable),
+        ):
+            request_proposal(
+                endpoint_url="https://ai.example.com/v1",
+                model_name="m",
+                api_key=None,
+                prompt="p",
+                allowed_roots=ROOTS,
+                client=client,
+                usage=meter.scope("filing", "Hosted · m"),
+            )
+
+        assert meter.summary() is None
+
+    def test_the_summary_adds_up_calls_and_counts_the_silent_ones(self) -> None:
+        meter = ai.UsageMeter()
+        meter.scope("extraction", "Local · vl").record(ai.TokenUsage(1000, 200), 10)
+        meter.scope("extraction", "Local · vl").record(None, 10)
+        meter.scope("filing", "Hosted · gpt").record(ai.TokenUsage(800, 50), 10)
+
+        summary = meter.summary()
+
+        assert summary is not None
+        assert summary.extraction == ai.StageUsage(
+            model_label="Local · vl",
+            prompt_tokens=1000,
+            completion_tokens=200,
+            total_tokens=1200,
+            calls=2,
+            unreported_calls=1,
+        )
+        assert summary.total_tokens == 2050
+        assert summary.to_json()["total_tokens"] == 2050
+        assert summary.describe() == (
+            "extraction 1,200 tokens (Local · vl, 2 calls, 1 unreported) · "
+            "filing 850 tokens (Hosted · gpt) · total 2,050"
+        )

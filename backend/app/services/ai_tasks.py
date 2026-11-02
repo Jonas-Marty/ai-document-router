@@ -7,6 +7,7 @@ document still gets read on the days that machine is off.
 """
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
@@ -15,9 +16,10 @@ from urllib.parse import urlparse
 from sqlmodel import Session, select
 
 from app.config import settings as config
-from app.models import AiEndpoint, AiTask, AiTaskStep
-from app.services import ai, crypto
+from app.models import AiEndpoint, AiTask, AiTaskStep, AuditAction
+from app.services import ai, audit, crypto, metrics
 from app.services.ai import AIUnavailable
+from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
 
@@ -104,14 +106,46 @@ def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], t
         )
 
     failures: list[str] = []
-    for step in steps:
+    for position, step in enumerate(steps):
+        started = time.monotonic()
         try:
-            return call(step)
+            result = call(step)
         except AIUnavailable as exc:
-            logger.warning("%s step %s unavailable: %s", task, step.label, exc.message)
+            _observe_step(task, step, "unavailable", started)
+            if position < len(steps) - 1:
+                metrics.ai_fallbacks.labels(task).inc()
+            logger.warning(
+                "%s via %s unavailable after %.1fs: %s",
+                task,
+                step.label,
+                time.monotonic() - started,
+                exc.message,
+            )
             failures.append(f"{step.label} ({exc.message})")
+            continue
+        except Exception as exc:
+            _observe_step(task, step, "rejected", started)
+            # Not a fallback case (see above), but still the line that says which model
+            # produced the unusable reply -- the exception itself only says what was wrong.
+            logger.info(
+                "%s via %s answered in %.1fs, unusably: %s",
+                task,
+                step.label,
+                time.monotonic() - started,
+                getattr(exc, "reason", None) or getattr(exc, "message", None) or exc,
+            )
+            raise
+        _observe_step(task, step, "ok", started)
+        logger.info("%s via %s answered in %.1fs", task, step.label, time.monotonic() - started)
+        return result
 
+    metrics.ai_chain_exhausted.labels(task).inc()
     raise AIUnavailable(f"Every {task} endpoint failed. Tried: {'; '.join(failures)}")
+
+
+def _observe_step(task: AiTask, step: ResolvedStep, outcome: str, started: float) -> None:
+    metrics.ai_requests.labels(task, step.label, outcome).inc()
+    metrics.ai_request_duration.labels(task, step.label).observe(time.monotonic() - started)
 
 
 def decrypt_key(endpoint: AiEndpoint) -> str | None:
@@ -138,17 +172,25 @@ def endpoint_in_use(session: Session, endpoint_id: str) -> list[AiTask]:
 
 
 def replace_chain(
-    session: Session, task: AiTask, steps: list[tuple[str, str]], *, commit: bool = True
+    session: Session,
+    task: AiTask,
+    steps: list[tuple[str, str]],
+    *,
+    actor: Actor,
+    commit: bool = True,
 ) -> None:
     """Set a task's chain to exactly these (endpoint_id, model_name) pairs, in order.
 
     Replaced wholesale rather than diffed: the chain is an ordered list the user edits as a
     whole, and reconciling it row by row would be work in service of nothing.
     """
+    new_labels = []
     for endpoint_id, model_name in steps:
-        get_endpoint(session, endpoint_id)
+        endpoint = get_endpoint(session, endpoint_id)
         if not model_name.strip():
             raise ValidationError("Every step needs a model name.")
+        new_labels.append(f"{endpoint.name} · {model_name.strip()}")
+    old_labels = [f"{step.endpoint_name} · {step.model_name}" for step in chain_for(session, task)]
 
     for existing in session.exec(select(AiTaskStep).where(AiTaskStep.task == task)).all():
         session.delete(existing)
@@ -163,11 +205,24 @@ def replace_chain(
                 model_name=model_name.strip(),
             )
         )
+    audit.record(
+        session,
+        AuditAction.ai_task_updated,
+        actor=actor,
+        summary=(
+            f"Set the {task} chain to {' → '.join(new_labels)}"
+            if new_labels
+            else f"Cleared the {task} chain"
+        ),
+        details={"task": str(task), "from": old_labels, "to": new_labels},
+    )
     if commit:
         session.commit()
 
 
-def create_endpoint(session: Session, name: str, base_url: str, api_key: str | None) -> AiEndpoint:
+def create_endpoint(
+    session: Session, name: str, base_url: str, api_key: str | None, *, actor: Actor
+) -> AiEndpoint:
     endpoint = AiEndpoint(
         name=_validate_name(session, name, endpoint_id=None),
         base_url=validate_endpoint_url(base_url),
@@ -175,28 +230,63 @@ def create_endpoint(session: Session, name: str, base_url: str, api_key: str | N
         created_at=utc_now(),
     )
     session.add(endpoint)
+    audit.record(
+        session,
+        AuditAction.ai_endpoint_created,
+        actor=actor,
+        summary=f"Added the AI endpoint '{endpoint.name}'",
+        # Whether a key was given, never the key: CLAUDE.md rule 5 covers this table too.
+        details={
+            "name": endpoint.name,
+            "base_url": endpoint.base_url,
+            "api_key_set": endpoint.api_key_encrypted is not None,
+        },
+    )
     session.commit()
     session.refresh(endpoint)
     return endpoint
 
 
 def update_endpoint(
-    session: Session, endpoint_id: str, name: str, base_url: str, api_key: str | None
+    session: Session,
+    endpoint_id: str,
+    name: str,
+    base_url: str,
+    api_key: str | None,
+    *,
+    actor: Actor,
 ) -> AiEndpoint:
     """A blank key leaves the stored one alone -- the form is never given it back to resend."""
     endpoint = get_endpoint(session, endpoint_id)
+    before = {"name": endpoint.name, "base_url": endpoint.base_url}
     endpoint.name = _validate_name(session, name, endpoint_id=endpoint_id)
     endpoint.base_url = validate_endpoint_url(base_url)
     if api_key:
         endpoint.api_key_encrypted = crypto.encrypt(config.secret_key, api_key)
 
     session.add(endpoint)
+    after = {"name": endpoint.name, "base_url": endpoint.base_url}
+    audit.record(
+        session,
+        AuditAction.ai_endpoint_updated,
+        actor=actor,
+        summary=f"Edited the AI endpoint '{endpoint.name}'",
+        details={
+            "changed": {
+                field: {"from": before[field], "to": after[field]}
+                for field in before
+                if before[field] != after[field]
+            },
+            # That it changed, and nothing else about it (rule 5).
+            "api_key_changed": bool(api_key),
+        },
+    )
     session.commit()
     session.refresh(endpoint)
     return endpoint
 
 
-def delete_endpoint(session: Session, endpoint_id: str) -> None:
+def delete_endpoint(session: Session, endpoint_id: str, *, actor: Actor) -> None:
     """Refused while a task still points at it, rather than quietly shortening that chain."""
     endpoint = get_endpoint(session, endpoint_id)
     in_use = endpoint_in_use(session, endpoint_id)
@@ -207,6 +297,13 @@ def delete_endpoint(session: Session, endpoint_id: str) -> None:
         )
 
     session.delete(endpoint)
+    audit.record(
+        session,
+        AuditAction.ai_endpoint_deleted,
+        actor=actor,
+        summary=f"Removed the AI endpoint '{endpoint.name}'",
+        details={"name": endpoint.name, "base_url": endpoint.base_url},
+    )
     session.commit()
 
 

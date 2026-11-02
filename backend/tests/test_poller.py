@@ -1,6 +1,7 @@
 """Poller tests: ingestion, partial-write guards, and proposal outcomes."""
 
 import io
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -10,6 +11,7 @@ from pypdf import PdfWriter
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from app import log
 from app.config import settings as config
 from app.jobs import poller
 from app.models import (
@@ -17,12 +19,15 @@ from app.models import (
     AiTask,
     AiTaskStep,
     AppSettings,
+    AuditAction,
+    AuditEvent,
     Document,
     DocumentStatus,
     OcrStatus,
     Proposal,
     ProposalStatus,
 )
+from app.schemas import DocumentRead
 from app.services import ai, transcribe
 from app.services.times import utc_now
 from app.services.webdav import WebDavEntry
@@ -471,7 +476,7 @@ class TestFullTick:
     """
 
     def test_a_scan_with_no_text_layer_is_ocred_and_proposed_in_one_tick(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         from app.services.extraction import NO_TEXT_LAYER_MESSAGE, ExtractedDocument
 
@@ -537,6 +542,9 @@ class TestFullTick:
             ),
         )
 
+        caplog.handler.addFilter(log.ContextFilter())
+        caplog.set_level(logging.INFO, logger="app.jobs.poller")
+
         poller.run_once()
 
         assert ocred["done"] is True
@@ -548,6 +556,15 @@ class TestFullTick:
             assert document.proposal_error is None
             proposal = check.exec(select(Proposal)).one()
             assert proposal.suggested_name == "2026.08.21 Swisscom Rechnung"
+
+        summary = [r for r in caplog.records if r.getMessage().startswith("Tick done")]
+        assert len(summary) == 1
+        assert "ingested 1, OCR 1, proposals 1 ready / 0 failed" in summary[0].getMessage()
+        # Every line of the tick shares one id, and it is gone once the tick is over.
+        contexts = {str(getattr(r, "context", "")) for r in caplog.records}
+        assert len(contexts) == 1
+        assert contexts.pop().startswith("tick=")
+        assert log.context_var.get() == ""
 
 
 class TestProposals:
@@ -760,7 +777,7 @@ class TestExtractionStage:
         monkeypatch.setattr(
             poller.transcribe,
             "transcribe",
-            lambda data, steps: transcribe.Transcription(
+            lambda data, steps, instructions=None, meter=None: transcribe.Transcription(
                 markdown="# Swisscom\n\n| Total | 42.00 |", model_label="Local · v"
             ),
         )
@@ -772,13 +789,107 @@ class TestExtractionStage:
         assert document.extraction_model == "Local · v"
         assert document.extraction_error is None
 
+    def test_each_task_is_given_its_own_instructions(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._prepare(session, monkeypatch)
+        seen = self._capture_prompt(monkeypatch)
+        app_settings.filing_instructions = "Swisscom goes to /Documents/Telecom."
+        app_settings.extraction_instructions = "Keep the umlauts."
+        given: dict[str, object] = {}
+
+        def read(
+            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
+        ) -> transcribe.Transcription:
+            given["extraction"] = instructions
+            return transcribe.Transcription(markdown="# Swisscom", model_label="Local · v")
+
+        monkeypatch.setattr(poller.transcribe, "transcribe", read)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
+        assert given["extraction"] == "Keep the umlauts."
+        assert "Swisscom goes to /Documents/Telecom." in seen["prompt"]
+        assert "Keep the umlauts." not in seen["prompt"]
+        # Stored with the proposal, so the review screen shows the instructions in force.
+        assert "Swisscom goes to /Documents/Telecom." in (
+            session.exec(select(Proposal)).one().prompt_text or ""
+        )
+
+    def test_the_analysis_stores_what_both_tasks_cost(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._prepare(session, monkeypatch)
+
+        def read(data: bytes, steps: Any, instructions: Any = None, meter: Any = None) -> Any:
+            meter.scope(AiTask.extraction, "Local · v").record(ai.TokenUsage(1200, 300), 5)
+            meter.scope(AiTask.extraction, "Local · v").record(ai.TokenUsage(1100, 250), 5)
+            return transcribe.Transcription(markdown="# Swisscom", model_label="Local · v")
+
+        def propose(**kwargs: Any) -> ai.Proposal:
+            kwargs["usage"].record(ai.TokenUsage(900, 60), 5)
+            return ai.Proposal(
+                suggested_name="n",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.9,
+                reasoning_text="r",
+                model_name="m",
+            )
+
+        monkeypatch.setattr(poller.transcribe, "transcribe", read)
+        monkeypatch.setattr(poller.ai, "request_proposal", propose)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
+
+        session.refresh(document)
+        usage = DocumentRead.from_models(document, None).analysis_usage
+        assert usage is not None
+        assert usage.extraction is not None and usage.extraction.calls == 2
+        assert usage.extraction.total_tokens == 2850
+        assert usage.filing is not None and usage.filing.model_label == "Local · m"
+        assert usage.total_tokens == 3810
+        (event,) = session.exec(
+            select(AuditEvent).where(AuditEvent.action == AuditAction.document_analyzed)
+        ).all()
+        assert event.actor_label == "system"
+        assert event.details["outcome"] == "ready"
+        assert (event.prompt_tokens, event.completion_tokens, event.total_tokens) == (
+            3200,
+            610,
+            3810,
+        )
+
+    def test_a_failed_analysis_stores_what_it_cost_too(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = TestProposals()._document(session)
+        TestProposals()._stub_text(monkeypatch)
+
+        def propose(**kwargs: Any) -> ai.Proposal:
+            kwargs["usage"].record(ai.TokenUsage(700, 30), 5)
+            raise ai.ProposalRejected(
+                "The model chose '/Elsewhere', which is outside your folders."
+            )
+
+        monkeypatch.setattr(poller.ai, "request_proposal", propose)
+
+        assert poller.propose_for(session, FakeService([]), app_settings, document) is False  # type: ignore[arg-type]
+
+        session.refresh(document)
+        assert document.proposal_status == ProposalStatus.failed
+        assert document.analysis_usage is not None
+        assert document.analysis_usage["total_tokens"] == 730
+        assert document.analysis_usage["extraction"] is None
+
     def test_a_failed_transcription_files_from_the_text_layer_and_records_why(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         document = self._prepare(session, monkeypatch)
         seen = self._capture_prompt(monkeypatch)
 
-        def unavailable(data: bytes, steps: Any) -> transcribe.Transcription:
+        def unavailable(
+            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
+        ) -> transcribe.Transcription:
             raise ai.AIUnavailable("Every extraction endpoint failed.")
 
         monkeypatch.setattr(poller.transcribe, "transcribe", unavailable)
@@ -799,7 +910,9 @@ class TestExtractionStage:
         session.add(document)
         session.commit()
 
-        def fail(data: bytes, steps: Any) -> transcribe.Transcription:
+        def fail(
+            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
+        ) -> transcribe.Transcription:
             raise AssertionError("The pages should not have been read a second time.")
 
         monkeypatch.setattr(poller.transcribe, "transcribe", fail)
@@ -818,7 +931,9 @@ class TestExtractionStage:
         session.commit()
         seen = self._capture_prompt(monkeypatch)
 
-        def fail(data: bytes, steps: Any) -> transcribe.Transcription:
+        def fail(
+            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
+        ) -> transcribe.Transcription:
             raise AssertionError("Nothing is configured to read the pages.")
 
         monkeypatch.setattr(poller.transcribe, "transcribe", fail)

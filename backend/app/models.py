@@ -54,6 +54,31 @@ class AiTask(enum.StrEnum):
     filing = "filing"
 
 
+class AuditAction(enum.StrEnum):
+    """Everything the audit log records (SPEC 6.7). Dotted so a category is a prefix."""
+
+    document_ingested = "document.ingested"
+    document_analyzed = "document.analyzed"
+    document_compared = "document.compared"
+    document_ocr_completed = "document.ocr_completed"
+    document_ocr_failed = "document.ocr_failed"
+    document_regenerate_requested = "document.regenerate_requested"
+    documents_retry_failed = "documents.retry_failed"
+    document_approved = "document.approved"
+    document_skipped = "document.skipped"
+    document_trashed = "document.trashed"
+    history_reverted = "history.reverted"
+    settings_updated = "settings.updated"
+    ai_endpoint_created = "ai_endpoint.created"
+    ai_endpoint_updated = "ai_endpoint.updated"
+    ai_endpoint_deleted = "ai_endpoint.deleted"
+    ai_task_updated = "ai_task.updated"
+    auth_registered = "auth.registered"
+    auth_login = "auth.login"
+    auth_login_failed = "auth.login_failed"
+    auth_logout = "auth.logout"
+
+
 class Document(SQLModel, table=True):
     __tablename__ = "document"
 
@@ -80,6 +105,9 @@ class Document(SQLModel, table=True):
     # Set when extraction was configured and still failed. Not fatal on its own: filing falls
     # back to the PDF's own text layer, and this says why the better input is missing.
     extraction_error: str | None = None
+    # Tokens spent by the most recent analysis (ai.UsageSummary.to_json). On the document
+    # rather than the proposal, because a failed analysis spends tokens too and has no proposal.
+    analysis_usage: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
 
 
 class Proposal(SQLModel, table=True):
@@ -129,6 +157,11 @@ class AppSettings(SQLModel, table=True):
     # that writes *content* to WebDAV, and the person whose archive it is should be able to
     # stop it without redeploying.
     store_ocr_text: bool = True
+    # The person's own words for each task, added to what the model is sent (SPEC 6.3, 6.3a).
+    # Per task because they answer different questions: filing needs "insurance letters go
+    # under /Versicherung", extraction needs "these are German, keep the umlauts".
+    filing_instructions: str | None = None
+    extraction_instructions: str | None = None
 
 
 class AiEndpoint(SQLModel, table=True):
@@ -164,6 +197,31 @@ class AiTaskStep(SQLModel, table=True):
     position: int
     endpoint_id: str = Field(foreign_key="ai_endpoint.id", index=True)
     model_name: str
+
+
+class AuditEvent(SQLModel, table=True):
+    """One thing that happened, who did it, and what it cost (SPEC 6.7).
+
+    `actor_user_id` is deliberately not a foreign key, and `actor_label` keeps the email as it
+    was: an audit trail has to outlive the account it names. `action` is a plain string
+    rather than an enum column, because SQLAlchemy stores enum *names* and these values
+    ("document.approved") are what the API and a person reading the table both expect.
+    Token counts are typed columns, not buried in `details`, so they can be summed in SQL.
+    """
+
+    __tablename__ = "audit_event"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    occurred_at: datetime = Field(index=True)
+    actor_user_id: str | None = None
+    actor_label: str
+    action: str = Field(index=True)
+    document_id: str | None = Field(default=None, index=True)
+    summary: str
+    details: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 class User(SQLModel, table=True):

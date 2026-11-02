@@ -17,6 +17,16 @@ export function useAiTasks() {
   });
 }
 
+/** What each task is sent right now. Only fetched while someone is looking (`enabled`),
+ * because building it walks the WebDAV folder tree the way a poller tick does. */
+export function useAiContext(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.aiContext,
+    queryFn: () => apiClient.getAiContext(),
+    enabled,
+  });
+}
+
 export function useCreateAiEndpoint() {
   return useInvalidatingMutation((body: AiEndpointWrite) => apiClient.createAiEndpoint(body));
 }
@@ -47,6 +57,8 @@ function useInvalidatingMutation<TArgs, TResult>(mutationFn: (args: TArgs) => Pr
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.aiEndpoints });
       queryClient.invalidateQueries({ queryKey: queryKeys.aiTasks });
+      // The context preview names each chain's steps.
+      queryClient.invalidateQueries({ queryKey: queryKeys.aiContext });
     },
   });
 }

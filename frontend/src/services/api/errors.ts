@@ -8,12 +8,16 @@
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number | null;
+  /** The backend's X-Request-ID for this response, when it got far enough to send one. The
+   * same id is on the server's log line for the request. */
+  readonly requestId: string | null;
 
-  constructor(code: string, message: string, status: number | null) {
+  constructor(code: string, message: string, status: number | null, requestId?: string | null) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
+    this.requestId = requestId ?? null;
   }
 }
 

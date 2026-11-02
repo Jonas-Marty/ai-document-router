@@ -5,7 +5,6 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
-from app.models import AppSettings, ProposalStatus
 from app.schemas import (
     AIProposalRead,
     ApproveRequest,
@@ -17,11 +16,12 @@ from app.schemas import (
     QueueResponse,
     RetriedResponse,
     RoutedResponse,
+    UsageSummaryRead,
 )
 from app.services import compare as compare_service
 from app.services import documents as documents_service
 from app.services import router as router_service
-from app.services.errors import NotFoundError
+from app.services.audit import Actor
 
 router = APIRouter()
 
@@ -35,14 +35,16 @@ def read_queue(
 
 
 @router.post("/documents/retry-failed")
-def retry_failed_proposals(session: SessionDep, _user: CurrentUserDep) -> RetriedResponse:
+def retry_failed_proposals(session: SessionDep, user: CurrentUserDep) -> RetriedResponse:
     """Queue a fresh proposal for every document whose last one failed.
 
     Declared above `/documents/{document_id}` so the literal path wins the match. Same
     asynchronous contract as the single-document regenerate: this only resets status, and
     the poller does the work on its next tick.
     """
-    return RetriedResponse(retried=documents_service.retry_failed_proposals(session))
+    return RetriedResponse(
+        retried=documents_service.retry_failed_proposals(session, actor=Actor.from_user(user))
+    )
 
 
 @router.get("/documents/{document_id}")
@@ -84,7 +86,7 @@ def read_document_content(
 
 @router.post("/documents/{document_id}/regenerate")
 def regenerate_proposal(
-    document_id: str, session: SessionDep, _user: CurrentUserDep
+    document_id: str, session: SessionDep, user: CurrentUserDep
 ) -> DocumentResponse:
     """Queue a fresh proposal.
 
@@ -92,17 +94,9 @@ def regenerate_proposal(
     it up. SPEC 8.8 already specifies a "Waiting for the AI proposal" skeleton, so the UI is
     built to wait, and this keeps the request off a call that can take 60s with its retry.
     """
-    document = documents_service.get_document(session, document_id)
-    settings = session.get(AppSettings, 1)
-    if settings is None:
-        raise NotFoundError("Settings have not been initialised.")
-
-    document.proposal_status = ProposalStatus.pending
-    document.proposal_error = None
-    session.add(document)
-    session.commit()
-    session.refresh(document)
-
+    document = documents_service.request_regenerate(
+        session, document_id, actor=Actor.from_user(user)
+    )
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
 
 
@@ -110,7 +104,7 @@ def regenerate_proposal(
 def compare_methods(
     document_id: str,
     session: SessionDep,
-    _user: CurrentUserDep,
+    user: CurrentUserDep,
     webdav: WebDavDep,
     app_settings: AppSettingsDep,
 ) -> CompareResponse:
@@ -122,7 +116,9 @@ def compare_methods(
     is chosen.
     """
     document = documents_service.get_document(session, document_id)
-    results = compare_service.compare(session, webdav, app_settings, document)
+    results = compare_service.compare(
+        session, webdav, app_settings, document, actor=Actor.from_user(user)
+    )
     return CompareResponse(results=[_to_method_read(result) for result in results])
 
 
@@ -147,6 +143,7 @@ def _to_method_read(result: compare_service.MethodResult) -> MethodResultRead:
         ),
         error=result.error,
         duration_ms=result.duration_ms,
+        usage=UsageSummaryRead.from_summary(result.usage),
     )
 
 
@@ -155,7 +152,7 @@ def approve_document(
     document_id: str,
     payload: ApproveRequest,
     session: SessionDep,
-    _user: CurrentUserDep,
+    user: CurrentUserDep,
     webdav: WebDavDep,
     app_settings: AppSettingsDep,
 ) -> RoutedResponse:
@@ -168,6 +165,7 @@ def approve_document(
         final_name=payload.final_name,
         final_folder_path=payload.final_folder_path,
         document_date=payload.document_date,
+        actor=Actor.from_user(user),
     )
     return RoutedResponse(
         document=documents_service.to_read_schema(session, document),
@@ -176,8 +174,8 @@ def approve_document(
 
 
 @router.post("/documents/{document_id}/skip")
-def skip_document(document_id: str, session: SessionDep, _user: CurrentUserDep) -> DocumentResponse:
-    document = router_service.skip(session, document_id)
+def skip_document(document_id: str, session: SessionDep, user: CurrentUserDep) -> DocumentResponse:
+    document = router_service.skip(session, document_id, actor=Actor.from_user(user))
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
 
 
@@ -185,12 +183,14 @@ def skip_document(document_id: str, session: SessionDep, _user: CurrentUserDep) 
 def trash_document(
     document_id: str,
     session: SessionDep,
-    _user: CurrentUserDep,
+    user: CurrentUserDep,
     webdav: WebDavDep,
     app_settings: AppSettingsDep,
 ) -> RoutedResponse:
     """Move to the trash folder. There is no delete path anywhere in this codebase."""
-    document, entry = router_service.trash(session, webdav, app_settings, document_id)
+    document, entry = router_service.trash(
+        session, webdav, app_settings, document_id, actor=Actor.from_user(user)
+    )
     return RoutedResponse(
         document=documents_service.to_read_schema(session, document),
         history_entry=HistoryEntryRead.from_model(entry),

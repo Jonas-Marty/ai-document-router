@@ -39,6 +39,7 @@ const baseDocument: Document = {
   proposal_error: null,
   ocr_status: "not_needed",
   ocr_error: null,
+  analysis_usage: null,
 };
 
 const emptySettings: Settings = {
@@ -47,6 +48,8 @@ const emptySettings: Settings = {
   filename_pattern: null,
   filename_pattern_hint: null,
   store_ocr_text: true,
+  filing_instructions: null,
+  extraction_instructions: null,
 };
 
 function folderContextOf(overrides: Partial<FolderContext> = {}): FolderContext {
@@ -201,6 +204,34 @@ describe("ReviewForm", () => {
     // SPEC 8.8: "full manual approvability" -- fields are present and editable even without
     // a proposal.
     expect(screen.getByLabelText(/file name/i)).toBeEnabled();
+  });
+
+  it("shows what a failed analysis cost, since it spent tokens without a proposal", () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const failed: Document = {
+      ...baseDocument,
+      proposal_status: "failed",
+      proposal: null,
+      proposal_error: "The model chose '/Elsewhere', which is outside your folders.",
+      analysis_usage: {
+        extraction: null,
+        filing: {
+          model_label: "Infomaniak · gpt-4o",
+          prompt_tokens: 1150,
+          completion_tokens: 58,
+          total_tokens: 1208,
+          calls: 1,
+          unreported_calls: 0,
+        },
+        total_tokens: 1208,
+      },
+    };
+    render(<Harness document={failed} />);
+
+    expect(screen.getByText("Tokens").closest("summary")).toHaveTextContent(
+      "Tokens · filing 1.2K · total 1.2K",
+    );
   });
 
   it("says a searchable copy will be filed when one is ready, and stays quiet otherwise", async () => {

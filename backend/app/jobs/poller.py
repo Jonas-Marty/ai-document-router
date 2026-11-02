@@ -11,23 +11,34 @@ call per document inside a single job run, while `max_instances=1` blocks the ne
 """
 
 import logging
+import time
 from dataclasses import dataclass
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlmodel import Session, select
 
-from app import db
+from app import db, log
 from app.config import settings as config
 from app.models import (
     AiTask,
     AppSettings,
+    AuditAction,
     Document,
     DocumentStatus,
     OcrStatus,
     Proposal,
     ProposalStatus,
 )
-from app.services import ai, ai_tasks, extraction, folders, searchable, transcribe
+from app.services import (
+    ai,
+    ai_tasks,
+    audit,
+    extraction,
+    folders,
+    metrics,
+    searchable,
+    transcribe,
+)
 from app.services import settings as settings_service
 from app.services.documents import QUEUED_STATUSES
 from app.services.errors import AppError
@@ -36,6 +47,9 @@ from app.services.times import to_storage, utc_now
 from app.services.webdav import WebDavEntry, WebDavService, build_client
 
 logger = logging.getLogger(__name__)
+
+# Everything the poller does, it does on nobody's direct instruction.
+SYSTEM = audit.Actor.system()
 
 # SPEC 6.2 rule 3: extensions that mean "still being written".
 PARTIAL_SUFFIXES = (".part", ".tmp", ".crdownload", ".filepart")
@@ -75,26 +89,52 @@ def stop_scheduler() -> None:
 
 def run_once() -> None:
     """One full tick. Never raises -- a failing tick must not kill the scheduler."""
-    try:
-        with Session(db.engine) as session:
-            app_settings = session.get(AppSettings, 1)
-            if app_settings is None:
-                logger.warning("Settings row missing; skipping tick.")
-                return
-            service = build_service(app_settings)
-            # Carry the bytes we just read straight into the proposal step, so a document
-            # ingested this tick is not downloaded a second time to extract the same text.
-            fresh = ingest(session, service, app_settings)
-            # Before proposals, not after: a document we just OCR'd has text for the first
-            # time, and the whole point is that its proposal is built from that text rather
-            # than from the "no text layer" it would otherwise be stuck with.
-            for document_id in ocr_pending(session, service, app_settings):
-                # Its cached extraction predates the text layer, so it must not be reused.
-                fresh.pop(document_id, None)
-            generate_proposals(session, service, app_settings, fresh)
-            searchable.prune(config.ocr_cache_max_age_days)
-    except Exception:
-        logger.exception("Poller tick failed.")
+    started = time.monotonic()
+    with log.bound(f"tick={log.new_id()}"):
+        try:
+            with Session(db.engine) as session:
+                app_settings = session.get(AppSettings, 1)
+                if app_settings is None:
+                    logger.warning("Settings row missing; skipping tick.")
+                    metrics.poller_ticks.labels("skipped").inc()
+                    return
+                service = build_service(app_settings)
+                # Carry the bytes we just read straight into the proposal step, so a document
+                # ingested this tick is not downloaded a second time to extract the same text.
+                fresh = ingest(session, service, app_settings)
+                ingested = len(fresh)
+                # Before proposals, not after: a document we just OCR'd has text for the
+                # first time, and the whole point is that its proposal is built from that
+                # text rather than from the "no text layer" it would otherwise be stuck with.
+                ocred = ocr_pending(session, service, app_settings)
+                for document_id in ocred:
+                    # Its cached extraction predates the text layer, so it must not be reused.
+                    fresh.pop(document_id, None)
+                ready, failed = generate_proposals(session, service, app_settings, fresh)
+                searchable.prune(config.ocr_cache_max_age_days)
+                audit.prune(session, config.audit_retention_days)
+        except Exception:
+            logger.exception("Poller tick failed.")
+            metrics.poller_ticks.labels("failed").inc()
+            return
+
+        elapsed = time.monotonic() - started
+        metrics.poller_ticks.labels("ok").inc()
+        metrics.poller_tick_duration.observe(elapsed)
+        metrics.poller_last_tick.set_to_current_time()
+
+        # Quiet when idle: a tick a minute that found nothing would otherwise be most of the
+        # INFO log, and bury the ticks that actually did something.
+        busy = ingested or ocred or ready or failed
+        logger.log(
+            logging.INFO if busy else logging.DEBUG,
+            "Tick done in %.1fs: ingested %d, OCR %d, proposals %d ready / %d failed.",
+            elapsed,
+            ingested,
+            len(ocred),
+            ready,
+            failed,
+        )
 
 
 def build_service(app_settings: AppSettings) -> WebDavService:
@@ -195,7 +235,21 @@ def _record(
             document.ocr_status = OcrStatus.pending
 
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_ingested,
+        actor=SYSTEM,
+        document_id=document.id,
+        summary=f"Found {entry.name} in the watch folder",
+        details={
+            "path": entry.path,
+            "size_bytes": extracted.file_size_bytes,
+            "page_count": extracted.page_count,
+            "text_error": extracted.text_error,
+        },
+    )
     session.commit()
+    metrics.documents_ingested.inc()
     logger.info("Ingested %s (%d bytes).", entry.path, extracted.file_size_bytes)
     return document, extracted
 
@@ -249,11 +303,14 @@ def ocr_for(session: Session, service: WebDavService, document: Document) -> boo
         session.commit()
         return False
 
+    ocr_started = time.monotonic()
     try:
         output = searchable.build(data)
     except searchable.SearchableUnavailable as exc:
         _fail_ocr(session, document, str(exc))
         return False
+    finally:
+        metrics.ocr_duration.observe(time.monotonic() - ocr_started)
 
     searchable.store(document.content_hash, output)
     document.ocr_status = OcrStatus.ready
@@ -266,7 +323,16 @@ def ocr_for(session: Session, service: WebDavService, document: Document) -> boo
         document.proposal_status = ProposalStatus.pending
         document.proposal_error = None
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_ocr_completed,
+        actor=SYSTEM,
+        document_id=document.id,
+        summary=f"Made a searchable copy of {document.original_filename}",
+        details={"size_bytes_before": document.file_size_bytes, "size_bytes_after": len(output)},
+    )
     session.commit()
+    metrics.ocr_runs.labels("ready").inc()
 
     logger.info(
         "OCR ready for %s (%d bytes -> %d).",
@@ -281,7 +347,16 @@ def _fail_ocr(session: Session, document: Document, reason: str) -> None:
     document.ocr_status = OcrStatus.failed
     document.ocr_error = reason
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_ocr_failed,
+        actor=SYSTEM,
+        document_id=document.id,
+        summary=f"Couldn't make {document.original_filename} searchable: {reason}",
+        details={"reason": reason},
+    )
     session.commit()
+    metrics.ocr_runs.labels("failed").inc()
     logger.info("OCR failed for %s: %s", document.webdav_path, reason)
 
 
@@ -290,8 +365,8 @@ def generate_proposals(
     service: WebDavService,
     app_settings: AppSettings,
     already_extracted: dict[str, ExtractedDocument] | None = None,
-) -> int:
-    """Produce a proposal for documents still waiting for one."""
+) -> tuple[int, int]:
+    """Produce a proposal for documents still waiting for one. Returns (ready, failed)."""
     pending = session.exec(
         select(Document)
         .where(Document.proposal_status == ProposalStatus.pending)
@@ -304,11 +379,11 @@ def generate_proposals(
     ).all()
 
     cache = already_extracted or {}
-    done = 0
+    ready = 0
     for document in pending:
         if propose_for(session, service, app_settings, document, cache.get(document.id)):
-            done += 1
-    return done
+            ready += 1
+    return ready, len(pending) - ready
 
 
 def propose_for(
@@ -327,18 +402,33 @@ def propose_for(
         _fail(session, document, "No allowed folders are configured yet — set them in Settings.")
         return False
 
+    # Every model call below, extraction and filing alike, reports what it cost here.
+    meter = ai.UsageMeter()
     try:
-        reading = _read_document(session, service, document, already_extracted)
+        reading = _read_document(
+            session,
+            service,
+            document,
+            already_extracted,
+            app_settings.extraction_instructions,
+            meter,
+        )
     except AppError as exc:
-        _fail(session, document, f"Couldn't read the file: {exc.message}")
+        _fail(session, document, f"Couldn't read the file: {exc.message}", meter)
         return False
 
     if reading.fatal is not None:
-        _fail(session, document, reading.fatal)
+        _fail(session, document, reading.fatal, meter)
         return False
 
     tree, samples = folders.prompt_context(service, app_settings)
-    prompt = ai.build_prompt(reading.text, tree, samples, app_settings.filename_pattern_hint)
+    prompt = ai.build_prompt(
+        reading.text,
+        tree,
+        samples,
+        app_settings.filename_pattern_hint,
+        app_settings.filing_instructions,
+    )
     allowed_roots = list(app_settings.allowed_root_folders)
 
     def file_it(step: ai_tasks.ResolvedStep) -> ai.Proposal:
@@ -348,6 +438,7 @@ def propose_for(
             api_key=step.api_key,
             prompt=prompt,
             allowed_roots=allowed_roots,
+            usage=meter.scope(AiTask.filing, step.label),
         )
 
     try:
@@ -355,14 +446,13 @@ def propose_for(
             ai_tasks.resolve_chain(session, AiTask.filing), file_it, AiTask.filing
         )
     except ai.ProposalRejected as exc:
-        _fail(session, document, exc.reason)
+        _fail(session, document, exc.reason, meter)
         return False
     except AppError as exc:
-        _fail(session, document, exc.message)
+        _fail(session, document, exc.message, meter)
         return False
 
-    _store(session, document, proposal, prompt)
-    logger.info("Proposal ready for %s: %s", document.webdav_path, proposal.suggested_name)
+    _store(session, document, proposal, prompt, meter)
     return True
 
 
@@ -379,6 +469,8 @@ def _read_document(
     service: WebDavService,
     document: Document,
     already_extracted: ExtractedDocument | None,
+    instructions: str | None,
+    meter: ai.UsageMeter,
 ) -> _Reading:
     """Markdown from the extraction task when it is configured, the text layer otherwise.
 
@@ -404,7 +496,7 @@ def _read_document(
         extracted = extraction.extract(data, document.original_filename, document.mime_type)
 
     try:
-        transcription = transcribe.transcribe(data, steps)
+        transcription = transcribe.transcribe(data, steps, instructions, meter)
     except (AppError, extraction.RenderUnavailable) as exc:
         reason = exc.message if isinstance(exc, AppError) else str(exc)
         logger.warning("Extraction failed for %s: %s", document.webdav_path, reason)
@@ -470,7 +562,13 @@ def _document_bytes(service: WebDavService, document: Document) -> bytes:
     return b"".join(service.read_stream(document.webdav_path))
 
 
-def _store(session: Session, document: Document, proposal: ai.Proposal, prompt: str) -> None:
+def _store(
+    session: Session,
+    document: Document,
+    proposal: ai.Proposal,
+    prompt: str,
+    meter: ai.UsageMeter,
+) -> None:
     """Replace any existing proposal wholesale (SPEC 4.1) inside one transaction."""
     existing = session.exec(select(Proposal).where(Proposal.document_id == document.id)).first()
     if existing is not None:
@@ -494,15 +592,71 @@ def _store(session: Session, document: Document, proposal: ai.Proposal, prompt: 
             prompt_text=prompt,
         )
     )
+    usage = meter.summary()
     document.proposal_status = ProposalStatus.ready
     document.proposal_error = None
+    document.analysis_usage = usage.to_json() if usage else None
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_analyzed,
+        actor=SYSTEM,
+        document_id=document.id,
+        summary=(
+            f"Proposed {proposal.suggested_name} in {proposal.target_folder_path} "
+            f"for {document.original_filename}"
+        ),
+        details={
+            "outcome": "ready",
+            "suggested_name": proposal.suggested_name,
+            "target_folder_path": proposal.target_folder_path,
+            "confidence_score": proposal.confidence_score,
+            "filing_model": proposal.model_name,
+            "extraction_model": document.extraction_model,
+            "duration_ms": meter.elapsed_ms(),
+            **audit.usage_details(usage),
+        },
+        usage=[usage],
+    )
     session.commit()
+    metrics.analyses.labels("ready").inc()
+    logger.info(
+        "Proposal ready for %s: %s%s",
+        document.webdav_path,
+        proposal.suggested_name,
+        _usage_suffix(usage),
+    )
 
 
-def _fail(session: Session, document: Document, reason: str) -> None:
+def _fail(
+    session: Session, document: Document, reason: str, meter: ai.UsageMeter | None = None
+) -> None:
+    """Also replaces the stored usage: it describes the latest analysis, and this was it --
+    including the tokens a rejected reply cost, and None when no model was reached at all."""
+    usage = meter.summary() if meter else None
     document.proposal_status = ProposalStatus.failed
     document.proposal_error = reason
+    document.analysis_usage = usage.to_json() if usage else None
     session.add(document)
+    audit.record(
+        session,
+        AuditAction.document_analyzed,
+        actor=SYSTEM,
+        document_id=document.id,
+        summary=f"Couldn't propose a name for {document.original_filename}: {reason}",
+        details={
+            "outcome": "failed",
+            "error": reason,
+            "extraction_model": document.extraction_model,
+            "duration_ms": meter.elapsed_ms() if meter else 0,
+            **audit.usage_details(usage),
+        },
+        usage=[usage],
+    )
     session.commit()
-    logger.info("Proposal failed for %s: %s", document.webdav_path, reason)
+    metrics.analyses.labels("failed").inc()
+    logger.info("Proposal failed for %s: %s%s", document.webdav_path, reason, _usage_suffix(usage))
+
+
+def _usage_suffix(usage: ai.UsageSummary | None) -> str:
+    return f" ({usage.describe()})" if usage else ""

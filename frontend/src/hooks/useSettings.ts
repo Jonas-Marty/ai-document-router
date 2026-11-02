@@ -18,6 +18,8 @@ export function useUpdateSettings() {
       queryClient.setQueryData(queryKeys.settings, settings);
       // allowed_root_folders can change what the picker and proposals see.
       queryClient.invalidateQueries({ queryKey: queryKeys.folderTree() });
+      // Folders, the naming hint and the instructions are all part of what the models are sent.
+      queryClient.invalidateQueries({ queryKey: queryKeys.aiContext });
     },
   });
 }

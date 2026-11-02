@@ -1,14 +1,30 @@
+import logging
 import re
 
 from sqlmodel import Session
 
 from app.config import settings as config
-from app.models import AppSettings
+from app.models import AppSettings, AuditAction
 from app.schemas import SettingsRead, SettingsUpdate
+from app.services import audit
+from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.paths import is_within, normalize_path
 
+logger = logging.getLogger(__name__)
+
 _SETTINGS_ID = 1
+
+_LABELS = {
+    "allowed_root_folders": "allowed folders",
+    "trash_folder_path": "trash folder",
+    "filename_pattern": "filename pattern",
+    "filename_pattern_hint": "pattern hint",
+    "store_ocr_text": "searchable copies",
+    "filing_instructions": "filing instructions",
+    "extraction_instructions": "extraction instructions",
+}
+MAX_INSTRUCTIONS_CHARS = 2000
 
 
 def get_settings(session: Session) -> AppSettings:
@@ -40,25 +56,54 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
         filename_pattern=settings.filename_pattern,
         filename_pattern_hint=settings.filename_pattern_hint,
         store_ocr_text=settings.store_ocr_text,
+        filing_instructions=settings.filing_instructions,
+        extraction_instructions=settings.extraction_instructions,
     )
 
 
-def update_settings(session: Session, payload: SettingsUpdate) -> AppSettings:
+def update_settings(session: Session, payload: SettingsUpdate, *, actor: Actor) -> AppSettings:
     settings = get_settings(session)
 
     allowed_roots = _validate_allowed_roots(payload.allowed_root_folders)
     trash_folder = _validate_trash_folder(payload.trash_folder_path, allowed_roots)
     _validate_filename_pattern(payload.filename_pattern)
 
-    settings.allowed_root_folders = allowed_roots
-    settings.trash_folder_path = trash_folder
-    settings.filename_pattern = payload.filename_pattern
-    settings.filename_pattern_hint = payload.filename_pattern_hint
-    settings.store_ocr_text = payload.store_ocr_text
+    updated = {
+        "allowed_root_folders": allowed_roots,
+        "trash_folder_path": trash_folder,
+        "filename_pattern": payload.filename_pattern,
+        "filename_pattern_hint": payload.filename_pattern_hint,
+        "store_ocr_text": payload.store_ocr_text,
+        "filing_instructions": _validate_instructions(payload.filing_instructions, "Filing"),
+        "extraction_instructions": _validate_instructions(
+            payload.extraction_instructions, "Extraction"
+        ),
+    }
+    changed = {
+        field: {"from": getattr(settings, field), "to": value}
+        for field, value in updated.items()
+        if getattr(settings, field) != value
+    }
+    for field, value in updated.items():
+        setattr(settings, field, value)
 
     session.add(settings)
+    audit.record(
+        session,
+        AuditAction.settings_updated,
+        actor=actor,
+        summary=(
+            f"Changed {', '.join(_LABELS[field] for field in changed)}"
+            if changed
+            else "Saved settings without changing anything"
+        ),
+        # Old and new values in full: nothing in app_settings is a secret, and "what was the
+        # trash folder before" is exactly what someone reading this later wants to know.
+        details={"changed": changed},
+    )
     session.commit()
     session.refresh(settings)
+    logger.info("Settings saved; changed: %s", ", ".join(changed) or "nothing")
     return settings
 
 
@@ -87,6 +132,17 @@ def _validate_trash_folder(trash: str, allowed_roots: list[str]) -> str:
         if is_within(root, normalized):
             raise ValidationError("Trash folder must not be inside any allowed root folder.")
     return normalized
+
+
+def _validate_instructions(text: str | None, label: str) -> str | None:
+    """Blank means none. Capped because every character is sent with every document, and a
+    pasted essay would quietly crowd the document itself out of a small model's context."""
+    trimmed = (text or "").strip()
+    if len(trimmed) > MAX_INSTRUCTIONS_CHARS:
+        raise ValidationError(
+            f"{label} instructions must be {MAX_INSTRUCTIONS_CHARS} characters or fewer."
+        )
+    return trimmed or None
 
 
 def _validate_filename_pattern(pattern: str | None) -> None:

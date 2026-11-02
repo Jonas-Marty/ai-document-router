@@ -23,6 +23,7 @@ dependencies = [
     # project dependency rather than an apt package so the version is pinned by uv.lock like
     # everything else. It needs ghostscript from apt; see deploy/backend.Dockerfile.
     "ocrmypdf>=17.11.0",
+    "prometheus-client>=0.26.0",
 ]
 
 [dependency-groups]

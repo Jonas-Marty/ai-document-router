@@ -36,6 +36,24 @@ export interface Document {
   proposal_error: string | null;
   ocr_status: OcrStatus;
   ocr_error: string | null;
+  analysis_usage: UsageSummary | null; // tokens the most recent analysis spent, success or not
+}
+
+/** Every call one task made during one analysis, added up. */
+export interface StageUsage {
+  model_label: string; // "Endpoint · model" of the last call
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  unreported_calls: number; // calls whose server sent no usage -- the totals are "at least"
+}
+
+/** A task that made no calls this time (unconfigured, or its reading was reused) is null. */
+export interface UsageSummary {
+  extraction: StageUsage | null;
+  filing: StageUsage | null;
+  total_tokens: number;
 }
 
 export interface QueueResponse {
@@ -59,6 +77,7 @@ export interface MethodResult {
   proposal: AIProposal | null;
   error: string | null;
   duration_ms: number;
+  usage: UsageSummary | null;
 }
 
 export interface CompareResponse {
@@ -131,6 +150,8 @@ export interface Settings {
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
   store_ocr_text: boolean; // file a searchable copy of a scan instead of the original
+  filing_instructions: string | null; // added to the filing prompt; max 2000 characters
+  extraction_instructions: string | null; // added to the extraction prompt; max 2000 characters
 }
 
 export type SettingsUpdate = Settings;
@@ -168,6 +189,56 @@ export interface AiTaskChain {
 
 export interface AiTaskChainUpdate {
   steps: { endpoint_id: string; model_name: string }[];
+}
+
+/** What one task is sent right now, built from the current settings with a placeholder in
+ * place of the document. */
+export interface AiTaskContext {
+  task: AiTask;
+  chain: string[]; // "Endpoint · model", in the order tried
+  system_prompt: string;
+  user_prompt: string;
+  note: string;
+}
+
+/** One entry in the audit log (SPEC 6.7). `action` is dotted, e.g. "document.approved". */
+export interface AuditEvent {
+  id: string;
+  occurred_at: string; // ISO 8601 with UTC offset
+  actor_label: string; // the email, or "system" for the poller
+  action: string;
+  document_id: string | null;
+  summary: string;
+  details: Record<string, unknown>;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+}
+
+export type AuditCategory = "documents" | "ai" | "settings" | "auth";
+
+export interface AuditPage {
+  items: AuditEvent[];
+  next_cursor: string | null;
+}
+
+export interface ModelUsage {
+  task: string;
+  model_label: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+}
+
+export interface AuditUsage {
+  days: number;
+  analyses: number;
+  comparisons: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  by_model: ModelUsage[]; // largest first
 }
 
 export interface AuthConfig {

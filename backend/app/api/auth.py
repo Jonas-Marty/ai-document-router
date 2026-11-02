@@ -8,10 +8,12 @@ from sqlmodel import Session, select
 
 from app.config import settings as app_config
 from app.deps import CurrentUserDep, SessionDep
-from app.models import User
+from app.models import AuditAction, User
 from app.schemas import AuthConfig, CredentialsRequest, UserRead
+from app.services import audit
 from app.services import auth as auth_service
 from app.services import oidc as oidc_service
+from app.services.audit import Actor
 from app.services.errors import OidcError
 
 router = APIRouter()
@@ -83,16 +85,17 @@ def oidc_callback(
     if not app_config.oidc_enabled:
         raise OidcError("Single sign-on is not configured on this instance.")
     if error:
-        return _back_to_login(error_description or error)
+        return _failed_sso(session, error_description or error)
     if not code or not state:
-        return _back_to_login("The identity provider sent an incomplete response.")
+        return _failed_sso(session, "The identity provider sent an incomplete response.")
 
     try:
         claims = oidc_service.complete_login(session, code, state)
         user = _link_or_create(session, claims["sub"], claims["email"])
     except OidcError as exc:
-        return _back_to_login(exc.message)
+        return _failed_sso(session, exc.message)
 
+    auth_service.record_sign_in(session, user, "oidc")
     response = RedirectResponse(app_config.app_base_url.rstrip("/") + "/", status_code=303)
     _set_session_cookie(response, auth_service.start_session(session, user))
     return response
@@ -119,6 +122,14 @@ def _link_or_create(session: Session, subject: str, email: str) -> User:
             is_admin=auth_service.user_count(session) == 0,
             created_at=datetime.now(UTC),
         )
+        audit.record(
+            session,
+            AuditAction.auth_registered,
+            actor=Actor.from_user(user),
+            summary=f"Registered {address} through single sign-on"
+            + (" as the admin" if user.is_admin else ""),
+            details={"is_admin": user.is_admin, "method": "oidc"},
+        )
     else:
         user.oidc_subject = subject
         user.email = address
@@ -127,6 +138,12 @@ def _link_or_create(session: Session, subject: str, email: str) -> User:
     session.commit()
     session.refresh(user)
     return user
+
+
+def _failed_sso(session: Session, reason: str) -> RedirectResponse:
+    # Nobody is identified yet at this point, so there is no address to attribute it to.
+    auth_service.record_failed_sign_in(session, "", "oidc", reason)
+    return _back_to_login(reason)
 
 
 def _back_to_login(reason: str) -> RedirectResponse:

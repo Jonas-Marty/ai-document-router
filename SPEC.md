@@ -56,6 +56,7 @@ ai-document-router/
 │   └── app/
 │       ├── main.py            # FastAPI app, CORS, router mounting, lifespan
 │       ├── config.py          # pydantic-settings, reads .env
+│       ├── log.py             # logging setup, request/tick ids, request log middleware
 │       ├── db.py              # engine, session dependency, WAL pragma
 │       ├── models.py          # SQLModel tables
 │       ├── schemas.py         # Pydantic request/response models
@@ -65,6 +66,9 @@ ai-document-router/
 │       │   ├── documents.py
 │       │   ├── folders.py
 │       │   ├── history.py
+│       │   ├── audit.py       # the Activity page's events and usage, admin only
+│       │   ├── metrics.py     # Prometheus exposition, bearer-token gated
+│       │   ├── cursors.py     # (timestamp, id) page cursors, shared by history and audit
 │       │   ├── ai.py         # endpoints + task chains
 │       │   └── settings.py
 │       ├── services/
@@ -73,7 +77,10 @@ ai-document-router/
 │       │   ├── ai.py          # LLM call, prompt, response parsing
 │       │   ├── ai_tasks.py    # named endpoints, task chains, fallback
 │       │   ├── transcribe.py  # pages -> markdown (the extraction task)
+│       │   ├── ai_context.py  # what each task is sent, previewed for Settings
+│       │   ├── audit.py       # the audit log: record, list, usage totals, retention
 │       │   ├── crypto.py      # Fernet encrypt/decrypt for stored secrets
+│       │   ├── metrics.py     # every Prometheus metric, and the scrape-time document counts
 │       │   └── router.py      # approve / trash / revert orchestration
 │       └── jobs/
 │           └── poller.py      # APScheduler: scan watch folder, generate proposals
@@ -88,8 +95,9 @@ ai-document-router/
 │       │   ├── ui/            # shadcn primitives
 │       │   ├── review/        # DocumentViewer, ReviewForm, SiblingList, ConfidenceBadge
 │       │   ├── folders/       # FolderPicker (dialog on desktop, sheet on mobile)
+│       │   ├── activity/      # AuditTable, AuditCards, AuditDetails, UsageSummary
 │       │   └── layout/        # AppShell, TopBar, MobileActionBar
-│       └── pages/             # ReviewPage, HistoryPage, SettingsPage
+│       └── pages/             # ReviewPage, HistoryPage, ActivityPage, SettingsPage
 └── deploy/
     ├── docker-compose.yml
     ├── backend.Dockerfile
@@ -124,6 +132,7 @@ ai-document-router/
 | `extracted_markdown` | str \| null | what the extraction task read off the pages (6.3a) |
 | `extraction_model` | str \| null | which endpoint · model read it |
 | `extraction_error` | str \| null | why extraction was skipped or failed; filing falls back to the text layer |
+| `analysis_usage` | JSON \| null | tokens the most recent analysis spent, per task — `UsageSummary` (6.3); set on failure too |
 | `error_message` | str \| null | set when `status = failed` |
 
 **`proposal`** — one-to-one with document, replaced wholesale on regeneration.
@@ -165,6 +174,8 @@ ai-document-router/
 | `filename_pattern` | str \| null — regex, soft validation |
 | `filename_pattern_hint` | str \| null |
 | `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
+| `filing_instructions` | str \| null — the person's own instructions for filing, ≤ 2000 chars (6.3) |
+| `extraction_instructions` | str \| null — the same for extraction, ≤ 2000 chars (6.3a) |
 
 **`ai_endpoint`** — one place a model request can be sent. Any number of them (6.3a).
 
@@ -216,6 +227,20 @@ ai-document-router/
 | `redirect_uri` | str |
 | `created_at` | datetime |
 
+**`audit_event`** — one thing that happened (6.7). Append-only apart from retention.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `occurred_at` | datetime, indexed |
+| `actor_user_id` | str \| null — not a FK, so an event outlives its user; null for the poller |
+| `actor_label` | str — the email at the time, or `system` |
+| `action` | str, indexed — an `AuditAction` value such as `document.approved` |
+| `document_id` | str \| null, indexed |
+| `summary` | str — one readable sentence |
+| `details` | JSON — per action; never a secret |
+| `prompt_tokens` / `completion_tokens` / `total_tokens` | int \| null — set when a model was called |
+
 ### 4.2 Shared TypeScript types
 
 Mirror these exactly in `frontend/src/services/api/types.ts`. The API returns camel-free
@@ -249,6 +274,22 @@ export interface Document {
   proposal_error: string | null;
   ocr_status: OcrStatus;
   ocr_error: string | null;
+  analysis_usage: UsageSummary | null;
+}
+
+export interface StageUsage {
+  model_label: string;          // "Endpoint · model" of the last call
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+  unreported_calls: number;     // calls whose server sent no usage; totals are a minimum
+}
+
+export interface UsageSummary {
+  extraction: StageUsage | null; // null = the task made no calls this time
+  filing: StageUsage | null;
+  total_tokens: number;
 }
 
 export interface FolderNode {
@@ -291,6 +332,8 @@ export interface Settings {
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
   store_ocr_text: boolean;
+  filing_instructions: string | null;
+  extraction_instructions: string | null;
 }
 
 export type SettingsUpdate = Settings;
@@ -325,6 +368,53 @@ export interface AiTaskChain {
 
 export interface AiTaskChainUpdate {
   steps: { endpoint_id: string; model_name: string }[];
+}
+
+export interface AiTaskContext {
+  task: AiTask;
+  chain: string[];        // "Endpoint · model", in the order tried
+  system_prompt: string;
+  user_prompt: string;    // built from current settings; the document is a placeholder
+  note: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  occurred_at: string;          // ISO 8601 with UTC offset
+  actor_label: string;          // the email, or "system" for the poller
+  action: string;               // e.g. "document.approved"
+  document_id: string | null;
+  summary: string;
+  details: Record<string, unknown>;  // shape differs per action
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+}
+
+export type AuditCategory = "documents" | "ai" | "settings" | "auth";
+
+export interface AuditPage {
+  items: AuditEvent[];
+  next_cursor: string | null;
+}
+
+export interface ModelUsage {
+  task: string;
+  model_label: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  calls: number;
+}
+
+export interface AuditUsage {
+  days: number;
+  analyses: number;
+  comparisons: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  by_model: ModelUsage[];       // largest first
 }
 
 export interface AuthConfig {
@@ -378,6 +468,8 @@ Base path `/api/v1`. JSON in, JSON out.
 | GET | `/folders/context?path=..&filename=..` | — | `FolderContext` |
 | GET | `/history?limit=50&cursor=..` | — | `{ items: HistoryEntry[], next_cursor }` |
 | POST | `/history/{id}/revert` | — | `{ history_entry, document }` |
+| GET | `/audit?limit=50&cursor=..&category=..` | — | `AuditPage`, newest first — admin only; `category` is `documents` \| `ai` \| `settings` \| `auth` |
+| GET | `/audit/usage?days=30` | — | `AuditUsage` — tokens spent in the window, admin only |
 | GET | `/settings` | — | `Settings` |
 | PUT | `/settings` | `SettingsUpdate` | `Settings` |
 | GET | `/ai/endpoints` | — | `AiEndpoint[]`, by name |
@@ -386,8 +478,10 @@ Base path `/api/v1`. JSON in, JSON out.
 | DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a task still references it |
 | GET | `/ai/tasks` | — | `AiTaskChain[]`, one per task |
 | PUT | `/ai/tasks/{task}` | `AiTaskChainUpdate` | `AiTaskChain` — replaces the chain wholesale |
+| GET | `/ai/context` | — | `AiTaskContext[]` — what each task is sent right now; walks WebDAV for the folder tree |
 | POST | `/ai/models` | `AiModelsRequest` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
 | GET | `/health` | — | `{ status, webdav_reachable, queue_depth }` |
+| GET | `/metrics` | — | Prometheus text format; `Authorization: Bearer <METRICS_TOKEN>`, 404 while unset |
 | GET | `/auth/config` | — | `AuthConfig` — public |
 | GET | `/auth/me` | — | `AuthUser`, or 401 |
 | POST | `/auth/register` | `Credentials` | `AuthUser`, 201, sets the session cookie |
@@ -403,7 +497,12 @@ ascending, then `scanned_at`. A skipped document never reappears before an unski
 is written for a human and is displayed verbatim in the UI. Codes used:
 `not_found`, `validation_error`, `webdav_unreachable`, `webdav_conflict`, `ai_unavailable`,
 `outside_allowed_roots`, `filename_collision`, `not_revertible`, `unauthenticated`,
-`invalid_credentials`, `admin_required`, `registration_closed`, `oidc_error`.
+`invalid_credentials`, `admin_required`, `registration_closed`, `oidc_error`, and
+`internal_error` (500, for an unhandled exception — the message quotes the request id).
+
+**Request id:** every response carries `X-Request-ID`. A well-formed incoming one
+(`[A-Za-z0-9-]`, ≤ 64 characters) is kept, anything else is replaced. It is the id on the
+server's log line for that request (6.6).
 
 **`original_suggestion` is not in the approve payload.** The backend already has the
 proposal; it snapshots it into `history_entry.suggestion_snapshot` and computes
@@ -485,6 +584,11 @@ Input assembled by the backend:
 - Up to 8 example filenames sampled from across those folders, so the model can see the
   naming convention.
 - `filename_pattern_hint` if set.
+- `filing_instructions` if set, under "Additional instructions from the person whose archive
+  this is:", before the document text. In the user message rather than the system prompt, so
+  they are part of `prompt_text` and the review screen shows the instructions that were in
+  force for that proposal. The system prompt says to follow them unless they conflict with the
+  reply format.
 
 Call: `POST {endpoint.base_url}/chat/completions` for the first step of the filing chain,
 OpenAI-compatible, `response_format` JSON, 30-second timeout, one retry on 5xx or timeout.
@@ -510,6 +614,14 @@ can show what was actually sent (8.3.5a). `null` for proposals stored before thi
 existed. The system prompt is a fixed constant, not stored per row — the API always returns
 its current text.
 
+**Token usage.** Every reply's OpenAI `usage` block (`prompt_tokens`, `completion_tokens`) is
+recorded the moment the reply arrives — before validation, because a rejected reply was paid
+for too. A server that sends no usable block still counts as a call, as `unreported_calls`.
+One analysis (every extraction batch, every fallback step that answered, and filing) is added
+up per task into a `UsageSummary`, stored on `Document.analysis_usage` whether the proposal
+succeeded or failed, and logged in one line with the outcome. A reused extraction costs
+nothing and shows as `extraction: null`. Tokens only — no prices.
+
 ### 6.3a AI workflow (`services/ai_tasks.py`, `services/transcribe.py`)
 
 Reading a document and naming it are two different jobs wanting two different models, so they
@@ -520,6 +632,7 @@ are two **tasks**:
   The parts are stitched with a blank line and stored on `Document.extracted_markdown`. No
   JSON mode and no schema: the reply is prose, and only a wrapping ```` ```markdown ```` fence
   is stripped.
+  `extraction_instructions`, if set, follow the fixed request under the same heading filing uses.
 - **`filing`** — 6.3, given that markdown.
 
 Extraction runs on **every** document, not only scans without a text layer: a markdown reading
@@ -582,7 +695,9 @@ with the model that chooses the filename held constant.
 
 Synchronous and on demand — one model call per method. Nothing is stored: the document's
 own proposal is untouched, and choosing a result only fills the review form. A method that
-cannot run is a result carrying its reason, never an omission.
+cannot run is a result carrying its reason, never an omission. Each result carries its own
+`usage` (the markdown method's includes the transcription), so a reading is judged on cost as
+well as quality.
 
 ### 6.5 Authentication (`services/auth.py`, `services/oidc.py`)
 
@@ -611,6 +726,68 @@ OIDC Core 3.1.3.7 accepts, and verifying the signature locally would mean JWKS h
 JWT dependency this project does not otherwise need. A provider user is matched on `sub`,
 then on email — the email fallback links SSO onto an existing password account instead of
 forking it. Failures redirect to `/login?error=…` rather than rendering JSON.
+
+### 6.6 Logging (`log.py`)
+
+Stdlib `logging`, configured once in `main.py` at import from `LOG_LEVEL` and `LOG_FORMAT`
+(`text` for a terminal, `json` — one object per line — for a collector). uvicorn's own loggers
+share the handler; its access log is replaced by one line per request from
+`RequestLogMiddleware` (`GET /api/v1/queue 200 34ms`), with `/health` and `/metrics` at DEBUG.
+
+Every line carries a context: `req=<id>` inside a request (the `X-Request-ID`), `tick=<id>`
+inside a poller run, so one request's or one tick's lines can be pulled out together. An
+unhandled exception is logged with its traceback under that id and answered with
+`internal_error` quoting it.
+
+What is logged: each tick's summary (INFO when it did anything, DEBUG when idle), each AI step's
+outcome and duration, fallbacks, sign-ins and failed sign-ins (the address, never the
+password), the names of settings that changed, and at DEBUG every WebDAV operation with its
+duration. Never logged: API keys, passwords, session tokens, document contents. The frontend
+logs failed API calls to the console with the request id; debug lines only in development.
+
+### 6.7 Audit log (`services/audit.py`)
+
+Where the log (6.6) is for finding a bug this week, the audit log answers "who did that, and
+what did it cost" months later. `audit.record(session, action, actor=…, summary=…)` adds an
+`audit_event` row without committing; the service commits it together with the change it
+describes, so there is never an event for a change that rolled back or a change without its
+event. A failed sign-in is the one event with no change to ride along with, and commits alone.
+
+Every service that changes something takes a required keyword `actor`: `Actor.from_user(user)`
+from a route, `Actor.system()` from the poller.
+
+| Group | Actions |
+|---|---|
+| Documents | `document.ingested`, `document.ocr_completed`, `document.ocr_failed`, `document.regenerate_requested`, `documents.retry_failed`, `document.approved` (from, to, whether the proposal was overridden), `document.skipped`, `document.trashed`, `history.reverted` |
+| AI | `document.analyzed` (outcome, the proposal or the error, the usage breakdown, token columns), `document.compared` (per method usage, token columns) |
+| Settings | `settings.updated` (each changed field, old → new), `ai_endpoint.created` / `updated` / `deleted` (name, URL, `api_key_changed: bool` — never the key), `ai_task.updated` (old chain → new) |
+| Sign-ins | `auth.registered`, `auth.login` (password or oidc), `auth.login_failed` (the address tried, never the password), `auth.logout` |
+
+`GET /audit` pages on `(occurred_at, id)` like History; `GET /audit/usage` sums the token
+columns in SQL and folds the per-model breakdown from the stored usage summaries. Both need
+`is_admin`. The poller drops events older than `AUDIT_RETENTION_DAYS` (default 365, `0` keeps
+everything) once per tick.
+
+### 6.8 Metrics (`services/metrics.py`)
+
+`GET /api/v1/metrics` serves prometheus_client's default registry. It does not exist (404) until
+`METRICS_TOKEN` is set, and then needs `Authorization: Bearer <token>`, compared in constant
+time — Prometheus cannot hold a session cookie. It is not in the OpenAPI schema.
+
+| Area | Metrics (all prefixed `docrouter_`) |
+|---|---|
+| HTTP | `http_requests_total{method,route,status}`, `http_request_duration_seconds{method,route}` — `route` is the template under `/api/v1` (`/documents/{document_id}`), or `unmatched` |
+| AI | `ai_requests_total{task,step,outcome}` (`ok` \| `rejected` \| `unavailable`, one per chain step tried), `ai_request_duration_seconds{task,step}`, `ai_tokens_total{task,step,kind}` (`prompt` \| `completion`), `ai_unreported_usage_calls_total{task,step}`, `ai_fallbacks_total{task}`, `ai_chain_exhausted_total{task}` — `step` is `Endpoint · model` as Settings names it |
+| Pipeline | `analyses_total{outcome}`, `documents_ingested_total`, `documents_routed_total{action}` (`moved` \| `trashed` \| `skipped` \| `reverted`), `ocr_runs_total{outcome}`, `ocr_duration_seconds` |
+| Poller | `poller_ticks_total{outcome}` (`ok` \| `failed` \| `skipped`), `poller_tick_duration_seconds`, `poller_last_tick_timestamp_seconds` |
+| WebDAV | `webdav_operations_total{operation,outcome}`, `webdav_operation_duration_seconds{operation}`, `webdav_reachable` (from the last operation or `/health` probe) |
+| Auth | `auth_logins_total{method,outcome}` |
+| Scrape time | `documents{status}` and `queue_proposals{proposal_status}`, counted from the database when scraped |
+
+Counters are bumped after the commit of the thing they count, so a rolled-back approve is not a
+routed document. Token counts come from the same recorder that stores usage on the document
+(6.3a), so the two cannot disagree. A scrape never touches WebDAV or a model. Series an alert is
+likely to divide by are created at zero on startup.
 
 ---
 
@@ -652,7 +829,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Review · `/history` History · `/settings` Settings
+`/` Review · `/history` History · `/activity` Activity (admins only) · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -690,6 +867,10 @@ filename and size shown above, muted.
     proposal (6.3), each in its own scrollable monospace block. If the document-specific part
     wasn't recorded (a proposal from before this existed), say so instead of showing nothing.
     Lets someone judge a bad proposal and tune Settings instead of guessing.
+5b. **Token usage** — one muted line, `Tokens · extraction 3.4K · filing 1.2K · total 4.6K`,
+    from `analysis_usage`, shown for failed analyses too. A `<details>` expands it to prompt +
+    completion per task with the endpoint · model; `≥` and a note when a call didn't report
+    usage. Nothing when no model was reached.
 6. **Files already in this folder** — up to 5 siblings, filename (monospace) and date.
    Re-fetches with a 300 ms debounce whenever the target folder changes; it must always show
    the *currently selected* folder, not the AI's original suggestion. This block is the
@@ -734,7 +915,18 @@ Empty: "Nothing filed yet. Approved and trashed documents show up here."
 
 One form per section, save disabled until dirty, `Discard changes` alongside, unsaved-changes
 navigation guard. Sections: Folders (allowed roots list, trash folder), Naming (pattern +
-hint, with a live regex validity check), AI endpoints, one card per AI task, OCR.
+hint, with a live regex validity check), AI endpoints, one card per AI task, AI instructions,
+What the models are given, OCR.
+
+**AI instructions.** Two textareas, filing and extraction, each with a `n / 2000` counter that
+turns destructive past the limit. Blank saves as `null`. Helper text says they apply to
+documents read from now on — regenerate or retry to re-run existing ones.
+
+**What the models are given.** Collapsed by default and fetched only once opened, since it walks
+the WebDAV folder tree. Per task: the chain as `Workshop PC · qwen3 → Infomaniak · gpt-4o` (or
+"no endpoint assigned yet"), a short note on what travels with the message, then the fixed
+instructions and the message in the same monospace blocks as 8.3.5a. A `Refresh` button; it
+reflects saved settings, not unsaved edits, and says so. Not a form.
 
 **AI endpoints.** A list of every configured endpoint — name, URL, a `Key saved` badge, and a
 badge per task using it — with `Edit` and `Remove` on each and `Add endpoint` below. Not a
@@ -807,10 +999,28 @@ with only a happy path.
 | Sibling files | 3 skeleton rows | "This folder is empty" / "will be created" | inline + Retry |
 | Folder tree | skeleton nodes | "No subfolders" | inline + Retry |
 | History | skeleton rows | "Nothing filed yet" | error card + Try again |
+| Activity | skeleton tiles and rows | "Nothing recorded yet" / "No documents were analysed in this period." | error card + Try again |
 | Settings | form skeleton | — | error card + Try again |
 
 Mutations disable their trigger and show an in-button spinner. A WebDAV outage surfaces as a
 persistent banner in the top bar driven by `/health`, not just per-request errors.
+
+### 8.11 Activity
+
+The audit log (6.7), for admins. The top bar shows the link only to them; anyone else who
+types the URL gets "Only admins can see activity." and the page fetches nothing.
+
+*Usage.* "AI usage · last 30 days": four stat tiles — Analyses, Comparisons, Tokens,
+Prompt · completion — in compact figures (`128K`) with the exact count on hover, two per row
+on a phone and four on a wide screen. Below, one line per task and model with its tokens and
+calls, largest first. Figures, not a chart: a handful of headline numbers reads faster that
+way.
+
+*Events.* A filter row — All, Documents, AI, Settings, Sign-ins — as toggle buttons. Newest
+first, `Load more` via cursor. Desktop: a table of when (relative, absolute on hover), who,
+the summary, and tokens. Mobile: stacked cards with the summary as the title and who · when ·
+tokens beneath. Every event has a `Details` disclosure listing the action, document id, token
+split and each `details` entry; nested values show as indented JSON.
 
 ---
 
@@ -838,7 +1048,9 @@ happened and what to do next, without apologising. Empty states invite an action
 `.env` at the repo root, loaded by both sides. See `.env.example`.
 
 Backend: `DATABASE_URL`, `SECRET_KEY`, `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
-`WEBDAV_PASSWORD`, `WEBDAV_WATCH_FOLDER`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`.
+`WEBDAV_PASSWORD`, `WEBDAV_WATCH_FOLDER`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`,
+`LOG_FORMAT` (`text` | `json`), `AUDIT_RETENTION_DAYS` (default 365; `0` keeps every event),
+`METRICS_TOKEN` (empty turns `/metrics` off).
 
 Auth: `APP_BASE_URL` (the public URL — decides the OIDC redirect URI and whether the session
 cookie is `Secure`), `ALLOW_REGISTRATION`, `SESSION_LIFETIME_DAYS`, and for single sign-on
@@ -862,5 +1074,6 @@ and requires re-entering it — document this in the README.
 - Bulk selection or batch approval
 - Splitting a multi-page PDF into several documents — every page in a file is one document
 - Editing or moving files after filing, other than revert
-- Notifications, email, scheduling, analytics
+- Notifications, email, scheduling, product analytics (the audit log and operational
+  metrics are in scope; tracking how people use the UI is not)
 - Multi-tenancy or any second WebDAV account

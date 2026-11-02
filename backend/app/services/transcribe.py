@@ -44,7 +44,19 @@ class Transcription:
     model_label: str
 
 
-def transcribe(data: bytes, steps: list[ResolvedStep]) -> Transcription:
+def user_prompt(instructions: str | None) -> str:
+    """The text sent alongside each batch of page images."""
+    if not instructions:
+        return USER_PROMPT
+    return f"{USER_PROMPT}\n\n{ai.INSTRUCTIONS_HEADING}\n{instructions}"
+
+
+def transcribe(
+    data: bytes,
+    steps: list[ResolvedStep],
+    instructions: str | None = None,
+    meter: ai.UsageMeter | None = None,
+) -> Transcription:
     """Render the document's pages and have the first working endpoint read them.
 
     Raises AIUnavailable when the chain is empty or every endpoint in it failed, and
@@ -53,6 +65,7 @@ def transcribe(data: bytes, steps: list[ResolvedStep]) -> Transcription:
     pages = extraction.render_pages(data, max_pages=extraction.MAX_RENDERED_PAGES)
     if not pages:
         raise extraction.RenderUnavailable("This PDF has no pages to read.")
+    prompt = user_prompt(instructions)
 
     def call(step: ResolvedStep) -> Transcription:
         chunks = [
@@ -61,8 +74,9 @@ def transcribe(data: bytes, steps: list[ResolvedStep]) -> Transcription:
                 model_name=step.model_name,
                 api_key=step.api_key,
                 system_prompt=SYSTEM_PROMPT,
-                prompt=USER_PROMPT,
+                prompt=prompt,
                 images=batch,
+                usage=meter.scope(AiTask.extraction, step.label) if meter else None,
             )
             for batch in _batched(pages, PAGES_PER_REQUEST)
         ]

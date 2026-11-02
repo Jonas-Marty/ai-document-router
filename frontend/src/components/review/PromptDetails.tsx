@@ -38,7 +38,7 @@ export function PromptDetails({ proposal }: { proposal: AIProposal }) {
   );
 }
 
-function PromptBlock({ label, text }: { label: string; text: string }) {
+export function PromptBlock({ label, text }: { label: string; text: string }) {
   return (
     <div className="space-y-1">
       <p className="text-xs font-medium text-muted-foreground">{label}</p>

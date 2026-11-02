@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.deps import CurrentUserDep, SessionDep
 from app.schemas import SettingsRead, SettingsUpdate
 from app.services import settings as settings_service
+from app.services.audit import Actor
 
 router = APIRouter()
 
@@ -15,7 +16,7 @@ def read_settings(session: SessionDep, _user: CurrentUserDep) -> SettingsRead:
 
 @router.put("/settings")
 def write_settings(
-    payload: SettingsUpdate, session: SessionDep, _user: CurrentUserDep
+    payload: SettingsUpdate, session: SessionDep, user: CurrentUserDep
 ) -> SettingsRead:
-    settings = settings_service.update_settings(session, payload)
+    settings = settings_service.update_settings(session, payload, actor=Actor.from_user(user))
     return settings_service.to_read_schema(settings)

@@ -1,4 +1,4 @@
-import { Check, CircleAlert, Loader2 } from "lucide-react";
+import { Check, CircleAlert, Loader2, RotateCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -6,6 +6,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { useIsDesktop } from "@/hooks/useBreakpoint";
 import type { MethodResult } from "@/services/api/types";
 import { ConfidenceBadge } from "./ConfidenceBadge";
+import { TokenUsage } from "./TokenUsage";
 
 export interface MethodComparisonProps {
   open: boolean;
@@ -15,6 +16,7 @@ export interface MethodComparisonProps {
   isPending: boolean;
   error: string | null;
   onUse: (result: MethodResult) => void;
+  onRerun: () => void;
 }
 
 /** Every configured way of reading this document, side by side.
@@ -23,6 +25,9 @@ export interface MethodComparisonProps {
  * filing the document can settle, so this shows what each one said and lets them choose.
  * Picking one fills the review form -- it does not approve anything, and the choice stays
  * editable, because "nearly right" is the common case and the whole point of a review step.
+ *
+ * Only closes explicitly (close button or Escape), never on a click outside: a run costs one
+ * model call per method and can take a minute, and a stray click used to throw it away.
  */
 export function MethodComparison({
   open,
@@ -32,6 +37,7 @@ export function MethodComparison({
   isPending,
   error,
   onUse,
+  onRerun,
 }: MethodComparisonProps) {
   const isDesktop = useIsDesktop();
 
@@ -66,12 +72,25 @@ export function MethodComparison({
 
   const heading = "Compare methods";
 
+  const rerunButton = (
+    <Button size="sm" variant="outline" onClick={onRerun} disabled={isPending}>
+      <RotateCw className="size-4" aria-hidden="true" />
+      Run again
+    </Button>
+  );
+
+  const keepOpenOnOutsideClick = (event: Event) => event.preventDefault();
+
   if (isDesktop) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex h-[36rem] max-w-2xl flex-col gap-0 p-0">
-          <DialogHeader className="p-4">
+        <DialogContent
+          className="flex h-[36rem] max-w-2xl flex-col gap-0 p-0"
+          onInteractOutside={keepOpenOnOutsideClick}
+        >
+          <DialogHeader className="flex-row items-center gap-3 p-4 pr-12">
             <DialogTitle>{heading}</DialogTitle>
+            {rerunButton}
           </DialogHeader>
           {body}
         </DialogContent>
@@ -84,9 +103,11 @@ export function MethodComparison({
       <SheetContent
         side="bottom"
         className="flex flex-col gap-0 rounded-none p-0 data-[side=bottom]:h-dvh"
+        onInteractOutside={keepOpenOnOutsideClick}
       >
-        <SheetHeader className="p-4">
+        <SheetHeader className="flex-row items-center gap-3 p-4 pr-12">
           <SheetTitle>{heading}</SheetTitle>
+          {rerunButton}
         </SheetHeader>
         {body}
       </SheetContent>
@@ -153,6 +174,11 @@ function MethodCard({
           <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 flex-1">{result.error ?? "This method produced nothing."}</span>
         </p>
+      )}
+      {result.usage && (
+        <div className="mt-2">
+          <TokenUsage usage={result.usage} />
+        </div>
       )}
     </section>
   );

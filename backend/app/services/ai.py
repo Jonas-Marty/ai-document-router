@@ -9,12 +9,15 @@ import base64
 import json
 import logging
 import mimetypes
+import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
+from typing import TypeGuard
 
 import httpx
 
+from app.services import metrics
 from app.services.errors import AppError
 from app.services.paths import is_within, normalize_path
 
@@ -44,8 +47,12 @@ SYSTEM_PROMPT = (
     "- target_folder_path: an absolute path chosen from the folder list, nothing invented\n"
     "- document_date: the date shown on the document as YYYY-MM-DD, or null if absent\n"
     "- confidence_score: 0.0 to 1.0\n"
-    "- reasoning_text: one or two plain sentences citing what you saw. Not markdown."
+    "- reasoning_text: one or two plain sentences citing what you saw. Not markdown.\n"
+    "The message may include additional instructions from the person whose archive this is. "
+    "Follow them, unless they conflict with the reply format above."
 )
+
+INSTRUCTIONS_HEADING = "Additional instructions from the person whose archive this is:"
 
 
 class AIUnavailable(AppError):
@@ -71,13 +78,146 @@ class Proposal:
     model_name: str
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """What one reply says it cost, from the OpenAI `usage` block."""
+
+    prompt_tokens: int
+    completion_tokens: int
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+@dataclass(frozen=True)
+class CallRecord:
+    task: str
+    label: str
+    usage: TokenUsage | None
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class StageUsage:
+    """Every call one task made during one analysis, added up."""
+
+    model_label: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    calls: int
+    # Calls whose server sent no usage block. Counted rather than ignored, so a total built
+    # partly from silence is shown as "at least", not passed off as the whole cost.
+    unreported_calls: int
+
+
+@dataclass(frozen=True)
+class UsageSummary:
+    extraction: StageUsage | None
+    filing: StageUsage | None
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(stage.total_tokens for stage in (self.extraction, self.filing) if stage)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "extraction": asdict(self.extraction) if self.extraction else None,
+            "filing": asdict(self.filing) if self.filing else None,
+            "total_tokens": self.total_tokens,
+        }
+
+    def describe(self) -> str:
+        """One log-friendly line: "extraction 3,412 tokens (Local · v, 2 calls) · total 3,412"."""
+        parts = []
+        for name, stage in (("extraction", self.extraction), ("filing", self.filing)):
+            if stage is None:
+                continue
+            calls = f", {stage.calls} calls" if stage.calls > 1 else ""
+            unreported = f", {stage.unreported_calls} unreported" if stage.unreported_calls else ""
+            parts.append(
+                f"{name} {stage.total_tokens:,} tokens ({stage.model_label}{calls}{unreported})"
+            )
+        parts.append(f"total {self.total_tokens:,}")
+        return " · ".join(parts)
+
+
+class UsageMeter:
+    """Collects the cost of every model call made for one analysis of one document.
+
+    An analysis is several calls -- page batches, fallback steps, then filing -- made from
+    different modules. Each call site gets a recorder bound to its task and step, and the
+    recording happens in this module the moment a reply arrives, before it is validated: a
+    reply that turns out to be unusable was still paid for.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[CallRecord] = []
+        self.started = time.monotonic()
+
+    def elapsed_ms(self) -> int:
+        """Wall time since the analysis began -- reading, waiting and retrying included."""
+        return int((time.monotonic() - self.started) * 1000)
+
+    def scope(self, task: str, label: str) -> "UsageRecorder":
+        return UsageRecorder(self, task, label)
+
+    def summary(self) -> UsageSummary | None:
+        """None when nothing was called, which is different from a call that cost nothing."""
+        if not self.calls:
+            return None
+        return UsageSummary(extraction=self._stage("extraction"), filing=self._stage("filing"))
+
+    def _stage(self, task: str) -> StageUsage | None:
+        calls = [call for call in self.calls if call.task == task]
+        if not calls:
+            return None
+        reported = [call.usage for call in calls if call.usage is not None]
+        prompt = sum(usage.prompt_tokens for usage in reported)
+        completion = sum(usage.completion_tokens for usage in reported)
+        return StageUsage(
+            model_label=calls[-1].label,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=prompt + completion,
+            calls=len(calls),
+            unreported_calls=len(calls) - len(reported),
+        )
+
+
+@dataclass(frozen=True)
+class UsageRecorder:
+    meter: UsageMeter
+    task: str
+    label: str
+
+    def record(self, usage: TokenUsage | None, duration_ms: int) -> None:
+        self.meter.calls.append(CallRecord(self.task, self.label, usage, duration_ms))
+        # Counted here too, so /metrics and the stored usage come from the same moment and
+        # cannot disagree about which calls happened.
+        if usage is None:
+            metrics.ai_unreported_calls.labels(self.task, self.label).inc()
+        else:
+            metrics.ai_tokens.labels(self.task, self.label, "prompt").inc(usage.prompt_tokens)
+            metrics.ai_tokens.labels(self.task, self.label, "completion").inc(
+                usage.completion_tokens
+            )
+
+
 def build_prompt(
     text: str,
     folder_tree: list[str],
     sample_filenames: list[str],
     filename_pattern_hint: str | None,
+    instructions: str | None = None,
 ) -> str:
-    """Assemble the user message per SPEC 6.3."""
+    """Assemble the user message per SPEC 6.3.
+
+    The person's instructions go here rather than into the system prompt. This message is
+    what gets stored as `Proposal.prompt_text`, so the review screen shows the instructions
+    that were in force for *that* proposal. The system prompt stays one fixed constant.
+    """
     sections = [
         "Folders available (choose exactly one):",
         "\n".join(_render_tree(folder_tree)) or "(none)",
@@ -92,6 +232,9 @@ def build_prompt(
 
     if filename_pattern_hint:
         sections += ["", f"Preferred naming pattern: {filename_pattern_hint}"]
+
+    if instructions:
+        sections += ["", INSTRUCTIONS_HEADING, instructions]
 
     sections += ["", "Document text:", text or "(no text could be extracted)"]
     return "\n".join(sections)
@@ -124,6 +267,7 @@ def request_proposal(
     allowed_roots: list[str],
     images: list[bytes] | None = None,
     client: httpx.Client | None = None,
+    usage: UsageRecorder | None = None,
 ) -> Proposal:
     """Call the model and validate its reply.
 
@@ -137,6 +281,7 @@ def request_proposal(
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = f"{endpoint_url.rstrip('/')}/chat/completions"
+    started = time.monotonic()
 
     owned = client is None
     http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
@@ -167,6 +312,7 @@ def request_proposal(
         if owned:
             http.close()
 
+    _record_usage(usage, body, started)
     content = _extract_message_content(body)
     return _validate(content, model_name, allowed_roots)
 
@@ -180,6 +326,7 @@ def request_completion(
     prompt: str,
     images: list[bytes] | None = None,
     client: httpx.Client | None = None,
+    usage: UsageRecorder | None = None,
 ) -> str:
     """Call the model and hand back its reply verbatim.
 
@@ -198,6 +345,7 @@ def request_completion(
         ],
     }
 
+    started = time.monotonic()
     owned = client is None
     http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
     try:
@@ -208,7 +356,34 @@ def request_completion(
         if owned:
             http.close()
 
+    _record_usage(usage, body, started)
     return _extract_message_content(body)
+
+
+def _record_usage(recorder: UsageRecorder | None, body: dict[str, object], started: float) -> None:
+    if recorder is not None:
+        recorder.record(_extract_usage(body), int((time.monotonic() - started) * 1000))
+
+
+def _extract_usage(body: dict[str, object]) -> TokenUsage | None:
+    """The reply's token counts, or None when the server did not send usable ones.
+
+    Plenty of local servers omit `usage`, and some send only `total_tokens`. Neither is an
+    error: the call still happened, and the meter counts it as unreported.
+    """
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    if _is_count(prompt) and _is_count(completion):
+        return TokenUsage(prompt_tokens=prompt, completion_tokens=completion)
+    return None
+
+
+def _is_count(value: object) -> TypeGuard[int]:
+    # bool is an int subclass, and `true` for a token count is a broken server, not 1 token.
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _payload(

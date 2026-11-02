@@ -12,9 +12,12 @@ export const queryKeys = {
   folderContext: (path: string, filename?: string) =>
     ["folders", "context", path, filename ?? null] as const,
   history: () => ["history"] as const,
+  audit: (category?: string) => ["audit", "events", category ?? "all"] as const,
+  auditUsage: ["audit", "usage"] as const,
   settings: ["settings"] as const,
   aiEndpoints: ["ai", "endpoints"] as const,
   aiTasks: ["ai", "tasks"] as const,
+  aiContext: ["ai", "context"] as const,
   authConfig: ["auth", "config"] as const,
   currentUser: ["auth", "me"] as const,
 };

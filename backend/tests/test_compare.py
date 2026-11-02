@@ -15,8 +15,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models import AiEndpoint, AiTask, AiTaskStep, AppSettings
-from app.services import compare, extraction, ocr
+from app.services import ai, compare, extraction, ocr
+from app.services.audit import Actor
 from app.services.times import utc_now
+
+TEST_ACTOR = Actor(user_id=None, label="test@example.com")
 
 VALID_REPLY = {
     "suggested_name": "2026.04.16 Helvetia Police",
@@ -83,6 +86,7 @@ class FakeWebDav:
 
 class FakeDocument:
     def __init__(self, filename: str = "scan.pdf", mime_type: str = "application/pdf"):
+        self.id = "doc-1"
         self.webdav_path = f"/Test-Inbox/{filename}"
         self.original_filename = filename
         self.mime_type = mime_type
@@ -119,7 +123,9 @@ def run(
         )
 
     monkeypatch.setattr(compare.ai, "request_proposal", fake_request_proposal)
-    results = compare.compare(session, FakeWebDav(data), app_settings, FakeDocument())  # type: ignore[arg-type]
+    results = compare.compare(
+        session, FakeWebDav(data), app_settings, FakeDocument(), actor=TEST_ACTOR
+    )  # type: ignore[arg-type]
     return results, sent
 
 
@@ -131,7 +137,7 @@ def test_reports_a_result_for_every_method(
     monkeypatch.setattr(
         compare.transcribe,
         "transcribe",
-        lambda data, steps: compare.transcribe.Transcription(
+        lambda data, steps, instructions=None, meter=None: compare.transcribe.Transcription(
             markdown="# Helvetia", model_label="Local · qwen-vl"
         ),
     )
@@ -180,7 +186,7 @@ def test_the_markdown_method_files_from_the_transcription(
     monkeypatch.setattr(
         compare.transcribe,
         "transcribe",
-        lambda data, steps: compare.transcribe.Transcription(
+        lambda data, steps, instructions=None, meter=None: compare.transcribe.Transcription(
             markdown="# Helvetia\n\n| Premium | 480.00 |", model_label="Local · qwen-vl"
         ),
     )
@@ -192,6 +198,38 @@ def test_the_markdown_method_files_from_the_transcription(
     assert "qwen-vl" in markdown.label
     call = next(c for c in sent if "| Premium | 480.00 |" in c["prompt"])
     assert call["model_name"] == "text-model"
+
+
+def test_each_method_reports_its_own_cost(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    """Markdown costs a transcription on top of filing; the comparison has to show that."""
+    monkeypatch.setattr(ocr, "is_available", lambda: False)
+    with_extraction(session)
+
+    def read(data: bytes, steps: Any, instructions: Any = None, meter: Any = None) -> Any:
+        meter.scope("extraction", "Local · qwen-vl").record(ai.TokenUsage(2000, 400), 5)
+        return compare.transcribe.Transcription(
+            markdown="# Helvetia", model_label="Local · qwen-vl"
+        )
+
+    monkeypatch.setattr(compare.transcribe, "transcribe", read)
+
+    def replies(kwargs: dict[str, Any]) -> None:
+        kwargs["usage"].record(ai.TokenUsage(800, 50), 5)
+
+    results, _ = run(
+        monkeypatch, session, data=blank_pdf(), app_settings=settings(), replies=replies
+    )
+
+    text_layer = next(r for r in results if r.method == compare.TEXT_LAYER)
+    markdown = next(r for r in results if r.method == compare.MARKDOWN)
+    # A blank scan never reached a model for its text layer.
+    assert text_layer.usage is None
+    assert markdown.usage is not None
+    assert markdown.usage.extraction is not None
+    assert markdown.usage.extraction.total_tokens == 2400
+    assert markdown.usage.total_tokens == 3250
 
 
 def test_the_markdown_method_says_when_no_extraction_endpoint_is_assigned(
@@ -263,7 +301,7 @@ def test_nothing_is_written_back_to_the_document(
     before = vars(document).copy()
 
     monkeypatch.setattr(compare.ai, "request_proposal", lambda **kw: None)
-    compare.compare(session, FakeWebDav(blank_pdf()), settings(), document)  # type: ignore[arg-type]
+    compare.compare(session, FakeWebDav(blank_pdf()), settings(), document, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     assert vars(document) == before
 

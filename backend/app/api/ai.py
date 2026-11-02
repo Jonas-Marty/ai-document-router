@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.deps import CurrentUserDep, SessionDep
+from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
 from app.models import AiEndpoint, AiTask
 from app.schemas import (
     AiEndpointRead,
@@ -11,9 +11,11 @@ from app.schemas import (
     AiModelsResponse,
     AiTaskChainRead,
     AiTaskChainUpdate,
+    AiTaskContextRead,
     AiTaskStepRead,
 )
-from app.services import ai_tasks
+from app.services import ai_context, ai_tasks
+from app.services.audit import Actor
 
 router = APIRouter()
 
@@ -25,25 +27,32 @@ def list_endpoints(session: SessionDep, _user: CurrentUserDep) -> list[AiEndpoin
 
 @router.post("/ai/endpoints")
 def create_endpoint(
-    payload: AiEndpointWrite, session: SessionDep, _user: CurrentUserDep
+    payload: AiEndpointWrite, session: SessionDep, user: CurrentUserDep
 ) -> AiEndpointRead:
-    endpoint = ai_tasks.create_endpoint(session, payload.name, payload.base_url, payload.api_key)
+    endpoint = ai_tasks.create_endpoint(
+        session, payload.name, payload.base_url, payload.api_key, actor=Actor.from_user(user)
+    )
     return _read(session, endpoint)
 
 
 @router.put("/ai/endpoints/{endpoint_id}")
 def update_endpoint(
-    endpoint_id: str, payload: AiEndpointWrite, session: SessionDep, _user: CurrentUserDep
+    endpoint_id: str, payload: AiEndpointWrite, session: SessionDep, user: CurrentUserDep
 ) -> AiEndpointRead:
     endpoint = ai_tasks.update_endpoint(
-        session, endpoint_id, payload.name, payload.base_url, payload.api_key
+        session,
+        endpoint_id,
+        payload.name,
+        payload.base_url,
+        payload.api_key,
+        actor=Actor.from_user(user),
     )
     return _read(session, endpoint)
 
 
 @router.delete("/ai/endpoints/{endpoint_id}")
-def delete_endpoint(endpoint_id: str, session: SessionDep, _user: CurrentUserDep) -> None:
-    ai_tasks.delete_endpoint(session, endpoint_id)
+def delete_endpoint(endpoint_id: str, session: SessionDep, user: CurrentUserDep) -> None:
+    ai_tasks.delete_endpoint(session, endpoint_id, actor=Actor.from_user(user))
 
 
 @router.post("/ai/models")
@@ -54,6 +63,23 @@ def list_models(
     return AiModelsResponse(models=models)
 
 
+@router.get("/ai/context")
+def read_context(
+    session: SessionDep, _user: CurrentUserDep, webdav: WebDavDep, app_settings: AppSettingsDep
+) -> list[AiTaskContextRead]:
+    """What each task is sent right now. Walks WebDAV for the folder tree, so fetched on demand."""
+    return [
+        AiTaskContextRead(
+            task=context.task,
+            chain=context.chain,
+            system_prompt=context.system_prompt,
+            user_prompt=context.user_prompt,
+            note=context.note,
+        )
+        for context in ai_context.preview(session, webdav, app_settings)
+    ]
+
+
 @router.get("/ai/tasks")
 def read_chains(session: SessionDep, _user: CurrentUserDep) -> list[AiTaskChainRead]:
     return [_chain(session, task) for task in AiTask]
@@ -61,10 +87,13 @@ def read_chains(session: SessionDep, _user: CurrentUserDep) -> list[AiTaskChainR
 
 @router.put("/ai/tasks/{task}")
 def write_chain(
-    task: AiTask, payload: AiTaskChainUpdate, session: SessionDep, _user: CurrentUserDep
+    task: AiTask, payload: AiTaskChainUpdate, session: SessionDep, user: CurrentUserDep
 ) -> AiTaskChainRead:
     ai_tasks.replace_chain(
-        session, task, [(step.endpoint_id, step.model_name) for step in payload.steps]
+        session,
+        task,
+        [(step.endpoint_id, step.model_name) for step in payload.steps],
+        actor=Actor.from_user(user),
     )
     return _chain(session, task)
 

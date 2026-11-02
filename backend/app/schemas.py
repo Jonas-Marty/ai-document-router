@@ -4,6 +4,7 @@ from pydantic import BaseModel, field_serializer
 
 from app.models import (
     AiTask,
+    AuditEvent,
     Document,
     DocumentStatus,
     HistoryAction,
@@ -11,7 +12,7 @@ from app.models import (
     OcrStatus,
     ProposalStatus,
 )
-from app.services.ai import SYSTEM_PROMPT
+from app.services.ai import SYSTEM_PROMPT, UsageSummary
 from app.services.extraction import extension_of
 from app.services.times import from_storage
 
@@ -31,6 +32,27 @@ class AIProposalRead(BaseModel):
     system_prompt: str = SYSTEM_PROMPT
 
 
+class StageUsageRead(BaseModel):
+    model_label: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    calls: int
+    unreported_calls: int
+
+
+class UsageSummaryRead(BaseModel):
+    """Tokens one analysis spent, per task. A task that made no calls is null."""
+
+    extraction: StageUsageRead | None
+    filing: StageUsageRead | None
+    total_tokens: int
+
+    @classmethod
+    def from_summary(cls, summary: UsageSummary | None) -> "UsageSummaryRead | None":
+        return cls.model_validate(summary.to_json()) if summary else None
+
+
 class DocumentRead(BaseModel):
     id: str
     original_filename: str
@@ -46,6 +68,7 @@ class DocumentRead(BaseModel):
     proposal_error: str | None
     ocr_status: OcrStatus
     ocr_error: str | None
+    analysis_usage: UsageSummaryRead | None = None
 
     @field_serializer("scanned_at")
     def _serialize_scanned_at(self, value: datetime) -> str:
@@ -72,6 +95,11 @@ class DocumentRead(BaseModel):
             proposal_error=document.proposal_error,
             ocr_status=document.ocr_status,
             ocr_error=document.ocr_error,
+            analysis_usage=(
+                UsageSummaryRead.model_validate(document.analysis_usage)
+                if document.analysis_usage
+                else None
+            ),
         )
 
 
@@ -94,6 +122,7 @@ class MethodResultRead(BaseModel):
     proposal: AIProposalRead | None
     error: str | None
     duration_ms: int
+    usage: UsageSummaryRead | None = None
 
 
 class CompareResponse(BaseModel):
@@ -136,6 +165,8 @@ class SettingsRead(BaseModel):
     filename_pattern: str | None
     filename_pattern_hint: str | None
     store_ocr_text: bool
+    filing_instructions: str | None
+    extraction_instructions: str | None
 
 
 class SettingsUpdate(BaseModel):
@@ -144,6 +175,8 @@ class SettingsUpdate(BaseModel):
     filename_pattern: str | None = None
     filename_pattern_hint: str | None = None
     store_ocr_text: bool = True
+    filing_instructions: str | None = None
+    extraction_instructions: str | None = None
 
 
 class AiEndpointRead(BaseModel):
@@ -199,6 +232,16 @@ class AiModelsResponse(BaseModel):
     models: list[str]
 
 
+class AiTaskContextRead(BaseModel):
+    """What one task is sent, built from the current settings with a placeholder document."""
+
+    task: AiTask
+    chain: list[str]
+    system_prompt: str
+    user_prompt: str
+    note: str
+
+
 class ApproveRequest(BaseModel):
     """SPEC 5 deliberately omits the original suggestion: the backend already has the
     proposal and computes `was_overridden` itself, so the client cannot misreport it."""
@@ -246,6 +289,64 @@ class RoutedResponse(BaseModel):
 class HistoryPage(BaseModel):
     items: list[HistoryEntryRead]
     next_cursor: str | None
+
+
+class AuditEventRead(BaseModel):
+    id: str
+    occurred_at: datetime
+    actor_label: str
+    action: str
+    document_id: str | None
+    summary: str
+    details: dict[str, object]
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+
+    @field_serializer("occurred_at")
+    def _serialize_occurred_at(self, value: datetime) -> str:
+        return from_storage(value).isoformat()
+
+    @classmethod
+    def from_model(cls, event: AuditEvent) -> "AuditEventRead":
+        return cls(
+            id=event.id,
+            occurred_at=event.occurred_at,
+            actor_label=event.actor_label,
+            action=event.action,
+            document_id=event.document_id,
+            summary=event.summary,
+            details=event.details or {},
+            prompt_tokens=event.prompt_tokens,
+            completion_tokens=event.completion_tokens,
+            total_tokens=event.total_tokens,
+        )
+
+
+class AuditPage(BaseModel):
+    items: list[AuditEventRead]
+    next_cursor: str | None
+
+
+class ModelUsageRead(BaseModel):
+    task: str
+    model_label: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    calls: int
+
+
+class AuditUsageRead(BaseModel):
+    """Tokens spent over the window, from analyses and comparisons."""
+
+    days: int
+    analyses: int
+    comparisons: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    by_model: list[ModelUsageRead]
 
 
 class RevertResponse(BaseModel):

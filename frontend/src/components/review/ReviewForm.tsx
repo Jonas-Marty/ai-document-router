@@ -12,6 +12,7 @@ import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
 import type { ReviewFormValues } from "./reviewFormSchema";
 import { SiblingList } from "./SiblingList";
+import { TokenUsage } from "./TokenUsage";
 
 export interface ReviewFormProps {
   document: Document;
@@ -145,6 +146,8 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
 
       {document.proposal && <ReasoningBlock text={document.proposal.reasoning_text} />}
       {document.proposal && <PromptDetails proposal={document.proposal} />}
+      {/* Outside the proposal check: a failed analysis spent tokens too. */}
+      <TokenUsage usage={document.analysis_usage} />
 
       <div className="space-y-1.5">
         <Label>Files already in this folder</Label>

@@ -19,8 +19,9 @@ from dataclasses import dataclass
 
 from sqlmodel import Session
 
-from app.models import AiTask, AppSettings, Document
-from app.services import ai, ai_tasks, extraction, folders, ocr, transcribe
+from app.models import AiTask, AppSettings, AuditAction, Document
+from app.services import ai, ai_tasks, audit, extraction, folders, ocr, transcribe
+from app.services.audit import Actor
 from app.services.errors import AppError
 from app.services.webdav import WebDavService
 
@@ -46,10 +47,18 @@ class MethodResult:
     proposal: ai.Proposal | None
     error: str | None
     duration_ms: int
+    # What this method cost, so the comparison is of price as well as quality. The markdown
+    # method's includes the transcription it filed from.
+    usage: ai.UsageSummary | None = None
 
 
 def compare(
-    session: Session, webdav: WebDavService, app_settings: AppSettings, document: Document
+    session: Session,
+    webdav: WebDavService,
+    app_settings: AppSettings,
+    document: Document,
+    *,
+    actor: Actor,
 ) -> list[MethodResult]:
     """Read one document every configured way and return each result in turn.
 
@@ -65,10 +74,15 @@ def compare(
 
     results: list[MethodResult] = []
 
-    def propose(method: str, label: str, text: str) -> None:
+    def propose(method: str, label: str, text: str, meter: ai.UsageMeter | None = None) -> None:
+        meter = meter or ai.UsageMeter()
         started = time.monotonic()
         prompt = ai.build_prompt(
-            text, folder_tree, sample_filenames, app_settings.filename_pattern_hint
+            text,
+            folder_tree,
+            sample_filenames,
+            app_settings.filename_pattern_hint,
+            app_settings.filing_instructions,
         )
         proposal: ai.Proposal | None = None
         error: str | None = None
@@ -81,6 +95,7 @@ def compare(
                     api_key=step.api_key,
                     prompt=prompt,
                     allowed_roots=list(app_settings.allowed_root_folders),
+                    usage=meter.scope(AiTask.filing, step.label),
                 ),
                 AiTask.filing,
             )
@@ -98,6 +113,7 @@ def compare(
                 proposal=proposal,
                 error=error,
                 duration_ms=int((time.monotonic() - started) * 1000),
+                usage=meter.summary(),
             )
         )
 
@@ -153,15 +169,45 @@ def compare(
         )
     else:
         label = f"Markdown · {extracting[0].label}"
+        meter = ai.UsageMeter()
         try:
-            transcription = transcribe.transcribe(data, extracting)
+            transcription = transcribe.transcribe(
+                data, extracting, app_settings.extraction_instructions, meter
+            )
         except (AppError, extraction.RenderUnavailable) as exc:
             reason = exc.message if isinstance(exc, AppError) else str(exc)
-            results.append(_skipped(MARKDOWN, filing_label, label, reason))
+            results.append(_skipped(MARKDOWN, filing_label, label, reason, meter.summary()))
         else:
-            propose(MARKDOWN, label, transcription.markdown)
+            propose(MARKDOWN, label, transcription.markdown, meter)
 
+    _audit(session, document, results, actor)
     return results
+
+
+def _audit(session: Session, document: Document, results: list[MethodResult], actor: Actor) -> None:
+    """Nothing else here is stored, but what the comparison spent is: it is real money."""
+    audit.record(
+        session,
+        AuditAction.document_compared,
+        actor=actor,
+        document_id=document.id,
+        summary=f"Compared {len(results)} ways of reading {document.original_filename}",
+        details={
+            "methods": [
+                {
+                    "method": result.method,
+                    "label": result.label,
+                    "outcome": "proposed" if result.proposal else "failed",
+                    "error": result.error,
+                    "duration_ms": result.duration_ms,
+                    **audit.usage_details(result.usage),
+                }
+                for result in results
+            ]
+        },
+        usage=[result.usage for result in results],
+    )
+    session.commit()
 
 
 def _render(data: bytes, mime_type: str) -> tuple[list[bytes], str | None]:
@@ -173,8 +219,17 @@ def _render(data: bytes, mime_type: str) -> tuple[list[bytes], str | None]:
         return [], str(exc)
 
 
-def _skipped(method: str, model_name: str, label: str, reason: str) -> MethodResult:
-    """A method that never got as far as an LLM call. Reported, not omitted."""
+def _skipped(
+    method: str,
+    model_name: str,
+    label: str,
+    reason: str,
+    usage: ai.UsageSummary | None = None,
+) -> MethodResult:
+    """A method that never got as far as filing. Reported, not omitted.
+
+    `usage` is for the markdown method, whose transcription can spend tokens before failing.
+    """
     return MethodResult(
         method=method,
         model_name=model_name,
@@ -183,4 +238,5 @@ def _skipped(method: str, model_name: str, label: str, reason: str) -> MethodRes
         proposal=None,
         error=reason,
         duration_ms=0,
+        usage=usage,
     )

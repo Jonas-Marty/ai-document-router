@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { MethodResult } from "@/services/api/types";
@@ -22,6 +22,7 @@ function result(overrides: Partial<MethodResult> = {}): MethodResult {
     },
     error: null,
     duration_ms: 4231,
+    usage: null,
     ...overrides,
   };
 }
@@ -29,6 +30,7 @@ function result(overrides: Partial<MethodResult> = {}): MethodResult {
 function renderComparison(props: Partial<Parameters<typeof MethodComparison>[0]> = {}) {
   const onUse = vi.fn();
   const onOpenChange = vi.fn();
+  const onRerun = vi.fn();
   render(
     <MethodComparison
       open
@@ -38,10 +40,11 @@ function renderComparison(props: Partial<Parameters<typeof MethodComparison>[0]>
       isPending={false}
       error={null}
       onUse={onUse}
+      onRerun={onRerun}
       {...props}
     />,
   );
-  return { onUse, onOpenChange };
+  return { onUse, onOpenChange, onRerun };
 }
 
 describe("MethodComparison", () => {
@@ -83,6 +86,7 @@ describe("MethodComparison", () => {
           proposal: null,
           error: "Tesseract isn't installed in this image.",
           duration_ms: 0,
+          usage: null,
         }),
       ],
     });
@@ -120,5 +124,47 @@ describe("MethodComparison", () => {
     renderComparison({ results: undefined, error: "Couldn't read the file." });
 
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read the file.");
+  });
+
+  it("stays open on a click outside, so a finished run is not thrown away", async () => {
+    const { onOpenChange } = renderComparison();
+    const overlay = document.querySelector('[data-slot$="-overlay"]');
+    if (!overlay) throw new Error("no overlay rendered");
+    // fireEvent, not userEvent: the open modal makes everything outside it
+    // pointer-events: none, which userEvent refuses to click through. Radix dismisses on
+    // the click that completes an outside pointerdown, and only after a tick.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.pointerDown(overlay);
+    fireEvent.mouseDown(overlay);
+    fireEvent.pointerUp(overlay);
+    fireEvent.mouseUp(overlay);
+    fireEvent.click(overlay);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(screen.getByText("Text layer")).toBeInTheDocument();
+  });
+
+  it("closes from its close button", async () => {
+    const { onOpenChange } = renderComparison();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /close/i }));
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("runs the comparison again on request", async () => {
+    const { onRerun } = renderComparison();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /run again/i }));
+    expect(onRerun).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables running again while a run is in progress", () => {
+    renderComparison({ isPending: true, results: undefined });
+
+    expect(screen.getByRole("button", { name: /run again/i })).toBeDisabled();
   });
 });

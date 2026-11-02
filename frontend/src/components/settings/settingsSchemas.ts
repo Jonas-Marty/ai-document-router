@@ -108,6 +108,23 @@ export const namingFormSchema = z.object({
 
 export type NamingFormValues = z.infer<typeof namingFormSchema>;
 
+// Mirrors MAX_INSTRUCTIONS_CHARS in services/settings.py, which is what actually enforces it.
+export const MAX_INSTRUCTIONS_CHARS = 2000;
+
+const instructionsField = z
+  .string()
+  .refine(
+    (value) => value.trim().length <= MAX_INSTRUCTIONS_CHARS,
+    `Keep it to ${MAX_INSTRUCTIONS_CHARS} characters or fewer.`,
+  );
+
+export const instructionsFormSchema = z.object({
+  filing_instructions: instructionsField,
+  extraction_instructions: instructionsField,
+});
+
+export type InstructionsFormValues = z.infer<typeof instructionsFormSchema>;
+
 // SPEC 7.3's exact https/private-network-http rule lives in services/ai_tasks.py
 // (validate_endpoint_url, with real RFC1918/localhost matching) -- reproducing that precisely
 // here would drift the moment one side changes. This is feedback only: catch the

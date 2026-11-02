@@ -21,7 +21,36 @@ def test_get_settings_returns_seeded_defaults(client: TestClient) -> None:
         "filename_pattern": None,
         "filename_pattern_hint": None,
         "store_ocr_text": True,
+        "filing_instructions": None,
+        "extraction_instructions": None,
     }
+
+
+def test_put_settings_stores_trimmed_instructions_and_blank_as_none(client: TestClient) -> None:
+    payload = {
+        **VALID_PAYLOAD,
+        "filing_instructions": "  Insurance letters go under /Documents/Versicherung.  ",
+        "extraction_instructions": "   ",
+    }
+
+    response = client.put("/api/v1/settings", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["filing_instructions"] == (
+        "Insurance letters go under /Documents/Versicherung."
+    )
+    assert response.json()["extraction_instructions"] is None
+
+
+def test_put_settings_rejects_overlong_instructions(client: TestClient) -> None:
+    payload = {**VALID_PAYLOAD, "extraction_instructions": "x" * 2001}
+
+    response = client.put("/api/v1/settings", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == (
+        "Extraction instructions must be 2000 characters or fewer."
+    )
 
 
 def test_put_settings_rejects_empty_allowed_roots(client: TestClient) -> None:

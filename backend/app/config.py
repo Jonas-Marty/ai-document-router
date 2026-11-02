@@ -1,4 +1,5 @@
-from typing import Annotated
+import logging
+from typing import Annotated, Literal
 
 from cryptography.fernet import Fernet
 from pydantic import field_validator
@@ -12,6 +13,8 @@ class Settings(BaseSettings):
     secret_key: str
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
     log_level: str = "INFO"
+    # "text" reads well in a terminal; "json" is one object per line for a log collector.
+    log_format: Literal["text", "json"] = "text"
 
     # WebDAV credentials live in env, not the settings table: they are infrastructure, and
     # the app must be able to start (and report itself unhealthy) without them.
@@ -53,6 +56,16 @@ class Settings(BaseSettings):
     # A cached copy nobody claimed is a document that was trashed, or one sitting skipped
     # forever. Bounded by age rather than count so the cache cannot grow without limit.
     ocr_cache_max_age_days: int = 14
+
+    # --- audit --------------------------------------------------------------
+    # How long the audit log keeps events. A year covers "what happened to that invoice in
+    # spring"; 0 keeps everything. Pruned on each poller tick.
+    audit_retention_days: int = 365
+
+    # --- metrics ------------------------------------------------------------
+    # Bearer token Prometheus sends to /api/v1/metrics. Empty turns the endpoint off (404):
+    # it reveals queue sizes and endpoint names, so nobody gets it without opting in.
+    metrics_token: str = ""
 
     # --- auth ---------------------------------------------------------------
     # Where the browser reaches this app. Only used to build the OIDC redirect URI and to
@@ -100,6 +113,20 @@ class Settings(BaseSettings):
                 "ending in '='. Generate one with `just secret-key`."
             ) from exc
         return value
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def check_log_level(cls, value: str) -> str:
+        """Refuse to start on a typo rather than crash inside dictConfig with a stack trace."""
+        level = str(value).strip().upper()
+        if level not in logging.getLevelNamesMapping():
+            raise ValueError("must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
+        return level
+
+    @field_validator("log_format", mode="before")
+    @classmethod
+    def lowercase_log_format(cls, value: str) -> str:
+        return str(value).strip().lower()
 
     @field_validator("cors_origins", mode="before")
     @classmethod

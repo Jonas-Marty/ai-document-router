@@ -184,9 +184,58 @@ without overriding it the arguments are ignored and you get a running server, no
 The database lives in the named Docker volume `appdata`. `just down` keeps it; only an
 explicit `docker compose -f deploy/docker-compose.yml down -v` destroys it.
 
+### Monitoring
+
+Logs go to stdout: `LOG_FORMAT=json` gives one object per line for a collector, and every line
+carries `req=<id>` or `tick=<id>` so one request or one poller run can be pulled out together.
+The id is also in each response's `X-Request-ID` header, and the browser console quotes it when
+an API call fails.
+
+For Prometheus, set `METRICS_TOKEN` to a long random string (`openssl rand -hex 32`) and
+restart. `/api/v1/metrics` then answers a bearer token; while the variable is empty it answers
+404. It goes through the same `/api` proxy as the app, so nothing else changes:
+
+```yaml
+scrape_configs:
+  - job_name: docrouter
+    scheme: https
+    metrics_path: /api/v1/metrics
+    authorization:
+      credentials: <METRICS_TOKEN>
+    static_configs:
+      - targets: ["docs.example.com"]
+```
+
+Everything is prefixed `docrouter_`: HTTP requests by route template, AI steps by task, step and
+outcome, tokens by prompt/completion, fallbacks, analyses, ingests, review decisions, OCR, poller
+runs, WebDAV operations and reachability, sign-ins, and document counts by status. Three alerts
+worth starting with:
+
+```yaml
+groups:
+  - name: docrouter
+    rules:
+      - alert: DocrouterPollerStale
+        # Three missed ticks at the default 60s interval.
+        expr: time() - docrouter_poller_last_tick_timestamp_seconds > 180
+        for: 5m
+      - alert: DocrouterWebdavUnreachable
+        expr: docrouter_webdav_reachable == 0
+        for: 10m
+      - alert: DocrouterAnalysesFailing
+        expr: |
+          sum(rate(docrouter_analyses_total{outcome="failed"}[1h]))
+            / sum(rate(docrouter_analyses_total[1h])) > 0.5
+        for: 30m
+```
+
+Token usage per document, and who did what, is on the Activity page (admins only) rather than
+in Prometheus.
+
 ### Scaling note
 
 The API runs a **single** Uvicorn worker on purpose. The poller that watches the WebDAV folder
 runs in-process, so a second worker would be a second poller ingesting the same documents and
 making duplicate LLM calls. If throughput ever becomes a problem, split the poller into its own
-process — do not raise the worker count.
+process — do not raise the worker count. (The metrics registry assumes one process too: a second
+worker would each count only its own requests.)

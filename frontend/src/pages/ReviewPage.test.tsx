@@ -14,6 +14,7 @@ vi.mock("@/services/api/client", () => ({
     getDocumentContentUrl: (id: string) => `/api/v1/documents/${id}/content`,
     retryFailedProposals: vi.fn(),
     compareDocument: vi.fn(),
+    regenerateDocument: vi.fn(),
   },
 }));
 
@@ -44,6 +45,7 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
     proposal_error: null,
     ocr_status: "not_needed",
     ocr_error: null,
+    analysis_usage: null,
     ...overrides,
   };
 }
@@ -54,6 +56,8 @@ const SETTINGS: Settings = {
   filename_pattern: null,
   filename_pattern_hint: null,
   store_ocr_text: true,
+  filing_instructions: null,
+  extraction_instructions: null,
 };
 
 const FOLDER_CONTEXT: FolderContext = {
@@ -139,6 +143,7 @@ describe("ReviewPage queue overview", () => {
           },
           error: null,
           duration_ms: 3100,
+          usage: null,
         },
       ],
     });
@@ -174,5 +179,33 @@ describe("ReviewPage queue overview", () => {
     await waitFor(() =>
       expect(screen.getByDisplayValue("2026.05.19 SAC Spendenbescheinigung")).toBeInTheDocument(),
     );
+  });
+
+  it("shows the last comparison when reopened instead of paying for another run", async () => {
+    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    vi.mocked(apiClient.compareDocument).mockResolvedValue({ results: [] });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /compare methods/i }));
+    await waitFor(() => expect(apiClient.compareDocument).toHaveBeenCalledTimes(1));
+    await user.keyboard("{Escape}");
+    await user.click(await screen.findByRole("button", { name: /compare methods/i }));
+    expect(apiClient.compareDocument).toHaveBeenCalledTimes(1);
+
+    await user.click(await screen.findByRole("button", { name: /run again/i }));
+    await waitFor(() => expect(apiClient.compareDocument).toHaveBeenCalledTimes(2));
+  });
+
+  it("re-runs the analysis of a document whose proposal is already ready", async () => {
+    // After a model or instruction change in Settings, a ready proposal is stale.
+    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    vi.mocked(apiClient.regenerateDocument).mockResolvedValue(
+      doc("1", "2026.05.18 Swisscom Rechnung", { proposal_status: "pending", proposal: null }),
+    );
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /re-run analysis/i }));
+
+    await waitFor(() => expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1"));
   });
 });

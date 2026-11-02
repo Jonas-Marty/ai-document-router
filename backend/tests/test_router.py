@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services import router as router_service
 from app.services import searchable
+from app.services.audit import Actor
 from app.services.errors import (
     FilenameCollision,
     NotRevertible,
@@ -32,6 +33,8 @@ from app.services.errors import (
     WebDAVUnreachable,
 )
 from app.services.extraction import sha256
+
+TEST_ACTOR = Actor(user_id=None, label="test@example.com")
 
 WATCH = "/Test-Inbox"
 ROOT = "/Test-Outbox"
@@ -148,6 +151,7 @@ class TestApprove:
             final_name="2026.08.21 Swisscom Rechnung",
             final_folder_path=ROOT,
             document_date=date(2026, 8, 21),
+            actor=TEST_ACTOR,
         )
 
         assert webdav.moves == [(f"{WATCH}/scan.pdf", f"{ROOT}/2026.08.21 Swisscom Rechnung.pdf")]
@@ -172,6 +176,7 @@ class TestApprove:
             final_name="Renamed",
             final_folder_path=ROOT,
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
         assert entry.final_filename == "Renamed.pdf"
@@ -189,6 +194,7 @@ class TestApprove:
             final_name="Named",
             final_folder_path=f"{ROOT}/2026",
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
         assert f"{ROOT}/2026" in webdav.mkdirs
@@ -208,6 +214,7 @@ class TestApprove:
                 final_name="Taken",
                 final_folder_path=ROOT,
                 document_date=None,
+                actor=TEST_ACTOR,
             )
 
         assert caught.value.status_code == 409
@@ -234,6 +241,7 @@ class TestApprove:
                 final_name="Named",
                 final_folder_path=ROOT,
                 document_date=None,
+                actor=TEST_ACTOR,
             )
 
     def test_a_failed_move_writes_nothing(
@@ -252,6 +260,7 @@ class TestApprove:
                 final_name="Named",
                 final_folder_path=ROOT,
                 document_date=None,
+                actor=TEST_ACTOR,
             )
 
         session.refresh(document)
@@ -281,6 +290,7 @@ class TestApprove:
                 final_name="Named",
                 final_folder_path=folder,
                 document_date=None,
+                actor=TEST_ACTOR,
             )
 
         assert webdav.moves == []
@@ -302,6 +312,7 @@ class TestApprove:
                 final_name=name,
                 final_folder_path=ROOT,
                 document_date=None,
+                actor=TEST_ACTOR,
             )
 
         assert webdav.moves == []
@@ -318,6 +329,7 @@ class TestApprove:
             final_name="Named",
             final_folder_path=ROOT,
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
         with pytest.raises(ValidationError):
@@ -329,6 +341,7 @@ class TestApprove:
                 final_name="Again",
                 final_folder_path=ROOT,
                 document_date=None,
+                actor=TEST_ACTOR,
             )
 
 
@@ -362,6 +375,7 @@ class TestSearchableWriteBack:
             final_name="2026.08.21 Swisscom Rechnung",
             final_folder_path=ROOT,
             document_date=date(2026, 8, 21),
+            actor=TEST_ACTOR,
         )
 
     def test_replaces_the_filed_file_after_the_move(
@@ -462,7 +476,7 @@ class TestSearchableWriteBack:
         this is cache housekeeping, not the WebDAV delete rule 1 forbids."""
         document = self._ready_scan(session)
 
-        router_service.trash(session, webdav, app_settings, document.id)
+        router_service.trash(session, webdav, app_settings, document.id, actor=TEST_ACTOR)
 
         assert searchable.load(self.HASH) is None
         assert webdav.replaced == []
@@ -484,6 +498,7 @@ class TestWasOverridden:
             final_name="Suggested",
             final_folder_path=ROOT,
             document_date=date(2026, 8, 21),
+            actor=TEST_ACTOR,
         )
 
         assert entry.was_overridden is False
@@ -502,6 +517,7 @@ class TestWasOverridden:
             final_name="Suggested",
             final_folder_path=f"{ROOT}/",
             document_date=date(2026, 8, 21),
+            actor=TEST_ACTOR,
         )
 
         assert entry.was_overridden is False
@@ -536,6 +552,7 @@ class TestWasOverridden:
             final_name=name,
             final_folder_path=folder,
             document_date=doc_date,
+            actor=TEST_ACTOR,
         )
 
         assert entry.was_overridden is True
@@ -555,6 +572,7 @@ class TestWasOverridden:
             final_name="Human Name",
             final_folder_path=ROOT,
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
         assert entry.suggestion_snapshot["suggested_name"] == "AI Name"
@@ -573,6 +591,7 @@ class TestWasOverridden:
             final_name="Typed By Hand",
             final_folder_path=ROOT,
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
         assert entry.was_overridden is False
@@ -593,6 +612,7 @@ class TestWasOverridden:
             final_name="Named",
             final_folder_path=ROOT,
             document_date=date(2026, 1, 2),
+            actor=TEST_ACTOR,
         )
 
         proposal = session.exec(select(Proposal)).one()
@@ -605,7 +625,7 @@ class TestSkip:
     ) -> None:
         document = make_document(session)
 
-        result = router_service.skip(session, document.id)
+        result = router_service.skip(session, document.id, actor=TEST_ACTOR)
 
         assert result.status == DocumentStatus.skipped
         assert result.skip_count == 1
@@ -614,8 +634,8 @@ class TestSkip:
     def test_counts_up_across_skips(self, session: Session) -> None:
         document = make_document(session)
 
-        router_service.skip(session, document.id)
-        result = router_service.skip(session, document.id)
+        router_service.skip(session, document.id, actor=TEST_ACTOR)
+        result = router_service.skip(session, document.id, actor=TEST_ACTOR)
 
         assert result.skip_count == 2
 
@@ -626,7 +646,9 @@ class TestTrash:
     ) -> None:
         document = make_document(session)
 
-        result, entry = router_service.trash(session, webdav, app_settings, document.id)  # type: ignore[arg-type]
+        result, entry = router_service.trash(
+            session, webdav, app_settings, document.id, actor=TEST_ACTOR
+        )  # type: ignore[arg-type]
 
         assert webdav.moves == [(f"{WATCH}/scan.pdf", f"{TRASH}/scan.pdf")]
         assert result.status == DocumentStatus.trashed
@@ -639,7 +661,9 @@ class TestTrash:
         document = make_document(session)
         webdav.existing.add(f"{TRASH}/scan.pdf")
 
-        _, entry = router_service.trash(session, webdav, app_settings, document.id)  # type: ignore[arg-type]
+        _, entry = router_service.trash(
+            session, webdav, app_settings, document.id, actor=TEST_ACTOR
+        )  # type: ignore[arg-type]
 
         assert entry.final_filename != "scan.pdf"
         assert entry.final_filename.startswith("scan_")
@@ -656,7 +680,7 @@ class TestTrash:
         document = make_document(session)
 
         with pytest.raises(ValidationError, match="trash"):
-            router_service.trash(session, webdav, app_settings, document.id)  # type: ignore[arg-type]
+            router_service.trash(session, webdav, app_settings, document.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
 
 class TestRevert:
@@ -673,6 +697,7 @@ class TestRevert:
             final_name="Filed",
             final_folder_path=ROOT,
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
     def test_puts_the_file_back_and_requeues_the_document(
@@ -681,7 +706,9 @@ class TestRevert:
         document, entry = self._approve(session, webdav, app_settings)
         webdav.moves.clear()
 
-        reverted_entry, reverted_document = router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+        reverted_entry, reverted_document = router_service.revert(
+            session, webdav, entry.id, actor=TEST_ACTOR
+        )  # type: ignore[arg-type]
 
         assert webdav.moves == [(f"{ROOT}/Filed.pdf", f"{WATCH}/scan.pdf")]
         assert reverted_document.status == DocumentStatus.pending
@@ -693,7 +720,7 @@ class TestRevert:
     ) -> None:
         document = make_document(session)
         add_proposal(session, document)
-        router_service.skip(session, document.id)
+        router_service.skip(session, document.id, actor=TEST_ACTOR)
         _, entry = router_service.approve(
             session,
             webdav,
@@ -702,9 +729,10 @@ class TestRevert:
             final_name="Filed",
             final_folder_path=ROOT,
             document_date=None,
+            actor=TEST_ACTOR,
         )
 
-        _, reverted = router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+        _, reverted = router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         assert reverted.skip_count == 0
         assert session.exec(select(Proposal)).one() is not None
@@ -713,10 +741,10 @@ class TestRevert:
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
     ) -> None:
         _, entry = self._approve(session, webdav, app_settings)
-        router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+        router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         with pytest.raises(NotRevertible):
-            router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     def test_a_moved_file_flips_revertible_off(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
@@ -727,7 +755,7 @@ class TestRevert:
         webdav.moves.clear()
 
         with pytest.raises(NotRevertible):
-            router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         session.refresh(entry)
         assert entry.revertible is False
@@ -735,7 +763,7 @@ class TestRevert:
 
     def test_unknown_entry_is_not_revertible(self, session: Session, webdav: FakeWebDav) -> None:
         with pytest.raises(NotRevertible):
-            router_service.revert(session, webdav, "does-not-exist")  # type: ignore[arg-type]
+            router_service.revert(session, webdav, "does-not-exist", actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     def test_refuses_when_another_document_holds_the_original_path(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
@@ -746,16 +774,18 @@ class TestRevert:
         make_document(session, "scan.pdf")  # a new scan arrived at the same path
 
         with pytest.raises(NotRevertible, match="already tracked"):
-            router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     def test_a_trashed_document_can_be_reverted(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
     ) -> None:
         document = make_document(session)
-        _, entry = router_service.trash(session, webdav, app_settings, document.id)  # type: ignore[arg-type]
+        _, entry = router_service.trash(
+            session, webdav, app_settings, document.id, actor=TEST_ACTOR
+        )  # type: ignore[arg-type]
         webdav.moves.clear()
 
-        _, reverted = router_service.revert(session, webdav, entry.id)  # type: ignore[arg-type]
+        _, reverted = router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         assert reverted.status == DocumentStatus.pending
         assert webdav.moves == [(f"{TRASH}/scan.pdf", f"{WATCH}/scan.pdf")]
