@@ -417,3 +417,60 @@ class TestNoDeleteEndpointExists:
             methods = getattr(route, "methods", set()) or set()
             path = getattr(route, "path", "")
             assert "DELETE" not in methods, f"{path} exposes DELETE"
+
+
+class TestPromptContext:
+    """The folder tree and example filenames sent to the AI with every proposal."""
+
+    @pytest.fixture
+    def archive(self, monkeypatch: pytest.MonkeyPatch) -> FakeWebDav:
+        # The watch folder and trash living *inside* an allowed root is a common layout,
+        # and exactly where unsorted scans used to leak into the naming examples.
+        from app.config import settings as config
+
+        monkeypatch.setattr(config, "webdav_watch_folder", "/Docs/Inbox")
+        stub = FakeWebDav()
+        stub.listings = {
+            "/Docs": [folder("/Docs/Inbox"), folder("/Docs/Trash"), folder("/Docs/Finance")],
+            "/Docs/Inbox": [file_entry("/Docs/Inbox/scan_0041.pdf")],
+            "/Docs/Trash": [file_entry("/Docs/Trash/scan_0007.pdf")],
+            "/Docs/Finance": [
+                file_entry(
+                    "/Docs/Finance/2025.01.13 Green Rechnung 9000001.pdf",
+                    modified=datetime(2025, 1, 13),
+                ),
+                file_entry(
+                    "/Docs/Finance/2026.08.13 green Rechnung 9253636.pdf",
+                    modified=datetime(2026, 8, 13),
+                ),
+            ],
+        }
+        return stub
+
+    def _context(self, stub: FakeWebDav) -> tuple[list[str], list[str]]:
+        from app.services import folders
+
+        app_settings = AppSettings(
+            id=1, allowed_root_folders=["/Docs"], trash_folder_path="/Docs/Trash"
+        )
+        return folders.prompt_context(stub, app_settings)  # type: ignore[arg-type]
+
+    def test_examples_come_from_filed_documents_not_the_inbox_or_trash(
+        self, archive: FakeWebDav
+    ) -> None:
+        _, samples = self._context(archive)
+
+        assert "scan_0041.pdf" not in samples
+        assert "scan_0007.pdf" not in samples
+        assert "2026.08.13 green Rechnung 9253636.pdf" in samples
+
+    def test_inbox_and_trash_are_not_offered_as_destinations(self, archive: FakeWebDav) -> None:
+        tree, _ = self._context(archive)
+
+        assert tree == ["/Docs", "/Docs/Finance"]
+
+    def test_most_recently_filed_examples_come_first(self, archive: FakeWebDav) -> None:
+        # The naming convention drifts; the newest files show the one in use now.
+        _, samples = self._context(archive)
+
+        assert samples[0] == "2026.08.13 green Rechnung 9253636.pdf"

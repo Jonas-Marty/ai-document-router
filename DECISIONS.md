@@ -911,3 +911,8 @@ meaningful. One line of "why" each; not a full ADR log.
   scrape.** A scrape that did network I/O would be slow exactly when WebDAV is down, which is
   when the metric matters.
 
+- **The AI's folder tree and example filenames skip the watch folder and the trash.** When
+  either sits inside an allowed root, the examples used to be the first files a breadth-first
+  walk met -- the unsorted scans in the inbox. Examples are now the most recently modified
+  filed documents, which show the naming convention currently in use. No setting for it: the
+  two folders to exclude are already configured.

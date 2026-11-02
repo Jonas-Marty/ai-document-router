@@ -5,12 +5,14 @@ selectable. That is enforced here, not only in the picker.
 """
 
 import logging
+from datetime import UTC, datetime
 
+from app.config import settings as config
 from app.models import AppSettings
 from app.schemas import FolderContext, FolderNode, SiblingFile
 from app.services import ai, naming
 from app.services.errors import AppError, NotFoundError, ValidationError, WebDAVConflict
-from app.services.paths import assert_within_allowed_roots, normalize_path
+from app.services.paths import assert_within_allowed_roots, is_within, normalize_path
 from app.services.times import from_storage
 from app.services.webdav import WebDavEntry, WebDavService
 
@@ -144,9 +146,19 @@ def prompt_context(
     across those folders", and a setup that files everything into a subfolder (say
     /Archive/2026) has no files at the root at all -- sampling only there would send the
     model an empty list and lose the naming convention entirely.
+
+    The watch folder and the trash are skipped when they sit inside an allowed root: their
+    files are unsorted scans, the opposite of an example, and neither is a destination.
+    Samples are the most recently modified files, because the convention drifts and the
+    newest names show the one in use now.
     """
+    excluded = [
+        normalize_path(path)
+        for path in (config.webdav_watch_folder, app_settings.trash_folder_path)
+        if path
+    ]
     tree: list[str] = []
-    samples: list[str] = []
+    files: list[WebDavEntry] = []
 
     for root in app_settings.allowed_root_folders:
         tree.append(root)
@@ -162,9 +174,15 @@ def prompt_context(
                 continue
             for entry in entries:
                 if entry.is_dir:
+                    if any(is_within(skip, normalize_path(entry.path)) for skip in excluded):
+                        continue
                     tree.append(entry.path)
                     frontier.append((entry.path, depth + 1))
-                elif len(samples) < ai.MAX_SAMPLE_FILENAMES:
-                    samples.append(entry.name)
+                else:
+                    files.append(entry)
 
+    newest_first = sorted(
+        files, key=lambda entry: entry.modified or datetime.min.replace(tzinfo=UTC), reverse=True
+    )
+    samples = [entry.name for entry in newest_first[: ai.MAX_SAMPLE_FILENAMES]]
     return tree, samples
