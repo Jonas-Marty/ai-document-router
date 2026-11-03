@@ -24,7 +24,7 @@ from app.services.ai import AIUnavailable
 from app.services.ai_tasks import ResolvedStep, run_chain
 from app.services.audit import Actor
 from app.services.errors import WebDAVUnreachable
-from tests.test_router import ROOT, TRASH, FakeWebDav, add_proposal, make_document
+from tests.test_router import OWNER, ROOT, TRASH, FakeWebDav, add_proposal, make_document
 
 TOKEN = "scrape-secret-123"
 ACTOR = Actor(user_id=None, label="owner@example.com")
@@ -47,7 +47,9 @@ def session() -> Iterator[Session]:
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
-        s.add(AppSettings(id=1, allowed_root_folders=[ROOT], trash_folder_path=TRASH))
+        s.add(
+            AppSettings(id=1, user_id=OWNER, allowed_root_folders=[ROOT], trash_folder_path=TRASH)
+        )
         s.commit()
         yield s
 
@@ -173,14 +175,10 @@ class TestPipeline:
 
         assert change == 1
 
-    def test_a_tick_without_settings_counts_as_skipped(self, anonymous_client: TestClient) -> None:
-        # anonymous_client points db.engine at an empty database: no settings row yet.
-        with Session(db.engine) as s:
-            row = s.get(AppSettings, 1)
-            if row is not None:
-                s.delete(row)
-                s.commit()
-
+    def test_a_tick_with_nobody_connected_counts_as_skipped(
+        self, anonymous_client: TestClient
+    ) -> None:
+        # anonymous_client points db.engine at an empty database: nobody has a Nextcloud.
         change = delta("docrouter_poller_ticks_total", poller.run_once, outcome="skipped")
 
         assert change == 1

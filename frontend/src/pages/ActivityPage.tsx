@@ -8,7 +8,6 @@ import { ErrorState } from "@/components/shared/ErrorState";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuditEvents, useAuditUsage } from "@/hooks/useAudit";
-import { useCurrentUser } from "@/hooks/useAuth";
 import { useIsDesktop } from "@/hooks/useBreakpoint";
 import { ApiError } from "@/services/api/errors";
 import type { AuditCategory } from "@/services/api/types";
@@ -21,28 +20,13 @@ const FILTERS: { value: AuditCategory | undefined; label: string }[] = [
   { value: "auth", label: "Sign-ins" },
 ];
 
-/** SPEC 8.11: the audit log, for admins. The nav link is already hidden from everyone else;
- * this check covers someone typing the URL, and keeps the page from asking for data the
- * backend would refuse. */
+/** SPEC 8.11: the audit log. Every account sees its own: what happened to its documents,
+ * its settings, its sign-ins -- never anyone else's, admins included. */
 export default function ActivityPage() {
-  const { data: user } = useCurrentUser();
-  const isAdmin = user?.is_admin === true;
   const [category, setCategory] = useState<AuditCategory | undefined>(undefined);
-  const events = useAuditEvents(category, isAdmin);
-  const usage = useAuditUsage(isAdmin);
+  const events = useAuditEvents(category);
+  const usage = useAuditUsage();
   const isDesktop = useIsDesktop();
-
-  if (!isAdmin) {
-    return (
-      <div className="mx-auto max-w-5xl p-4">
-        <h1 className="text-lg font-semibold">Activity</h1>
-        <EmptyState
-          title="Only admins can see activity."
-          description="Ask the person who set up this instance if you need the audit log."
-        />
-      </div>
-    );
-  }
 
   const items = events.data?.pages.flatMap((page) => page.items) ?? [];
 

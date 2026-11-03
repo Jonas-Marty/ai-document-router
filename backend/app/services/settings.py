@@ -3,17 +3,16 @@ import re
 
 from sqlmodel import Session, select
 
+from app.config import settings as config
 from app.models import AppSettings, AuditAction, Document, DocumentStatus
-from app.schemas import SettingsRead, SettingsUpdate
-from app.services import audit
+from app.schemas import NextcloudRead, NextcloudWrite, SettingsRead, SettingsUpdate
+from app.services import audit, crypto, urls, webdav
 from app.services.audit import Actor
-from app.services.errors import NotFoundError, ValidationError
+from app.services.errors import AppError, ValidationError
 from app.services.paths import is_within, normalize_path
-from app.services.webdav import parent_of
+from app.services.webdav import Connection, parent_of
 
 logger = logging.getLogger(__name__)
-
-_SETTINGS_ID = 1
 
 _LABELS = {
     "allowed_root_folders": "allowed folders",
@@ -28,11 +27,115 @@ _LABELS = {
 MAX_INSTRUCTIONS_CHARS = 2000
 
 
-def get_settings(session: Session) -> AppSettings:
-    settings = session.get(AppSettings, _SETTINGS_ID)
+class NextcloudNotConfigured(AppError):
+    """This user has not connected a Nextcloud yet, so there is nothing to read or file."""
+
+    code = "nextcloud_not_configured"
+    status_code = 409
+
+
+def get_settings(session: Session, user_id: str) -> AppSettings:
+    """This user's settings, created empty the first time they are asked for."""
+    settings = session.exec(select(AppSettings).where(AppSettings.user_id == user_id)).first()
     if settings is None:
-        raise NotFoundError("Settings have not been initialised.")
+        settings = AppSettings(user_id=user_id)
+        session.add(settings)
+        session.commit()
+        session.refresh(settings)
     return settings
+
+
+def connection_for(settings: AppSettings) -> Connection | None:
+    """The user's Nextcloud with the password decrypted, or None until all of it is set."""
+    if not (
+        settings.webdav_base_url and settings.webdav_username and settings.webdav_password_encrypted
+    ):
+        return None
+    return Connection(
+        base_url=settings.webdav_base_url,
+        username=settings.webdav_username,
+        password=crypto.decrypt(config.secret_key, settings.webdav_password_encrypted),
+    )
+
+
+def require_connection(settings: AppSettings) -> Connection:
+    connection = connection_for(settings)
+    if connection is None:
+        raise NextcloudNotConfigured(
+            "Connect your Nextcloud in Settings first: server URL, username and app password."
+        )
+    return connection
+
+
+def read_nextcloud(settings: AppSettings) -> NextcloudRead:
+    """Never the password -- whether one is stored, and nothing else (CLAUDE.md rule 5)."""
+    return NextcloudRead(
+        base_url=settings.webdav_base_url,
+        username=settings.webdav_username,
+        password_set=settings.webdav_password_encrypted is not None,
+    )
+
+
+def update_nextcloud(
+    session: Session, settings: AppSettings, payload: NextcloudWrite, *, actor: Actor
+) -> AppSettings:
+    """A blank password keeps the stored one -- the form is never given it back to resend."""
+    base_url = _validate_nextcloud_url(payload.base_url)
+    username = payload.username.strip()
+    if not username:
+        raise ValidationError("Enter your Nextcloud username.")
+    password = payload.password or ""
+    if not password and settings.webdav_password_encrypted is None:
+        raise ValidationError("Enter an app password. Create one in Nextcloud under Security.")
+
+    before = {"base_url": settings.webdav_base_url, "username": settings.webdav_username}
+    settings.webdav_base_url = base_url
+    settings.webdav_username = username
+    if password:
+        settings.webdav_password_encrypted = crypto.encrypt(config.secret_key, password)
+    after = {"base_url": base_url, "username": username}
+
+    session.add(settings)
+    audit.record(
+        session,
+        AuditAction.settings_updated,
+        actor=actor,
+        summary="Changed the Nextcloud connection",
+        details={
+            "changed": {
+                field: {"from": before[field], "to": after[field]}
+                for field in before
+                if before[field] != after[field]
+            },
+            # That it changed, and nothing else about it (rule 5).
+            "password_changed": bool(password),
+        },
+    )
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def test_nextcloud(settings: AppSettings, payload: NextcloudWrite) -> None:
+    """Sign in with what is in the form -- typed, not saved, since finding out it is wrong
+    is the point. A blank password means the stored one."""
+    password = payload.password or ""
+    if not password:
+        stored = connection_for(settings)
+        password = stored.password if stored else ""
+    if not password:
+        raise ValidationError("Enter an app password to test.")
+    webdav.check_connection(
+        Connection(
+            base_url=_validate_nextcloud_url(payload.base_url),
+            username=payload.username.strip(),
+            password=password,
+        )
+    )
+
+
+def _validate_nextcloud_url(url: str) -> str:
+    return urls.validate_service_url(url, "Nextcloud URL").rstrip("/")
 
 
 def permitted_roots(session: Session, settings: AppSettings) -> list[str]:
@@ -48,7 +151,9 @@ def permitted_roots(session: Session, settings: AppSettings) -> list[str]:
     writes them, from a listing of whatever was the watch folder at the time.
     """
     open_paths = session.exec(
-        select(Document.webdav_path).where(
+        select(Document.webdav_path)
+        .where(Document.user_id == settings.user_id)
+        .where(
             Document.status.in_((DocumentStatus.pending, DocumentStatus.skipped))  # type: ignore[attr-defined]
         )
     ).all()
@@ -74,8 +179,9 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
     )
 
 
-def update_settings(session: Session, payload: SettingsUpdate, *, actor: Actor) -> AppSettings:
-    settings = get_settings(session)
+def update_settings(
+    session: Session, settings: AppSettings, payload: SettingsUpdate, *, actor: Actor
+) -> AppSettings:
 
     allowed_roots = _validate_allowed_roots(payload.allowed_root_folders)
     trash_folder = _validate_trash_folder(payload.trash_folder_path, allowed_roots)

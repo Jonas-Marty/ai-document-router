@@ -135,7 +135,10 @@ class DocumentResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    webdav_reachable: bool
+    # Whether the signed-in user has connected a Nextcloud. False without a session.
+    webdav_configured: bool
+    # None when there is nothing to probe: no session, or no connection yet.
+    webdav_reachable: bool | None
     queue_depth: int
 
 
@@ -179,6 +182,21 @@ class SettingsUpdate(BaseModel):
     store_ocr_text: bool = True
     filing_instructions: str | None = None
     extraction_instructions: str | None = None
+
+
+class NextcloudRead(BaseModel):
+    """CLAUDE.md rule 5: the password never leaves the backend, only whether one is set."""
+
+    base_url: str
+    username: str
+    password_set: bool
+
+
+class NextcloudWrite(BaseModel):
+    base_url: str
+    username: str
+    # Blank keeps the stored password.
+    password: str | None = None
 
 
 class AiEndpointRead(BaseModel):

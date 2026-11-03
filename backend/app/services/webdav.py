@@ -27,6 +27,7 @@ from webdav4.client import (
     Client,
     ClientError,
     ForbiddenOperation,
+    HTTPError,
     InsufficientStorage,
     ResourceAlreadyExists,
     ResourceConflict,
@@ -55,10 +56,10 @@ CACHE_TTL_SECONDS = 30.0
 # in the same process and FastAPI runs sync handlers in a threadpool, so this is shared
 # across threads and needs the lock.
 _cache_lock = threading.Lock()
-_listing_cache: dict[str, tuple[float, list["WebDavEntry"]]] = {}
+_listing_cache: dict[tuple[str, str], tuple[float, list["WebDavEntry"]]] = {}
 
 _probe_client_lock = threading.Lock()
-_probe_client_instance: "Client | None" = None
+_probe_clients: dict["Connection", Client] = {}
 
 
 class WebDAVError(AppError):
@@ -90,28 +91,38 @@ def parent_of(path: str) -> str:
     return parent or "/"
 
 
-def build_client(timeout: float | None = None) -> Client:
-    """Construct a webdav4 client from environment configuration."""
+@dataclass(frozen=True)
+class Connection:
+    """One user's Nextcloud: where it is and how to sign in. The password is plaintext here
+    and nowhere else -- built from the encrypted column just before a request, never stored."""
+
+    base_url: str
+    username: str
+    password: str
+
+    @property
+    def cache_namespace(self) -> str:
+        """Listings are cached per server and account, so one user never sees another's."""
+        return f"{self.base_url}|{self.username}"
+
+
+def build_client(connection: Connection, timeout: float | None = None) -> Client:
+    """Construct a webdav4 client for one user's connection."""
     return Client(
-        base_url=config.webdav_base_url,
-        auth=(config.webdav_username, config.webdav_password),
+        base_url=connection.base_url,
+        auth=(connection.username, connection.password),
         timeout=config.webdav_timeout_seconds if timeout is None else timeout,
     )
 
 
-def probe_reachable() -> bool:
+def probe_reachable(connection: Connection) -> bool:
     """Cheap liveness check for /health. Never raises and never blocks for long.
 
     Uses its own short timeout rather than the operation timeout, because the frontend
     polls /health on an interval and a slow probe delays the outage banner.
     """
-    if not config.webdav_base_url:
-        return False
-
-    # The base URL itself rather than the watch folder: the probe runs without a database
-    # session, and "is the server there" is the question; a missing folder is Settings' job.
     try:
-        _probe_client().exists("")
+        _probe_client(connection).exists("")
     except Exception as exc:  # noqa: BLE001 - a health probe must never propagate
         logger.debug("WebDAV health probe failed: %s", exc)
         metrics.webdav_reachable.set(0)
@@ -120,25 +131,47 @@ def probe_reachable() -> bool:
     return True
 
 
-def _probe_client() -> Client:
-    """One reused client for health probes.
+def check_connection(connection: Connection) -> None:
+    """Sign in and list the root, for Settings' Test button. Raises with a readable reason.
+
+    Unlike the probe this distinguishes a wrong password from an unreachable server, which
+    is the whole point of testing before saving.
+    """
+    client = build_client(connection, timeout=config.webdav_health_timeout_seconds * 5)
+    try:
+        with _translate_errors("test", connection.base_url):
+            client.ls("", detail=False)
+    except WebDAVError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, HTTPError) and cause.status_code == 401:
+            raise WebDAVError("Nextcloud refused the username or app password.") from cause
+        raise
+    except NotFoundError as exc:
+        raise WebDAVError(
+            "There is no WebDAV folder at that URL. For Nextcloud it ends in "
+            "/remote.php/dav/files/<username>."
+        ) from exc
+
+
+def _probe_client(connection: Connection) -> Client:
+    """One reused client per connection for health probes.
 
     /health is polled by both the frontend and the container healthcheck, so building a
     fresh connection pool each time would mean a TCP and TLS handshake every few seconds
     with no connection reuse.
     """
-    global _probe_client_instance
     with _probe_client_lock:
-        if _probe_client_instance is None:
-            _probe_client_instance = build_client(timeout=config.webdav_health_timeout_seconds)
-        return _probe_client_instance
+        client = _probe_clients.get(connection)
+        if client is None:
+            client = build_client(connection, timeout=config.webdav_health_timeout_seconds)
+            _probe_clients[connection] = client
+        return client
 
 
 def reset_probe_client() -> None:
-    """Drop the cached probe client. Used by tests."""
-    global _probe_client_instance
+    """Drop the cached probe clients. Used by tests."""
     with _probe_client_lock:
-        _probe_client_instance = None
+        _probe_clients.clear()
 
 
 def clear_cache() -> None:
@@ -147,10 +180,10 @@ def clear_cache() -> None:
         _listing_cache.clear()
 
 
-def invalidate(path: str) -> None:
-    """Invalidate the cached listing for one directory."""
+def invalidate(path: str, namespace: str = "") -> None:
+    """Invalidate the cached listing for one directory on one connection."""
     with _cache_lock:
-        _listing_cache.pop(normalize_path(path), None)
+        _listing_cache.pop((namespace, normalize_path(path)), None)
 
 
 class WebDavService:
@@ -167,8 +200,10 @@ class WebDavService:
         client: Client,
         permitted_roots: Iterable[str],
         clock: Callable[[], float] = time.monotonic,
+        cache_namespace: str = "",
     ) -> None:
         self._client = client
+        self._cache_namespace = cache_namespace
         self._permitted_roots = [normalize_path(root) for root in permitted_roots]
         self._clock = clock
 
@@ -252,8 +287,8 @@ class WebDavService:
             self._client.move(self._wire(source), self._wire(destination), overwrite=False)
 
         # A move changes the *contents* of both containing directories, not the paths moved.
-        invalidate(parent_of(source))
-        invalidate(parent_of(destination))
+        invalidate(parent_of(source), self._cache_namespace)
+        invalidate(parent_of(destination), self._cache_namespace)
 
     def replace(self, path: str, data: bytes, content_type: str | None = None) -> None:
         """Write bytes over a file that must already be there.
@@ -286,14 +321,14 @@ class WebDavService:
             )
 
         # The file's size and etag changed, so the parent's cached listing is now wrong.
-        invalidate(parent_of(normalized))
+        invalidate(parent_of(normalized), self._cache_namespace)
 
     def mkdir(self, path: str) -> None:
         """Create a single directory. Its parent must already exist."""
         normalized = self._check(path)
         with _translate_errors("mkdir", normalized):
             self._client.mkdir(self._wire(normalized))
-        invalidate(parent_of(normalized))
+        invalidate(parent_of(normalized), self._cache_namespace)
 
     def mkdir_p(self, path: str) -> None:
         """Create a directory and any missing parents. No-op if it already exists.
@@ -324,7 +359,7 @@ class WebDavService:
             except WebDAVConflict:
                 # Raced with someone else creating it; that is the state we wanted anyway.
                 continue
-            invalidate(parent_of(directory))
+            invalidate(parent_of(directory), self._cache_namespace)
 
     def _containing_root(self, normalized: str) -> str:
         """The most specific permitted root containing `normalized`.
@@ -349,12 +384,12 @@ class WebDavService:
 
     def _cache_get(self, normalized: str) -> list[WebDavEntry] | None:
         with _cache_lock:
-            hit = _listing_cache.get(normalized)
+            hit = _listing_cache.get((self._cache_namespace, normalized))
             if hit is None:
                 return None
             stored_at, entries = hit
             if self._clock() - stored_at >= CACHE_TTL_SECONDS:
-                del _listing_cache[normalized]
+                del _listing_cache[(self._cache_namespace, normalized)]
                 return None
             # A copy: callers sort listings (SPEC 8.3 wants siblings newest-first) and an
             # in-place sort would reorder the shared cache for everyone else.
@@ -364,7 +399,7 @@ class WebDavService:
         with _cache_lock:
             # Store a copy too, so the list handed back on a cache *miss* is the caller's
             # own and mutating it cannot corrupt what the next reader sees.
-            _listing_cache[normalized] = (self._clock(), list(entries))
+            _listing_cache[(self._cache_namespace, normalized)] = (self._clock(), list(entries))
 
     def _to_entry(self, item: Any, exclude: str | None = None) -> WebDavEntry | None:
         """Convert one webdav4 dict to a WebDavEntry, or None if its path is unusable.

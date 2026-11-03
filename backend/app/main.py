@@ -6,7 +6,6 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlmodel import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import db, log
@@ -21,7 +20,6 @@ from app.api import metrics as metrics_api
 from app.api import settings as settings_api
 from app.config import settings as config
 from app.jobs import poller
-from app.models import AppSettings
 from app.services import metrics
 from app.services.errors import AppError
 
@@ -37,10 +35,7 @@ metrics.register_queue_collector(lambda: db.engine)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    with Session(db.engine) as session:
-        if session.get(AppSettings, 1) is None:
-            session.add(AppSettings(id=1))
-            session.commit()
+    # No settings row to seed: each user's is created the first time they are asked for.
     poller.start_scheduler()
     try:
         yield

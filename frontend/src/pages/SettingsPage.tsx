@@ -5,6 +5,7 @@ import { AiInstructionsSection } from "@/components/settings/AiInstructionsSecti
 import { AiTasksSection } from "@/components/settings/AiTasksSection";
 import { FoldersSection } from "@/components/settings/FoldersSection";
 import { NamingSection } from "@/components/settings/NamingSection";
+import { NextcloudSection } from "@/components/settings/NextcloudSection";
 import { OcrSection } from "@/components/settings/OcrSection";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,11 +13,19 @@ import { useSetNavigationGuard } from "@/hooks/useNavigationGuard";
 import { useSettings } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
 
-type SectionName = "folders" | "naming" | "endpoints" | "tasks" | "instructions" | "ocr";
+type SectionName =
+  | "nextcloud"
+  | "folders"
+  | "naming"
+  | "endpoints"
+  | "tasks"
+  | "instructions"
+  | "ocr";
 
 export default function SettingsPage() {
   const settings = useSettings();
   const [dirtySections, setDirtySections] = useState<Record<SectionName, boolean>>({
+    nextcloud: false,
     folders: false,
     naming: false,
     endpoints: false,
@@ -28,6 +37,10 @@ export default function SettingsPage() {
   const anyDirty = Object.values(dirtySections).some(Boolean);
   useSetNavigationGuard(anyDirty ? "You have unsaved settings. Leave without saving?" : null);
 
+  const onNextcloudDirtyChange = useCallback(
+    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, nextcloud: dirty })),
+    [],
+  );
   const onFoldersDirtyChange = useCallback(
     (dirty: boolean) => setDirtySections((prev) => ({ ...prev, folders: dirty })),
     [],
@@ -68,6 +81,7 @@ export default function SettingsPage() {
         />
       ) : settings.data ? (
         <>
+          <NextcloudSection onDirtyChange={onNextcloudDirtyChange} />
           <FoldersSection settings={settings.data} onDirtyChange={onFoldersDirtyChange} />
           <NamingSection settings={settings.data} onDirtyChange={onNamingDirtyChange} />
           <AiEndpointsSection onDirtyChange={onEndpointsDirtyChange} />

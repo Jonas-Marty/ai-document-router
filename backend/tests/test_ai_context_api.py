@@ -10,10 +10,11 @@ from sqlmodel import Session
 from app import db
 from app.deps import get_webdav
 from app.main import app
-from app.models import AiEndpoint, AiTask, AppSettings
+from app.models import AiEndpoint, AiTask
 from app.services import ai, ai_context, ai_tasks, transcribe
 from app.services.audit import Actor
 from app.services.webdav import WebDavEntry
+from tests.conftest import signed_in_settings
 
 TEST_ACTOR = Actor(user_id=None, label="test@example.com")
 
@@ -35,8 +36,7 @@ class FakeWebDav:
 @pytest.fixture
 def configured(client: TestClient) -> Iterator[TestClient]:
     with Session(db.engine) as session:
-        settings = session.get(AppSettings, 1)
-        assert settings is not None
+        settings = signed_in_settings(session)
         settings.allowed_root_folders = ["/Documents"]
         settings.trash_folder_path = "/Trash"
         settings.filename_pattern_hint = "YYYY.MM.DD Sender Subject"
@@ -46,13 +46,16 @@ def configured(client: TestClient) -> Iterator[TestClient]:
         session.add(
             AiEndpoint(
                 id="ep",
+                user_id=settings.user_id,
                 name="Workshop PC",
                 base_url="http://192.168.1.5/v1",
                 created_at=datetime(2026, 9, 1),
             )
         )
         session.commit()
-        ai_tasks.replace_chain(session, AiTask.filing, [("ep", "qwen3")], actor=TEST_ACTOR)
+        ai_tasks.replace_chain(
+            session, settings.user_id, AiTask.filing, [("ep", "qwen3")], actor=TEST_ACTOR
+        )
 
     app.dependency_overrides[get_webdav] = lambda: FakeWebDav()
     yield client

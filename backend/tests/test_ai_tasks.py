@@ -19,6 +19,9 @@ from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
 
+# Rows need an owner; foreign keys are not enforced here, so no user row is needed.
+OWNER = "owner-1"
+
 TEST_ACTOR = Actor(user_id=None, label="test@example.com")
 
 
@@ -34,6 +37,7 @@ def session() -> Iterator[Session]:
 
 def endpoint(session: Session, name: str, *, key: bytes | None = None) -> AiEndpoint:
     row = AiEndpoint(
+        user_id=OWNER,
         name=name,
         base_url=f"https://{name}.example.com/v1",
         api_key_encrypted=key,
@@ -109,10 +113,14 @@ class TestResolveChain:
         local = endpoint(session, "local", key=crypto.encrypt(config.secret_key, "secret-key"))
         cloud = endpoint(session, "cloud")
         replace_chain(
-            session, AiTask.filing, [(local.id, "qwen"), (cloud.id, "gpt-4o")], actor=TEST_ACTOR
+            session,
+            OWNER,
+            AiTask.filing,
+            [(local.id, "qwen"), (cloud.id, "gpt-4o")],
+            actor=TEST_ACTOR,
         )
 
-        resolved = ai_tasks.resolve_chain(session, AiTask.filing)
+        resolved = ai_tasks.resolve_chain(session, OWNER, AiTask.filing)
 
         assert [s.endpoint_name for s in resolved] == ["local", "cloud"]
         assert resolved[0].api_key == "secret-key"
@@ -121,44 +129,46 @@ class TestResolveChain:
 
     def test_ignores_steps_belonging_to_the_other_task(self, session: Session) -> None:
         local = endpoint(session, "local")
-        replace_chain(session, AiTask.extraction, [(local.id, "got-ocr")], actor=TEST_ACTOR)
+        replace_chain(session, OWNER, AiTask.extraction, [(local.id, "got-ocr")], actor=TEST_ACTOR)
 
-        assert ai_tasks.resolve_chain(session, AiTask.filing) == []
-        assert ai_tasks.resolve_chain(session, AiTask.extraction)[0].model_name == "got-ocr"
+        assert ai_tasks.resolve_chain(session, OWNER, AiTask.filing) == []
+        assert ai_tasks.resolve_chain(session, OWNER, AiTask.extraction)[0].model_name == "got-ocr"
 
 
 class TestReplaceChain:
     def test_replaces_the_whole_chain_rather_than_appending(self, session: Session) -> None:
         local = endpoint(session, "local")
         cloud = endpoint(session, "cloud")
-        replace_chain(session, AiTask.filing, [(local.id, "a"), (cloud.id, "b")], actor=TEST_ACTOR)
-        replace_chain(session, AiTask.filing, [(cloud.id, "c")], actor=TEST_ACTOR)
+        replace_chain(
+            session, OWNER, AiTask.filing, [(local.id, "a"), (cloud.id, "b")], actor=TEST_ACTOR
+        )
+        replace_chain(session, OWNER, AiTask.filing, [(cloud.id, "c")], actor=TEST_ACTOR)
 
         rows = session.exec(select(AiTaskStep)).all()
         assert [(r.position, r.model_name) for r in rows] == [(0, "c")]
 
     def test_rejects_an_endpoint_that_does_not_exist(self, session: Session) -> None:
         with pytest.raises(NotFoundError):
-            replace_chain(session, AiTask.filing, [("missing", "m")], actor=TEST_ACTOR)
+            replace_chain(session, OWNER, AiTask.filing, [("missing", "m")], actor=TEST_ACTOR)
 
     def test_rejects_a_blank_model_name(self, session: Session) -> None:
         local = endpoint(session, "local")
         with pytest.raises(ValidationError):
-            replace_chain(session, AiTask.filing, [(local.id, "   ")], actor=TEST_ACTOR)
+            replace_chain(session, OWNER, AiTask.filing, [(local.id, "   ")], actor=TEST_ACTOR)
 
     def test_an_empty_list_clears_the_chain(self, session: Session) -> None:
         local = endpoint(session, "local")
-        replace_chain(session, AiTask.filing, [(local.id, "a")], actor=TEST_ACTOR)
-        replace_chain(session, AiTask.filing, [], actor=TEST_ACTOR)
+        replace_chain(session, OWNER, AiTask.filing, [(local.id, "a")], actor=TEST_ACTOR)
+        replace_chain(session, OWNER, AiTask.filing, [], actor=TEST_ACTOR)
 
-        assert ai_tasks.resolve_chain(session, AiTask.filing) == []
+        assert ai_tasks.resolve_chain(session, OWNER, AiTask.filing) == []
 
 
 class TestEndpointInUse:
     def test_names_every_task_that_would_lose_a_step(self, session: Session) -> None:
         local = endpoint(session, "local")
-        replace_chain(session, AiTask.filing, [(local.id, "a")], actor=TEST_ACTOR)
-        replace_chain(session, AiTask.extraction, [(local.id, "b")], actor=TEST_ACTOR)
+        replace_chain(session, OWNER, AiTask.filing, [(local.id, "a")], actor=TEST_ACTOR)
+        replace_chain(session, OWNER, AiTask.extraction, [(local.id, "b")], actor=TEST_ACTOR)
 
         assert ai_tasks.endpoint_in_use(session, local.id) == [AiTask.extraction, AiTask.filing]
 

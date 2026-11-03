@@ -1,6 +1,6 @@
 # AI Document Router
 
-A self-hosted, single-user tool for reviewing AI-suggested filenames and destination folders
+A self-hosted, multi-user tool for reviewing AI-suggested filenames and destination folders
 for scanned documents before filing them to a WebDAV store. See `SPEC.md` for the full
 specification and `IMPLEMENTATION_PLAN.md` for build order.
 
@@ -74,10 +74,12 @@ cp .env.example .env
 just secret-key          # paste the output into SECRET_KEY in .env
 ```
 
-Fill in the rest of `.env` — at minimum `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
-`WEBDAV_PASSWORD`, and `APP_BASE_URL` (the public URL the browser will use). Use a WebDAV
-**app password**, never the account password. The folder your scanner saves into is set in the
-app, under Settings → Folders → Watch folder; nothing is ingested until it is. Then:
+Fill in the rest of `.env` — at minimum `APP_BASE_URL` (the public URL the browser will use).
+Nextcloud is not configured in `.env`: after signing in, each user connects their own under
+Settings → Nextcloud with a WebDAV URL (`https://cloud.example.com/remote.php/dav/files/<user>`),
+their username and an **app password** (Nextcloud → Personal settings → Security), never the
+account password. The folder their scanner saves into is set under Settings → Folders →
+Watch folder; nothing is ingested for a user until both are set. Then:
 
 ```bash
 just up
@@ -98,8 +100,14 @@ just down     # stop and remove the containers (the database volume survives)
 just build    # rebuild images after pulling new code, then `just up`
 ```
 
-The AI endpoint, model, and API key are **not** in `.env` — they are configured in the app's
-Settings screen, because they are editable at runtime and the key is encrypted at rest.
+The AI endpoints, models, and API keys are **not** in `.env` either — each user configures
+their own in Settings, because they are editable at runtime and keys are encrypted at rest.
+
+### Several users
+
+Every account has its own Nextcloud connection, folders, naming rules, AI endpoints and task
+chains, queue, history and Activity log. Nobody — the admin included — can see another
+account's documents; the only thing `is_admin` decides is who claimed the instance.
 
 ### Signing in
 
@@ -138,14 +146,17 @@ Signing in through the provider matches on its `sub`, falling back to the email 
 using SSO with the address of an existing password account links the two rather than creating
 a second one. If nobody has registered yet, the first person through SSO becomes the admin.
 
+Anyone the provider lets through gets an account on first sign-in — so decide who may use
+the app in Authentik, by binding a group or policy to the application.
+
 Other providers implementing OIDC discovery should work, but Authentik is the one this was
 built against.
 
 ### Rotating SECRET_KEY
 
-`SECRET_KEY` is the Fernet key that encrypts the stored AI API key. **Changing it makes the
-stored key permanently unreadable** — the app will fail to decrypt it, and it has to be
-re-entered in Settings. Nothing else in the database is encrypted, so there is no other data
+`SECRET_KEY` is the Fernet key that encrypts every user's Nextcloud app password and AI API
+keys. **Changing it makes them permanently unreadable** — every user has to re-enter theirs in
+Settings. Nothing else in the database is encrypted, so there is no other data
 loss, but do plan the rotation:
 
 1. Have the AI API key to hand (you cannot read it back out of the app — it is write-only).
@@ -230,7 +241,7 @@ groups:
         for: 30m
 ```
 
-Token usage per document, and who did what, is on the Activity page (admins only) rather than
+Token usage per document, and who did what, is on each user's Activity page rather than
 in Prometheus.
 
 ### Scaling note

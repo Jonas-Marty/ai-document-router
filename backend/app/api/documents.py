@@ -28,9 +28,9 @@ router = APIRouter()
 
 @router.get("/queue")
 def read_queue(
-    session: SessionDep, _user: CurrentUserDep, limit: int = Query(20, ge=1, le=100)
+    session: SessionDep, user: CurrentUserDep, limit: int = Query(20, ge=1, le=100)
 ) -> QueueResponse:
-    items, total = documents_service.queue(session, limit)
+    items, total = documents_service.queue(session, user.id, limit)
     return QueueResponse(items=items, total_pending=total)
 
 
@@ -43,19 +43,21 @@ def retry_failed_proposals(session: SessionDep, user: CurrentUserDep) -> Retried
     the poller does the work on its next tick.
     """
     return RetriedResponse(
-        retried=documents_service.retry_failed_proposals(session, actor=Actor.from_user(user))
+        retried=documents_service.retry_failed_proposals(
+            session, user.id, actor=Actor.from_user(user)
+        )
     )
 
 
 @router.get("/documents/{document_id}")
-def read_document(document_id: str, session: SessionDep, _user: CurrentUserDep) -> DocumentRead:
-    document = documents_service.get_document(session, document_id)
+def read_document(document_id: str, session: SessionDep, user: CurrentUserDep) -> DocumentRead:
+    document = documents_service.get_document(session, user.id, document_id)
     return documents_service.to_read_schema(session, document)
 
 
 @router.get("/documents/{document_id}/content")
 def read_document_content(
-    document_id: str, session: SessionDep, _user: CurrentUserDep, webdav: WebDavDep
+    document_id: str, session: SessionDep, user: CurrentUserDep, webdav: WebDavDep
 ) -> StreamingResponse:
     """Stream the file's bytes.
 
@@ -63,7 +65,7 @@ def read_document_content(
     generator, so without this a missing file would raise only after the 200 headers were
     already on the wire -- the browser would see a truncated body instead of a 404.
     """
-    document = documents_service.get_document(session, document_id)
+    document = documents_service.get_document(session, user.id, document_id)
     chunks = webdav.read_stream(document.webdav_path)
 
     try:
@@ -95,7 +97,7 @@ def regenerate_proposal(
     built to wait, and this keeps the request off a call that can take 60s with its retry.
     """
     document = documents_service.request_regenerate(
-        session, document_id, actor=Actor.from_user(user)
+        session, user.id, document_id, actor=Actor.from_user(user)
     )
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
 
@@ -115,7 +117,7 @@ def compare_methods(
     the document's own proposal is untouched, and the review form is still where a filename
     is chosen.
     """
-    document = documents_service.get_document(session, document_id)
+    document = documents_service.get_document(session, user.id, document_id)
     results = compare_service.compare(
         session, webdav, app_settings, document, actor=Actor.from_user(user)
     )
@@ -175,7 +177,7 @@ def approve_document(
 
 @router.post("/documents/{document_id}/skip")
 def skip_document(document_id: str, session: SessionDep, user: CurrentUserDep) -> DocumentResponse:
-    document = router_service.skip(session, document_id, actor=Actor.from_user(user))
+    document = router_service.skip(session, user.id, document_id, actor=Actor.from_user(user))
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
 
 

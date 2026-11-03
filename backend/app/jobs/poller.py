@@ -88,29 +88,24 @@ def stop_scheduler() -> None:
 
 
 def run_once() -> None:
-    """One full tick. Never raises -- a failing tick must not kill the scheduler."""
+    """One full tick, one pass per connected user. Never raises -- a failing tick must not
+    kill the scheduler, and one user's unreachable Nextcloud must not stall everyone else's."""
     started = time.monotonic()
+    ingested = ocred_count = ready = failed = 0
     with log.bound(f"tick={log.new_id()}"):
         try:
             with Session(db.engine) as session:
-                app_settings = session.get(AppSettings, 1)
-                if app_settings is None:
-                    logger.warning("Settings row missing; skipping tick.")
+                user_ids = connected_users(session)
+                if not user_ids:
+                    logger.debug("Nobody has connected a Nextcloud yet; skipping tick.")
                     metrics.poller_ticks.labels("skipped").inc()
                     return
-                service = build_service(session, app_settings)
-                # Carry the bytes we just read straight into the proposal step, so a document
-                # ingested this tick is not downloaded a second time to extract the same text.
-                fresh = ingest(session, service, app_settings)
-                ingested = len(fresh)
-                # Before proposals, not after: a document we just OCR'd has text for the
-                # first time, and the whole point is that its proposal is built from that
-                # text rather than from the "no text layer" it would otherwise be stuck with.
-                ocred = ocr_pending(session, service, app_settings)
-                for document_id in ocred:
-                    # Its cached extraction predates the text layer, so it must not be reused.
-                    fresh.pop(document_id, None)
-                ready, failed = generate_proposals(session, service, app_settings, fresh)
+                for user_id in user_ids:
+                    counts = _run_for_user(session, user_id)
+                    ingested += counts[0]
+                    ocred_count += counts[1]
+                    ready += counts[2]
+                    failed += counts[3]
                 searchable.prune(config.ocr_cache_max_age_days)
                 audit.prune(session, config.audit_retention_days)
         except Exception:
@@ -125,20 +120,62 @@ def run_once() -> None:
 
         # Quiet when idle: a tick a minute that found nothing would otherwise be most of the
         # INFO log, and bury the ticks that actually did something.
-        busy = ingested or ocred or ready or failed
+        busy = ingested or ocred_count or ready or failed
         logger.log(
             logging.INFO if busy else logging.DEBUG,
             "Tick done in %.1fs: ingested %d, OCR %d, proposals %d ready / %d failed.",
             elapsed,
             ingested,
-            len(ocred),
+            ocred_count,
             ready,
             failed,
         )
 
 
+def connected_users(session: Session) -> list[str]:
+    """Users with a Nextcloud connection to work on. Nobody else has anything to poll."""
+    rows = session.exec(
+        select(AppSettings.user_id)
+        .where(AppSettings.webdav_base_url != "")
+        .where(AppSettings.webdav_password_encrypted.is_not(None))  # type: ignore[union-attr]
+        .order_by(AppSettings.user_id)
+    ).all()
+    return list(rows)
+
+
+def _run_for_user(session: Session, user_id: str) -> tuple[int, int, int, int]:
+    """Ingest, OCR and propose for one user. Returns (ingested, ocred, ready, failed)."""
+    # Appended to the tick's tag rather than replacing it, so a line still says which tick.
+    with log.bound(f"{log.context_var.get()} user={user_id[:8]}".strip()):
+        try:
+            app_settings = settings_service.get_settings(session, user_id)
+            service = build_service(session, app_settings)
+            # Carry the bytes we just read straight into the proposal step, so a document
+            # ingested this tick is not downloaded a second time to extract the same text.
+            fresh = ingest(session, service, app_settings)
+            ingested = len(fresh)
+            # Before proposals, not after: a document we just OCR'd has text for the
+            # first time, and the whole point is that its proposal is built from that
+            # text rather than from the "no text layer" it would otherwise be stuck with.
+            ocred = ocr_pending(session, service, app_settings)
+            for document_id in ocred:
+                # Its cached extraction predates the text layer, so it must not be reused.
+                fresh.pop(document_id, None)
+            ready, failed = generate_proposals(session, service, app_settings, fresh)
+        except Exception:
+            session.rollback()
+            logger.exception("Poller pass failed for one user; carrying on with the rest.")
+            return 0, 0, 0, 0
+    return ingested, len(ocred), ready, failed
+
+
 def build_service(session: Session, app_settings: AppSettings) -> WebDavService:
-    return WebDavService(build_client(), settings_service.permitted_roots(session, app_settings))
+    connection = settings_service.require_connection(app_settings)
+    return WebDavService(
+        build_client(connection),
+        settings_service.permitted_roots(session, app_settings),
+        cache_namespace=connection.cache_namespace,
+    )
 
 
 def ingest(
@@ -166,9 +203,13 @@ def ingest(
             break
         if not _is_ready(entry):
             continue
-        if session.exec(select(Document).where(Document.webdav_path == entry.path)).first():
+        if session.exec(
+            select(Document).where(
+                Document.user_id == app_settings.user_id, Document.webdav_path == entry.path
+            )
+        ).first():
             continue
-        recorded = _record(session, service, entry)
+        recorded = _record(session, service, app_settings.user_id, entry)
         if recorded is not None:
             document, document_text = recorded
             extracted[document.id] = document_text
@@ -192,7 +233,7 @@ def _is_ready(entry: WebDavEntry) -> bool:
 
 
 def _record(
-    session: Session, service: WebDavService, entry: WebDavEntry
+    session: Session, service: WebDavService, user_id: str, entry: WebDavEntry
 ) -> tuple[Document, ExtractedDocument] | None:
     """Download once and derive everything from those bytes."""
     try:
@@ -206,6 +247,7 @@ def _record(
     # Dedupe guard (SPEC 6.2 rule 1): the same bytes already waiting under another name.
     duplicate = session.exec(
         select(Document).where(
+            Document.user_id == user_id,
             Document.content_hash == extracted.content_hash,
             Document.status.in_((DocumentStatus.pending, DocumentStatus.skipped)),  # type: ignore[attr-defined]
         )
@@ -216,6 +258,7 @@ def _record(
 
     now = utc_now()
     document = Document(
+        user_id=user_id,
         webdav_path=entry.path,
         original_filename=entry.name,
         mime_type=extracted.mime_type,
@@ -272,6 +315,7 @@ def ocr_pending(session: Session, service: WebDavService, app_settings: AppSetti
 
     pending = session.exec(
         select(Document)
+        .where(Document.user_id == app_settings.user_id)
         .where(Document.ocr_status == OcrStatus.pending)
         # Same reason proposals are limited this way: a document already filed is not going
         # to be reviewed again, and OCRing it would spend minutes on nobody's behalf.
@@ -372,6 +416,7 @@ def generate_proposals(
     """Produce a proposal for documents still waiting for one. Returns (ready, failed)."""
     pending = session.exec(
         select(Document)
+        .where(Document.user_id == app_settings.user_id)
         .where(Document.proposal_status == ProposalStatus.pending)
         # Filed documents keep their proposal_status until they leave the queue; without
         # this a document approved while its proposal was still queued would burn an LLM
@@ -446,7 +491,9 @@ def propose_for(
 
     try:
         proposal = ai_tasks.run_chain(
-            ai_tasks.resolve_chain(session, AiTask.filing), file_it, AiTask.filing
+            ai_tasks.resolve_chain(session, document.user_id, AiTask.filing),
+            file_it,
+            AiTask.filing,
         )
     except ai.ProposalRejected as exc:
         _fail(session, document, exc.reason, meter)
@@ -483,7 +530,7 @@ def _read_document(
     if document.extracted_markdown:
         return _Reading(_for_prompt(document.extracted_markdown))
 
-    steps = ai_tasks.resolve_chain(session, AiTask.extraction)
+    steps = ai_tasks.resolve_chain(session, document.user_id, AiTask.extraction)
     extracted = already_extracted
 
     if not steps:

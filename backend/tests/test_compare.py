@@ -19,6 +19,9 @@ from app.services import ai, compare, extraction, ocr
 from app.services.audit import Actor
 from app.services.times import utc_now
 
+# Rows need an owner; foreign keys are not enforced here, so no user row is needed.
+OWNER = "owner-1"
+
 TEST_ACTOR = Actor(user_id=None, label="test@example.com")
 
 VALID_REPLY = {
@@ -42,6 +45,7 @@ def blank_pdf(pages: int = 1) -> bytes:
 def settings(**overrides: Any) -> AppSettings:
     base = {
         "id": 1,
+        "user_id": OWNER,
         "allowed_root_folders": ["/Documents"],
         "trash_folder_path": "/Trash",
     }
@@ -58,17 +62,35 @@ def session() -> Iterator[Session]:
     with Session(engine) as s:
         s.add(
             AiEndpoint(
-                id="ep", name="Local", base_url="https://ai.example.com/v1", created_at=utc_now()
+                user_id=OWNER,
+                id="ep",
+                name="Local",
+                base_url="https://ai.example.com/v1",
+                created_at=utc_now(),
             )
         )
-        s.add(AiTaskStep(task=AiTask.filing, position=0, endpoint_id="ep", model_name="text-model"))
+        s.add(
+            AiTaskStep(
+                user_id=OWNER,
+                task=AiTask.filing,
+                position=0,
+                endpoint_id="ep",
+                model_name="text-model",
+            )
+        )
         s.commit()
         yield s
 
 
 def with_extraction(session: Session, model_name: str = "qwen-vl") -> None:
     session.add(
-        AiTaskStep(task=AiTask.extraction, position=0, endpoint_id="ep", model_name=model_name)
+        AiTaskStep(
+            user_id=OWNER,
+            task=AiTask.extraction,
+            position=0,
+            endpoint_id="ep",
+            model_name=model_name,
+        )
     )
     session.commit()
 

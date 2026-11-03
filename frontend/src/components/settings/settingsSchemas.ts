@@ -191,3 +191,13 @@ export const chainFormSchema = z.object({
 });
 
 export type ChainFormValues = z.infer<typeof chainFormSchema>;
+
+export const nextcloudFormSchema = z.object({
+  base_url: z
+    .string()
+    .refine((value) => /^https?:\/\//.test(value.trim()), "Must start with https:// or http://."),
+  username: z.string().refine((value) => value.trim().length > 0, "Enter your username."),
+  password: z.string(), // empty = keep the stored app password
+});
+
+export type NextcloudFormValues = z.infer<typeof nextcloudFormSchema>;

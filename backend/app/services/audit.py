@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import delete, func, tuple_
 from sqlmodel import Session, col, select
 
-from app.models import AuditAction, AuditEvent, User
+from app.models import AuditAction, AuditEvent, Document, User
 from app.services.ai import UsageSummary
 from app.services.times import to_storage, utc_now
 
@@ -88,6 +88,7 @@ def record(
     prompt, completion = _token_sums(summaries)
     event = AuditEvent(
         occurred_at=to_storage(utc_now()),
+        user_id=_owner(session, document_id) or actor.user_id,
         actor_user_id=actor.user_id,
         actor_label=actor.label,
         action=str(action),
@@ -102,6 +103,21 @@ def record(
     return event
 
 
+def _owner(session: Session, document_id: str | None) -> str | None:
+    """Whose activity an event about a document is: the document's owner, whoever acted.
+
+    Looks in `session.new` too, because ingest records its event before the document it just
+    created has been flushed.
+    """
+    if document_id is None:
+        return None
+    for pending in session.new:
+        if isinstance(pending, Document) and pending.id == document_id:
+            return pending.user_id
+    document = session.get(Document, document_id)
+    return document.user_id if document is not None else None
+
+
 def _token_sums(summaries: list[UsageSummary]) -> tuple[int, int]:
     stages = [stage for s in summaries for stage in (s.extraction, s.filing) if stage is not None]
     return (
@@ -112,6 +128,7 @@ def _token_sums(summaries: list[UsageSummary]) -> tuple[int, int]:
 
 def list_events(
     session: Session,
+    user_id: str,
     *,
     limit: int,
     after: tuple[datetime, str] | None = None,
@@ -123,8 +140,10 @@ def list_events(
     ordinary here (an approve and the analysis it followed), and a timestamp-only cursor
     would skip or repeat them at a page boundary.
     """
-    statement = select(AuditEvent).order_by(
-        col(AuditEvent.occurred_at).desc(), col(AuditEvent.id).desc()
+    statement = (
+        select(AuditEvent)
+        .where(AuditEvent.user_id == user_id)
+        .order_by(col(AuditEvent.occurred_at).desc(), col(AuditEvent.id).desc())
     )
     if category is not None:
         statement = statement.where(col(AuditEvent.action).in_(CATEGORIES[category]))
@@ -168,7 +187,7 @@ class UsageTotals:
 _SPENDING_ACTIONS = (AuditAction.document_analyzed, AuditAction.document_compared)
 
 
-def usage_totals(session: Session, days: int) -> UsageTotals:
+def usage_totals(session: Session, user_id: str, days: int) -> UsageTotals:
     """Tokens spent over the last `days`, overall and per task and model.
 
     The totals are summed in SQL from the typed columns. The per-model breakdown is folded
@@ -177,6 +196,7 @@ def usage_totals(session: Session, days: int) -> UsageTotals:
     """
     since = to_storage(utc_now() - timedelta(days=days))
     in_window = (
+        col(AuditEvent.user_id) == user_id,
         col(AuditEvent.occurred_at) >= since,
         col(AuditEvent.action).in_(_SPENDING_ACTIONS),
     )

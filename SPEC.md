@@ -2,9 +2,10 @@
 
 ## 1. What this is
 
-A self-hosted, single-user web application for reviewing AI-generated filenames and
-destination folders for scanned documents before they are filed into a WebDAV store
-(Nextcloud, but nothing Nextcloud-specific is used).
+A self-hosted web application for reviewing AI-generated filenames and destination folders
+for scanned documents before they are filed into a WebDAV store (Nextcloud, but nothing
+Nextcloud-specific is used). Several people can share one instance; each connects their own
+Nextcloud and sees only their own documents, settings and AI configuration (6.5a).
 
 The loop: a scanner drops a PDF into a watch folder → a background job extracts text and
 asks an LLM for a filename, a destination folder, and a document date → the user reviews one
@@ -115,7 +116,8 @@ ai-document-router/
 | column | type | notes |
 |---|---|---|
 | `id` | str (uuid4) | PK |
-| `webdav_path` | str | current absolute path; unique |
+| `user_id` | FK user.id | owner — the account whose Nextcloud it came from |
+| `webdav_path` | str | current absolute path; unique per `user_id` |
 | `original_filename` | str | as scanned |
 | `mime_type` | str | |
 | `file_size_bytes` | int | |
@@ -165,10 +167,14 @@ ai-document-router/
 | `processed_at` | datetime |
 | `revertible` | bool |
 
-**`app_settings`** — single row, `id = 1`.
+**`app_settings`** — one row per user, created empty the first time it is asked for.
 
 | column | type |
 |---|---|
+| `user_id` | FK user.id, unique |
+| `webdav_base_url` | str — the user's WebDAV root, `""` until connected |
+| `webdav_username` | str |
+| `webdav_password_encrypted` | bytes \| null — a Nextcloud app password, Fernet with `SECRET_KEY`; never returned |
 | `allowed_root_folders` | JSON list[str] |
 | `trash_folder_path` | str |
 | `watch_folder_path` | str — where the scanner saves; `""` until set, and nothing is ingested before |
@@ -183,7 +189,8 @@ ai-document-router/
 | column | type |
 |---|---|
 | `id` | str (uuid4) PK |
-| `name` | str, unique — the user's own label ("Workshop PC", "Infomaniak") |
+| `user_id` | FK user.id |
+| `name` | str, unique per user — the user's own label ("Workshop PC", "Infomaniak") |
 | `base_url` | str |
 | `api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
 | `created_at` | datetime |
@@ -193,6 +200,7 @@ ai-document-router/
 | column | type |
 |---|---|
 | `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
 | `task` | enum `extraction` \| `filing` |
 | `position` | int — 0 is tried first |
 | `endpoint_id` | FK ai_endpoint.id |
@@ -234,6 +242,7 @@ ai-document-router/
 |---|---|
 | `id` | str (uuid4) PK |
 | `occurred_at` | datetime, indexed |
+| `user_id` | str \| null, indexed — whose activity it is: the document's owner, else the actor; null for a failed sign-in |
 | `actor_user_id` | str \| null — not a FK, so an event outlives its user; null for the poller |
 | `actor_label` | str — the email at the time, or `system` |
 | `action` | str, indexed — an `AuditAction` value such as `document.approved` |
@@ -469,10 +478,13 @@ Base path `/api/v1`. JSON in, JSON out.
 | GET | `/folders/context?path=..&filename=..` | — | `FolderContext` |
 | GET | `/history?limit=50&cursor=..` | — | `{ items: HistoryEntry[], next_cursor }` |
 | POST | `/history/{id}/revert` | — | `{ history_entry, document }` |
-| GET | `/audit?limit=50&cursor=..&category=..` | — | `AuditPage`, newest first — admin only; `category` is `documents` \| `ai` \| `settings` \| `auth` |
-| GET | `/audit/usage?days=30` | — | `AuditUsage` — tokens spent in the window, admin only |
+| GET | `/audit?limit=50&cursor=..&category=..` | — | `AuditPage`, newest first — the caller's own events; `category` is `documents` \| `ai` \| `settings` \| `auth` |
+| GET | `/audit/usage?days=30` | — | `AuditUsage` — tokens spent in the window, the caller's own |
 | GET | `/settings` | — | `Settings` |
 | PUT | `/settings` | `SettingsUpdate` | `Settings` |
+| GET | `/settings/nextcloud` | — | `{ base_url, username, password_set }` — never the password |
+| PUT | `/settings/nextcloud` | `{ base_url, username, password? }` | same; blank password keeps the stored one |
+| POST | `/settings/nextcloud/test` | same | 204, or the reason sign-in failed |
 | GET | `/ai/endpoints` | — | `AiEndpoint[]`, by name |
 | POST | `/ai/endpoints` | `AiEndpointWrite` | `AiEndpoint` |
 | PUT | `/ai/endpoints/{id}` | `AiEndpointWrite` | `AiEndpoint` |
@@ -481,7 +493,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | PUT | `/ai/tasks/{task}` | `AiTaskChainUpdate` | `AiTaskChain` — replaces the chain wholesale |
 | GET | `/ai/context` | — | `AiTaskContext[]` — what each task is sent right now; walks WebDAV for the folder tree |
 | POST | `/ai/models` | `AiModelsRequest` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
-| GET | `/health` | — | `{ status, webdav_reachable, queue_depth }` |
+| GET | `/health` | — | `{ status, webdav_configured, webdav_reachable, queue_depth }` — unauthenticated; with a session cookie, about that user's Nextcloud and queue, otherwise `false, null, 0` |
 | GET | `/metrics` | — | Prometheus text format; `Authorization: Bearer <METRICS_TOKEN>`, 404 while unset |
 | GET | `/auth/config` | — | `AuthConfig` — public |
 | GET | `/auth/me` | — | `AuthUser`, or 401 |
@@ -516,8 +528,9 @@ proposal; it snapshots it into `history_entry.suggestion_snapshot` and computes
 ### 6.1 WebDAV service (`services/webdav.py`)
 
 The only module that talks to WebDAV. Everything else calls it. Uses `webdav4` with
-`WEBDAV_BASE_URL`, `WEBDAV_USERNAME`, `WEBDAV_PASSWORD` from env — a Nextcloud **app
-password**, not the account password.
+each user's own connection from `app_settings` — a Nextcloud **app password**, not the
+account password. A `Connection(base_url, username, password)` is built per request (or per
+poller pass); listings are cached per connection, so two accounts never share a cache entry.
 
 Operations: `list_dir`, `list_dirs_only`, `exists`, `stat`, `read_stream`, `move`, `mkdir`,
 `mkdir_p`.
@@ -534,6 +547,8 @@ Operations: `list_dir`, `list_dirs_only`, `exists`, `stat`, `read_stream`, `move
 ### 6.2 Poller (`jobs/poller.py`)
 
 APScheduler interval job inside the API process, every `POLL_INTERVAL_SECONDS` (default 60).
+Each tick makes one pass per user with a connected Nextcloud; a pass that fails is rolled
+back and logged, and the next user's pass runs regardless.
 
 1. List the watch folder (`watch_folder_path`; skipped while it is empty). For each file not already tracked (by path + `content_hash`),
    create a `document` with `status=pending`, `proposal_status=pending`.
@@ -728,6 +743,21 @@ JWT dependency this project does not otherwise need. A provider user is matched 
 then on email — the email fallback links SSO onto an existing password account instead of
 forking it. Failures redirect to `/login?error=…` rather than rendering JSON.
 
+### 6.5a Ownership
+
+Every document, history entry, proposal, AI endpoint, task chain, settings row and audit
+event belongs to exactly one user, and every service function that reads or changes them
+takes that user's id. Another user's id answers **404**, never 403: whether it exists is
+none of the caller's business. There is no shared data and no admin override — `is_admin`
+only matters for registration.
+
+**Nextcloud connection.** `GET /settings/nextcloud` returns `base_url`, `username` and
+`password_set`; `PUT` stores them, where a blank password keeps the stored one;
+`POST /settings/nextcloud/test` signs in with the typed values (falling back to the stored
+password) and returns 204 or the reason. The URL must be https, or http to a private host
+(RFC 1918, loopback, link-local, `100.64.0.0/10`). Until all three are set, anything that
+needs WebDAV answers 409 `nextcloud_not_configured`, and the poller skips the user.
+
 ### 6.6 Logging (`log.py`)
 
 Stdlib `logging`, configured once in `main.py` at import from `LOG_LEVEL` and `LOG_FORMAT`
@@ -765,8 +795,8 @@ from a route, `Actor.system()` from the poller.
 | Sign-ins | `auth.registered`, `auth.login` (password or oidc), `auth.login_failed` (the address tried, never the password), `auth.logout` |
 
 `GET /audit` pages on `(occurred_at, id)` like History; `GET /audit/usage` sums the token
-columns in SQL and folds the per-model breakdown from the stored usage summaries. Both need
-`is_admin`. The poller drops events older than `AUDIT_RETENTION_DAYS` (default 365, `0` keeps
+columns in SQL and folds the per-model breakdown from the stored usage summaries. Both return
+only the signed-in user's events (6.5a). The poller drops events older than `AUDIT_RETENTION_DAYS` (default 365, `0` keeps
 everything) once per tick.
 
 ### 6.8 Metrics (`services/metrics.py`)
@@ -835,7 +865,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Review · `/history` History · `/activity` Activity (admins only) · `/settings` Settings
+`/` Review · `/history` History · `/activity` Activity · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -1013,8 +1043,7 @@ persistent banner in the top bar driven by `/health`, not just per-request error
 
 ### 8.11 Activity
 
-The audit log (6.7), for admins. The top bar shows the link only to them; anyone else who
-types the URL gets "Only admins can see activity." and the page fetches nothing.
+The signed-in user's own audit log (6.7). Every account has the link.
 
 *Usage.* "AI usage · last 30 days": four stat tiles — Analyses, Comparisons, Tokens,
 Prompt · completion — in compact figures (`128K`) with the exact count on hover, two per row
@@ -1053,8 +1082,7 @@ happened and what to do next, without apologising. Empty states invite an action
 
 `.env` at the repo root, loaded by both sides. See `.env.example`.
 
-Backend: `DATABASE_URL`, `SECRET_KEY`, `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
-`WEBDAV_PASSWORD`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`,
+Backend: `DATABASE_URL`, `SECRET_KEY`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`,
 `LOG_FORMAT` (`text` | `json`), `AUDIT_RETENTION_DAYS` (default 365; `0` keeps every event),
 `METRICS_TOKEN` (empty turns `/metrics` off).
 
@@ -1066,9 +1094,14 @@ is deliberately unsupported.
 
 Frontend: `VITE_API_BASE_URL`.
 
-AI endpoint, model, and API key live in the database because they are editable in the UI. The
-key is Fernet-encrypted with `SECRET_KEY`. Rotating `SECRET_KEY` invalidates the stored key
-and requires re-entering it — document this in the README.
+The Nextcloud connection and the AI endpoints, models and keys live in the database, per user,
+because they are editable in the UI. App passwords and API keys are Fernet-encrypted with
+`SECRET_KEY`. Rotating `SECRET_KEY` invalidates them and every user has to re-enter theirs —
+document this in the README.
+
+`WEBDAV_BASE_URL`, `WEBDAV_USERNAME`, `WEBDAV_PASSWORD` and `WEBDAV_WATCH_FOLDER` are no longer
+read by the app. Migration `c4d8e1f2a9b3` reads them once, if set, to give the existing admin
+the connection the instance used to have.
 
 ---
 

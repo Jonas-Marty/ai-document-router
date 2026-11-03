@@ -42,7 +42,7 @@ def preview(
     return [
         TaskContext(
             task=AiTask.extraction,
-            chain=_labels(session, AiTask.extraction),
+            chain=_labels(session, app_settings.user_id, AiTask.extraction),
             system_prompt=transcribe.SYSTEM_PROMPT,
             user_prompt=transcribe.user_prompt(app_settings.extraction_instructions),
             note=(
@@ -52,7 +52,7 @@ def preview(
         ),
         TaskContext(
             task=AiTask.filing,
-            chain=_labels(session, AiTask.filing),
+            chain=_labels(session, app_settings.user_id, AiTask.filing),
             system_prompt=ai.SYSTEM_PROMPT,
             user_prompt=ai.build_prompt(
                 DOCUMENT_TEXT_PLACEHOLDER,
@@ -69,7 +69,8 @@ def preview(
     ]
 
 
-def _labels(session: Session, task: AiTask) -> list[str]:
+def _labels(session: Session, user_id: str, task: AiTask) -> list[str]:
     return [
-        f"{step.endpoint_name} · {step.model_name}" for step in ai_tasks.chain_for(session, task)
+        f"{step.endpoint_name} · {step.model_name}"
+        for step in ai_tasks.chain_for(session, user_id, task)
     ]

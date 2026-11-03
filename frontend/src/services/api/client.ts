@@ -24,6 +24,8 @@ import type {
   FolderNode,
   HealthResponse,
   HistoryPage,
+  NextcloudConnection,
+  NextcloudWrite,
   QueueResponse,
   RetriedResponse,
   RevertResponse,
@@ -60,6 +62,9 @@ export interface ApiClient {
 
   getSettings(): Promise<Settings>;
   updateSettings(body: SettingsUpdate): Promise<Settings>;
+  getNextcloud(): Promise<NextcloudConnection>;
+  updateNextcloud(body: NextcloudWrite): Promise<NextcloudConnection>;
+  testNextcloud(body: NextcloudWrite): Promise<void>;
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
   listAiEndpoints(): Promise<AiEndpoint[]>;
   createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint>;
@@ -166,6 +171,18 @@ export class HttpApiClient implements ApiClient {
 
   updateSettings(body: SettingsUpdate): Promise<Settings> {
     return this.request<Settings>("PUT", "/settings", body);
+  }
+
+  getNextcloud(): Promise<NextcloudConnection> {
+    return this.request<NextcloudConnection>("GET", "/settings/nextcloud");
+  }
+
+  updateNextcloud(body: NextcloudWrite): Promise<NextcloudConnection> {
+    return this.request<NextcloudConnection>("PUT", "/settings/nextcloud", body);
+  }
+
+  testNextcloud(body: NextcloudWrite): Promise<void> {
+    return this.request<void>("POST", "/settings/nextcloud/test", body);
   }
 
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse> {

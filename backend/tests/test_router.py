@@ -26,6 +26,7 @@ from app.services import searchable
 from app.services.audit import Actor
 from app.services.errors import (
     FilenameCollision,
+    NotFoundError,
     NotRevertible,
     OutsideAllowedRootsError,
     ValidationError,
@@ -33,6 +34,9 @@ from app.services.errors import (
     WebDAVUnreachable,
 )
 from app.services.extraction import sha256
+
+# Rows need an owner; foreign keys are not enforced here, so no user row is needed.
+OWNER = "owner-1"
 
 TEST_ACTOR = Actor(user_id=None, label="test@example.com")
 
@@ -79,7 +83,9 @@ def session() -> Iterator[Session]:
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
-        s.add(AppSettings(id=1, allowed_root_folders=[ROOT], trash_folder_path=TRASH))
+        s.add(
+            AppSettings(id=1, user_id=OWNER, allowed_root_folders=[ROOT], trash_folder_path=TRASH)
+        )
         s.commit()
         yield s
 
@@ -98,6 +104,7 @@ def webdav() -> FakeWebDav:
 
 def make_document(session: Session, name: str = "scan.pdf") -> Document:
     document = Document(
+        user_id=OWNER,
         webdav_path=f"{WATCH}/{name}",
         original_filename=name,
         mime_type="application/pdf",
@@ -625,7 +632,7 @@ class TestSkip:
     ) -> None:
         document = make_document(session)
 
-        result = router_service.skip(session, document.id, actor=TEST_ACTOR)
+        result = router_service.skip(session, OWNER, document.id, actor=TEST_ACTOR)
 
         assert result.status == DocumentStatus.skipped
         assert result.skip_count == 1
@@ -634,8 +641,8 @@ class TestSkip:
     def test_counts_up_across_skips(self, session: Session) -> None:
         document = make_document(session)
 
-        router_service.skip(session, document.id, actor=TEST_ACTOR)
-        result = router_service.skip(session, document.id, actor=TEST_ACTOR)
+        router_service.skip(session, OWNER, document.id, actor=TEST_ACTOR)
+        result = router_service.skip(session, OWNER, document.id, actor=TEST_ACTOR)
 
         assert result.skip_count == 2
 
@@ -683,6 +690,51 @@ class TestTrash:
             router_service.trash(session, webdav, app_settings, document.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
 
+class TestOwnership:
+    """SPEC 6.5: another user's document is as missing as a deleted one."""
+
+    def test_cannot_approve_someone_elses_document(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = make_document(session)
+        document.user_id = "someone-else"
+        session.add(document)
+        session.commit()
+
+        with pytest.raises(NotFoundError):
+            router_service.approve(
+                session,
+                webdav,  # type: ignore[arg-type]
+                app_settings,
+                document.id,
+                final_name="Mine Now",
+                final_folder_path=ROOT,
+                document_date=None,
+                actor=TEST_ACTOR,
+            )
+        assert webdav.moves == []
+
+    def test_cannot_revert_someone_elses_history(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = make_document(session)
+        _, entry = router_service.approve(
+            session,
+            webdav,  # type: ignore[arg-type]
+            app_settings,
+            document.id,
+            final_name="Filed",
+            final_folder_path=ROOT,
+            document_date=None,
+            actor=TEST_ACTOR,
+        )
+        webdav.moves.clear()
+
+        with pytest.raises(NotRevertible, match="no longer exists"):
+            router_service.revert(session, webdav, "someone-else", entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+        assert webdav.moves == []
+
+
 class TestRevert:
     def _approve(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
@@ -707,7 +759,7 @@ class TestRevert:
         webdav.moves.clear()
 
         reverted_entry, reverted_document = router_service.revert(
-            session, webdav, entry.id, actor=TEST_ACTOR
+            session, webdav, OWNER, entry.id, actor=TEST_ACTOR
         )  # type: ignore[arg-type]
 
         assert webdav.moves == [(f"{ROOT}/Filed.pdf", f"{WATCH}/scan.pdf")]
@@ -720,7 +772,7 @@ class TestRevert:
     ) -> None:
         document = make_document(session)
         add_proposal(session, document)
-        router_service.skip(session, document.id, actor=TEST_ACTOR)
+        router_service.skip(session, OWNER, document.id, actor=TEST_ACTOR)
         _, entry = router_service.approve(
             session,
             webdav,
@@ -732,7 +784,7 @@ class TestRevert:
             actor=TEST_ACTOR,
         )
 
-        _, reverted = router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+        _, reverted = router_service.revert(session, webdav, OWNER, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         assert reverted.skip_count == 0
         assert session.exec(select(Proposal)).one() is not None
@@ -741,10 +793,10 @@ class TestRevert:
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
     ) -> None:
         _, entry = self._approve(session, webdav, app_settings)
-        router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+        router_service.revert(session, webdav, OWNER, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         with pytest.raises(NotRevertible):
-            router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, OWNER, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     def test_a_moved_file_flips_revertible_off(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
@@ -755,7 +807,7 @@ class TestRevert:
         webdav.moves.clear()
 
         with pytest.raises(NotRevertible):
-            router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, OWNER, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         session.refresh(entry)
         assert entry.revertible is False
@@ -763,7 +815,7 @@ class TestRevert:
 
     def test_unknown_entry_is_not_revertible(self, session: Session, webdav: FakeWebDav) -> None:
         with pytest.raises(NotRevertible):
-            router_service.revert(session, webdav, "does-not-exist", actor=TEST_ACTOR)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, OWNER, "does-not-exist", actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     def test_refuses_when_another_document_holds_the_original_path(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
@@ -774,7 +826,7 @@ class TestRevert:
         make_document(session, "scan.pdf")  # a new scan arrived at the same path
 
         with pytest.raises(NotRevertible, match="already tracked"):
-            router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+            router_service.revert(session, webdav, OWNER, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
     def test_a_trashed_document_can_be_reverted(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
@@ -785,7 +837,7 @@ class TestRevert:
         )  # type: ignore[arg-type]
         webdav.moves.clear()
 
-        _, reverted = router_service.revert(session, webdav, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
+        _, reverted = router_service.revert(session, webdav, OWNER, entry.id, actor=TEST_ACTOR)  # type: ignore[arg-type]
 
         assert reverted.status == DocumentStatus.pending
         assert webdav.moves == [(f"{TRASH}/scan.pdf", f"{WATCH}/scan.pdf")]

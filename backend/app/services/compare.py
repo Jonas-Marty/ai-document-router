@@ -67,8 +67,8 @@ def compare(
     would leave them wondering whether it had been tried.
     """
     data = b"".join(webdav.read_stream(document.webdav_path))
-    filing = ai_tasks.resolve_chain(session, AiTask.filing)
-    extracting = ai_tasks.resolve_chain(session, AiTask.extraction)
+    filing = ai_tasks.resolve_chain(session, app_settings.user_id, AiTask.filing)
+    extracting = ai_tasks.resolve_chain(session, app_settings.user_id, AiTask.extraction)
     filing_label = filing[0].label if filing else "no filing endpoint"
     folder_tree, sample_filenames = folders.prompt_context(webdav, app_settings)
 

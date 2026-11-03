@@ -16,11 +16,8 @@ class Settings(BaseSettings):
     # "text" reads well in a terminal; "json" is one object per line for a log collector.
     log_format: Literal["text", "json"] = "text"
 
-    # WebDAV credentials live in env, not the settings table: they are infrastructure, and
-    # the app must be able to start (and report itself unhealthy) without them.
-    webdav_base_url: str = ""
-    webdav_username: str = ""
-    webdav_password: str = ""
+    # Each user's Nextcloud connection lives in their settings row (SPEC 6.5); only the
+    # timeouts are instance-wide.
     webdav_timeout_seconds: float = 30.0
     # The health probe gets its own short timeout: the frontend polls /health on an interval
     # and an outage banner that takes 30s to appear is worse than no banner.

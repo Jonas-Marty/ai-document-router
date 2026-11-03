@@ -8,11 +8,17 @@ Read-only by default -- it lists and stats, nothing else. Pass --write to additi
 exercise mkdir_p and move inside a scratch folder it creates itself. Nothing is ever
 deleted, in or out of write mode.
 
-    cd backend && uv run python scripts/verify_webdav.py
-    cd backend && uv run python scripts/verify_webdav.py --write /Documents
+The connection comes from the environment, since this runs outside the app and outside
+any user's settings:
+
+    export WEBDAV_BASE_URL=https://cloud.example.com/remote.php/dav/files/USERNAME
+    export WEBDAV_USERNAME=... WEBDAV_PASSWORD=...   # an app password
+    cd backend && uv run python scripts/verify_webdav.py --watch /Scans/Inbox
+    cd backend && uv run python scripts/verify_webdav.py --watch /Scans/Inbox --write /Documents
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -20,9 +26,8 @@ from pathlib import Path
 # be importable rather than just this script's own directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config import settings as config  # noqa: E402
 from app.services.errors import AppError  # noqa: E402
-from app.services.webdav import WebDavService, build_client  # noqa: E402
+from app.services.webdav import Connection, WebDavService, build_client  # noqa: E402
 
 OK = "\033[32m  ok \033[0m"
 BAD = "\033[31mFAIL \033[0m"
@@ -43,16 +48,21 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not config.webdav_base_url or "example.com" in config.webdav_base_url:
+    connection = Connection(
+        base_url=os.environ.get("WEBDAV_BASE_URL", ""),
+        username=os.environ.get("WEBDAV_USERNAME", ""),
+        password=os.environ.get("WEBDAV_PASSWORD", ""),
+    )
+    if not connection.base_url or "example.com" in connection.base_url:
         print(f"{BAD} WEBDAV_BASE_URL is unset or still the placeholder.")
-        print(f"{INFO} Fill in the WEBDAV_* values in .env first.")
+        print(f"{INFO} Export WEBDAV_BASE_URL, WEBDAV_USERNAME and WEBDAV_PASSWORD first.")
         return 1
 
     watch = args.watch
     permitted = [watch] + ([args.write] if args.write else [])
-    service = WebDavService(build_client(), permitted)
+    service = WebDavService(build_client(connection), permitted)
 
-    print(f"{INFO} server:       {config.webdav_base_url}")
+    print(f"{INFO} server:       {connection.base_url}")
     print(f"{INFO} watch folder: {watch}")
     print()
 
@@ -114,7 +124,7 @@ def main() -> int:
 
     if args.write:
         source = files[0].path if files else None
-        failures += _verify_writes(service, args.write, source)
+        failures += _verify_writes(service, connection, args.write, source)
 
     print()
     if failures:
@@ -126,7 +136,9 @@ def main() -> int:
     return 0
 
 
-def _verify_writes(service: WebDavService, root: str, source: str | None) -> int:
+def _verify_writes(
+    service: WebDavService, connection: Connection, root: str, source: str | None
+) -> int:
     """Exercise mkdir_p, move, and the no-overwrite guarantee in a scratch folder."""
     from datetime import datetime
 
@@ -158,7 +170,7 @@ def _verify_writes(service: WebDavService, root: str, source: str | None) -> int
         return failures
 
     # Set up via the raw client: the app itself never copies, so this is harness-only.
-    raw = build_client()
+    raw = build_client(connection)
     first = f"{scratch}/moved-once.pdf"
     second = f"{scratch}/nested/moved-twice.pdf"
     try:

@@ -13,7 +13,6 @@ import httpx
 import pytest
 from webdav4.client import ResourceAlreadyExists, ResourceNotFound
 
-from app.config import settings as config
 from app.services import webdav
 from app.services.errors import (
     NotFoundError,
@@ -23,6 +22,7 @@ from app.services.errors import (
 )
 from app.services.webdav import (
     CACHE_TTL_SECONDS,
+    Connection,
     WebDavService,
     parent_of,
 )
@@ -559,34 +559,35 @@ class TestProbe:
     """The autouse fixture in conftest stubs webdav.probe_reachable to keep the suite off
     the network; these tests hold a reference to the real function taken at import time."""
 
-    def test_returns_false_when_no_server_is_configured(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(config, "webdav_base_url", "")
-
-        assert real_probe_reachable() is False
-
-    def test_reuses_one_client_across_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_false_when_the_server_cannot_be_reached(self) -> None:
         webdav.reset_probe_client()
-        monkeypatch.setattr(config, "webdav_base_url", "https://cloud.example.com")
-
-        built: list[FakeClient] = []
-
-        def fake_build(timeout: float | None = None) -> FakeClient:
-            client = FakeClient()
-            built.append(client)
-            return client
-
-        monkeypatch.setattr(webdav, "build_client", fake_build)
         try:
-            real_probe_reachable()
-            real_probe_reachable()
-            real_probe_reachable()
+            unreachable = Connection("http://127.0.0.1:9", "someone", "app-password")
+            assert real_probe_reachable(unreachable) is False
         finally:
             webdav.reset_probe_client()
 
-        # One connection pool, not one per health check.
-        assert len(built) == 1
+    def test_reuses_one_client_per_connection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        webdav.reset_probe_client()
+        built: list[Connection] = []
+
+        def fake_build(connection: Connection, timeout: float | None = None) -> FakeClient:
+            built.append(connection)
+            return FakeClient()
+
+        monkeypatch.setattr(webdav, "build_client", fake_build)
+        mine = Connection("https://cloud.example.com", "me", "pw")
+        theirs = Connection("https://cloud.example.com", "them", "pw")
+        try:
+            for _ in range(3):
+                real_probe_reachable(mine)
+            real_probe_reachable(theirs)
+        finally:
+            webdav.reset_probe_client()
+
+        # One connection pool per account, not one per health check -- and never one shared
+        # between accounts, whose logins differ.
+        assert built == [mine, theirs]
 
 
 class TestNoDeletePath:

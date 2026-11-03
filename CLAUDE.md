@@ -5,8 +5,9 @@ of truth for behaviour. Read `IMPLEMENTATION_PLAN.md` for build order.
 
 ## Project
 
-AI Document Router — a self-hosted, single-user tool for reviewing AI-suggested filenames and
-destination folders for scanned documents before filing them to a WebDAV store.
+AI Document Router — a self-hosted tool for reviewing AI-suggested filenames and destination
+folders for scanned documents before filing them to a WebDAV store. Multi-user: each account
+connects its own Nextcloud and owns its own data (SPEC §6.5a).
 
 Monorepo: `backend/` (FastAPI + SQLite), `frontend/` (Vite + React + TypeScript),
 `deploy/` (Docker Compose, deployment only).
@@ -66,7 +67,7 @@ Use `just`, never raw commands, so everything stays reproducible:
    There is no delete path anywhere in this codebase.
 2. **Never overwrite a file on move.** Check for collision immediately before the MOVE and
    fail with 409 rather than clobbering.
-3. **Every user-supplied path is validated against `allowed_root_folders` in the service
+3. **Every user-supplied path is validated against that user's `allowed_root_folders` in the service
    layer**, not in the route handler and not only in the frontend. This is the security
    boundary of the app.
 4. **The frontend never contacts the LLM provider or the WebDAV server.** Only the backend
@@ -76,7 +77,9 @@ Use `just`, never raw commands, so everything stays reproducible:
 6. **Validation exists on both sides.** Frontend validation is for feedback; backend
    validation is what actually protects anything.
 7. **Never advance the review queue on a failed approve.** The user's edits must survive.
-8. No Supabase, Firebase, or any BaaS. No new runtime dependency without asking first.
+8. **Every query on owned data is scoped by `user_id` in the service layer.** Another user's
+   id answers 404.
+9. No Supabase, Firebase, or any BaaS. No new runtime dependency without asking first.
 
 ## Testing
 

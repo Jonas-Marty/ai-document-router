@@ -10,8 +10,9 @@ from sqlmodel import Session
 from app import db
 from app.deps import get_webdav
 from app.main import app
-from app.models import Document, DocumentStatus, Proposal, ProposalStatus
+from app.models import Document, DocumentStatus, Proposal, ProposalStatus, User
 from app.services.errors import NotFoundError
+from tests.conftest import signed_in_user_id
 
 
 def make_document(
@@ -21,8 +22,10 @@ def make_document(
     skip_count: int = 0,
     scanned_at: datetime | None = None,
     proposal_status: ProposalStatus = ProposalStatus.ready,
+    user_id: str | None = None,
 ) -> Document:
     return Document(
+        user_id=user_id or signed_in_user_id(),
         webdav_path=f"/Test-Inbox/{name}",
         original_filename=name,
         mime_type="application/pdf",
@@ -54,6 +57,27 @@ def webdav_override() -> Iterator[FakeWebDav]:
     app.dependency_overrides[get_webdav] = lambda: fake
     yield fake
     app.dependency_overrides.pop(get_webdav, None)
+
+
+class TestOwnership:
+    def test_another_accounts_document_is_not_found(
+        self, client: TestClient, webdav_override: FakeWebDav
+    ) -> None:
+        # 404 rather than 403: whether the id exists is itself none of this account's business.
+        with Session(db.engine) as session:
+            other = User(
+                email="other@example.com", password_hash="x", created_at=datetime(2026, 9, 1)
+            )
+            session.add(other)
+            session.commit()
+            document = make_document("theirs.pdf", user_id=other.id)
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        assert client.get(f"/api/v1/documents/{document_id}").status_code == 404
+        assert client.get(f"/api/v1/documents/{document_id}/content").status_code == 404
+        assert client.get("/api/v1/queue").json()["items"] == []
 
 
 class TestQueue:

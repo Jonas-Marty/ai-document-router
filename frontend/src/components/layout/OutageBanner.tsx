@@ -14,9 +14,11 @@ export function OutageBanner() {
     ? error instanceof ApiError && error.code === NETWORK_ERROR_CODE
       ? "Can't reach the server. Retrying…"
       : "The server returned an unexpected error. Retrying…"
-    : data && !data.webdav_reachable
-      ? "WebDAV is unreachable. Filing is unavailable until it's back."
-      : null;
+    : data && !data.webdav_configured
+      ? "Connect your Nextcloud in Settings to start filing."
+      : data?.webdav_reachable === false
+        ? "Your Nextcloud is unreachable. Filing is unavailable until it's back."
+        : null;
 
   if (!message) return null;
 

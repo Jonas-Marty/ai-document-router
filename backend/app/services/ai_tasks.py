@@ -10,27 +10,18 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from ipaddress import ip_address, ip_network
-from urllib.parse import urlparse
 
 from sqlmodel import Session, select
 
 from app.config import settings as config
 from app.models import AiEndpoint, AiTask, AiTaskStep, AuditAction
-from app.services import ai, audit, crypto, metrics
+from app.services import ai, audit, crypto, metrics, urls
 from app.services.ai import AIUnavailable
 from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
 
 logger = logging.getLogger(__name__)
-
-_PRIVATE_NETWORKS = [
-    ip_network("10.0.0.0/8"),
-    ip_network("172.16.0.0/12"),
-    ip_network("192.168.0.0/16"),
-    ip_network("127.0.0.0/8"),
-]
 
 
 @dataclass(frozen=True)
@@ -61,15 +52,15 @@ class NoStepsConfigured(AIUnavailable):
     """The task has no endpoints assigned, so there was nothing to try."""
 
 
-def chain_for(session: Session, task: AiTask) -> list[ChainStep]:
+def chain_for(session: Session, user_id: str, task: AiTask) -> list[ChainStep]:
     return [
         ChainStep(endpoint_id=endpoint.id, endpoint_name=endpoint.name, model_name=step.model_name)
-        for step, endpoint in _rows(session, task)
+        for step, endpoint in _rows(session, user_id, task)
     ]
 
 
-def resolve_chain(session: Session, task: AiTask) -> list[ResolvedStep]:
-    """Every step for a task, in the order they should be tried."""
+def resolve_chain(session: Session, user_id: str, task: AiTask) -> list[ResolvedStep]:
+    """Every step of one user's chain for a task, in the order they should be tried."""
     return [
         ResolvedStep(
             endpoint_name=endpoint.name,
@@ -77,16 +68,16 @@ def resolve_chain(session: Session, task: AiTask) -> list[ResolvedStep]:
             api_key=decrypt_key(endpoint),
             model_name=step.model_name,
         )
-        for step, endpoint in _rows(session, task)
+        for step, endpoint in _rows(session, user_id, task)
     ]
 
 
-def _rows(session: Session, task: AiTask) -> list[tuple[AiTaskStep, AiEndpoint]]:
+def _rows(session: Session, user_id: str, task: AiTask) -> list[tuple[AiTaskStep, AiEndpoint]]:
     return list(
         session.exec(
             select(AiTaskStep, AiEndpoint)
             .join(AiEndpoint, AiEndpoint.id == AiTaskStep.endpoint_id)  # type: ignore[arg-type]
-            .where(AiTaskStep.task == task)
+            .where(AiTaskStep.user_id == user_id, AiTaskStep.task == task)
             .order_by(AiTaskStep.position)  # type: ignore[arg-type]
         ).all()
     )
@@ -154,15 +145,21 @@ def decrypt_key(endpoint: AiEndpoint) -> str | None:
     return crypto.decrypt(config.secret_key, endpoint.api_key_encrypted)
 
 
-def get_endpoint(session: Session, endpoint_id: str) -> AiEndpoint:
+def get_endpoint(session: Session, user_id: str, endpoint_id: str) -> AiEndpoint:
+    """Someone else's endpoint is as missing as a deleted one: 404, not 403, so ids do not
+    confirm that an endpoint exists."""
     endpoint = session.get(AiEndpoint, endpoint_id)
-    if endpoint is None:
+    if endpoint is None or endpoint.user_id != user_id:
         raise NotFoundError("That AI endpoint no longer exists.")
     return endpoint
 
 
-def list_endpoints(session: Session) -> list[AiEndpoint]:
-    return list(session.exec(select(AiEndpoint).order_by(AiEndpoint.name)).all())
+def list_endpoints(session: Session, user_id: str) -> list[AiEndpoint]:
+    return list(
+        session.exec(
+            select(AiEndpoint).where(AiEndpoint.user_id == user_id).order_by(AiEndpoint.name)
+        ).all()
+    )
 
 
 def endpoint_in_use(session: Session, endpoint_id: str) -> list[AiTask]:
@@ -173,6 +170,7 @@ def endpoint_in_use(session: Session, endpoint_id: str) -> list[AiTask]:
 
 def replace_chain(
     session: Session,
+    user_id: str,
     task: AiTask,
     steps: list[tuple[str, str]],
     *,
@@ -186,19 +184,24 @@ def replace_chain(
     """
     new_labels = []
     for endpoint_id, model_name in steps:
-        endpoint = get_endpoint(session, endpoint_id)
+        endpoint = get_endpoint(session, user_id, endpoint_id)
         if not model_name.strip():
             raise ValidationError("Every step needs a model name.")
         new_labels.append(f"{endpoint.name} · {model_name.strip()}")
-    old_labels = [f"{step.endpoint_name} · {step.model_name}" for step in chain_for(session, task)]
+    old_labels = [
+        f"{step.endpoint_name} · {step.model_name}" for step in chain_for(session, user_id, task)
+    ]
 
-    for existing in session.exec(select(AiTaskStep).where(AiTaskStep.task == task)).all():
+    for existing in session.exec(
+        select(AiTaskStep).where(AiTaskStep.user_id == user_id, AiTaskStep.task == task)
+    ).all():
         session.delete(existing)
     session.flush()
 
     for position, (endpoint_id, model_name) in enumerate(steps):
         session.add(
             AiTaskStep(
+                user_id=user_id,
                 task=task,
                 position=position,
                 endpoint_id=endpoint_id,
@@ -221,10 +224,17 @@ def replace_chain(
 
 
 def create_endpoint(
-    session: Session, name: str, base_url: str, api_key: str | None, *, actor: Actor
+    session: Session,
+    user_id: str,
+    name: str,
+    base_url: str,
+    api_key: str | None,
+    *,
+    actor: Actor,
 ) -> AiEndpoint:
     endpoint = AiEndpoint(
-        name=_validate_name(session, name, endpoint_id=None),
+        user_id=user_id,
+        name=_validate_name(session, user_id, name, endpoint_id=None),
         base_url=validate_endpoint_url(base_url),
         api_key_encrypted=crypto.encrypt(config.secret_key, api_key) if api_key else None,
         created_at=utc_now(),
@@ -249,6 +259,7 @@ def create_endpoint(
 
 def update_endpoint(
     session: Session,
+    user_id: str,
     endpoint_id: str,
     name: str,
     base_url: str,
@@ -257,9 +268,9 @@ def update_endpoint(
     actor: Actor,
 ) -> AiEndpoint:
     """A blank key leaves the stored one alone -- the form is never given it back to resend."""
-    endpoint = get_endpoint(session, endpoint_id)
+    endpoint = get_endpoint(session, user_id, endpoint_id)
     before = {"name": endpoint.name, "base_url": endpoint.base_url}
-    endpoint.name = _validate_name(session, name, endpoint_id=endpoint_id)
+    endpoint.name = _validate_name(session, user_id, name, endpoint_id=endpoint_id)
     endpoint.base_url = validate_endpoint_url(base_url)
     if api_key:
         endpoint.api_key_encrypted = crypto.encrypt(config.secret_key, api_key)
@@ -286,9 +297,9 @@ def update_endpoint(
     return endpoint
 
 
-def delete_endpoint(session: Session, endpoint_id: str, *, actor: Actor) -> None:
+def delete_endpoint(session: Session, user_id: str, endpoint_id: str, *, actor: Actor) -> None:
     """Refused while a task still points at it, rather than quietly shortening that chain."""
-    endpoint = get_endpoint(session, endpoint_id)
+    endpoint = get_endpoint(session, user_id, endpoint_id)
     in_use = endpoint_in_use(session, endpoint_id)
     if in_use:
         tasks = " and ".join(str(task) for task in in_use)
@@ -308,7 +319,7 @@ def delete_endpoint(session: Session, endpoint_id: str, *, actor: Actor) -> None
 
 
 def list_models(
-    session: Session, base_url: str, api_key: str | None, endpoint_id: str | None
+    session: Session, user_id: str, base_url: str, api_key: str | None, endpoint_id: str | None
 ) -> list[str]:
     """Models offered by an endpoint, saved or still being typed into the add form.
 
@@ -318,43 +329,24 @@ def list_models(
     url = validate_endpoint_url(base_url)
     key = (api_key or "").strip()
     if not key and endpoint_id is not None:
-        key = decrypt_key(get_endpoint(session, endpoint_id)) or ""
+        key = decrypt_key(get_endpoint(session, user_id, endpoint_id)) or ""
 
     return ai.list_models(endpoint_url=url, api_key=key or None)
 
 
 def validate_endpoint_url(url: str) -> str:
     """https anywhere, http only on a private host: the key travels on this connection."""
-    trimmed = url.strip()
-    if not trimmed:
-        raise ValidationError("An endpoint needs a URL.")
-
-    parsed = urlparse(trimmed)
-    if parsed.scheme == "https" and parsed.hostname:
-        return trimmed
-    if parsed.scheme == "http" and _is_private_host(parsed.hostname):
-        return trimmed
-    raise ValidationError("Endpoint URL must use https://, or http:// for a private network host.")
+    return urls.validate_service_url(url, "Endpoint URL")
 
 
-def _validate_name(session: Session, name: str, *, endpoint_id: str | None) -> str:
+def _validate_name(session: Session, user_id: str, name: str, *, endpoint_id: str | None) -> str:
     trimmed = name.strip()
     if not trimmed:
         raise ValidationError("Give the endpoint a name so you can tell it apart from the others.")
 
-    clash = session.exec(select(AiEndpoint).where(AiEndpoint.name == trimmed)).first()
+    clash = session.exec(
+        select(AiEndpoint).where(AiEndpoint.user_id == user_id, AiEndpoint.name == trimmed)
+    ).first()
     if clash is not None and clash.id != endpoint_id:
         raise ValidationError(f"There is already an endpoint called '{trimmed}'.")
     return trimmed
-
-
-def _is_private_host(hostname: str | None) -> bool:
-    if hostname is None:
-        return False
-    if hostname == "localhost":
-        return True
-    try:
-        addr = ip_address(hostname)
-    except ValueError:
-        return False
-    return any(addr in network for network in _PRIVATE_NETWORKS)

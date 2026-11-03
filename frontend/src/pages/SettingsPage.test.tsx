@@ -10,6 +10,7 @@ import SettingsPage from "./SettingsPage";
 vi.mock("@/services/api/client", () => ({
   apiClient: {
     getSettings: vi.fn(),
+    getNextcloud: vi.fn(),
     updateSettings: vi.fn(),
     listAiModels: vi.fn(),
     listAiEndpoints: vi.fn(),
@@ -99,6 +100,11 @@ describe("SettingsPage", () => {
   beforeEach(() => {
     // The AI cards render on every one of these tests; they have their own suites.
     vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([]);
+    vi.mocked(apiClient.getNextcloud).mockResolvedValue({
+      base_url: "https://cloud.example.com/remote.php/dav/files/me",
+      username: "me",
+      password_set: true,
+    });
     vi.mocked(apiClient.listAiTasks).mockResolvedValue([
       { task: "extraction", steps: [] },
       { task: "filing", steps: [] },
@@ -181,7 +187,7 @@ describe("SettingsPage", () => {
     await user.clear(firstRoot);
     await user.type(firstRoot, "/Documents/Legal");
 
-    const foldersSave = nth(screen.getAllByRole("button", { name: "Save" }), 0);
+    const foldersSave = nth(screen.getAllByRole("button", { name: "Save" }), 1);
     expect(foldersSave).toBeEnabled();
 
     vi.mocked(apiClient.updateSettings).mockResolvedValue(
@@ -197,7 +203,7 @@ describe("SettingsPage", () => {
       watch_folder_path: "/Scans/Inbox",
     });
     await waitFor(() =>
-      expect(nth(screen.getAllByRole("button", { name: "Save" }), 0)).toBeDisabled(),
+      expect(nth(screen.getAllByRole("button", { name: "Save" }), 1)).toBeDisabled(),
     );
   });
 
@@ -218,7 +224,7 @@ describe("SettingsPage", () => {
     vi.mocked(apiClient.updateSettings).mockResolvedValue(
       settings({ allowed_root_folders: ["/Documents/Legal", "/Documents/Medical"] }),
     );
-    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 0));
+    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 1));
 
     await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
 
@@ -244,7 +250,7 @@ describe("SettingsPage", () => {
     // Save is gated on isDirty, not isValid (a real submit step should still surface the
     // error rather than silently disabling the button) -- so it stays clickable, but zod's
     // resolver blocks the actual submit from reaching updateSettings.
-    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 1));
+    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 2));
     expect(apiClient.updateSettings).not.toHaveBeenCalled();
   });
 
@@ -258,7 +264,7 @@ describe("SettingsPage", () => {
 
     vi.mocked(apiClient.updateSettings).mockResolvedValue(settings({ filename_pattern: null }));
     // Naming is the second section rendered.
-    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 1));
+    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 2));
 
     await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
     const payload = vi.mocked(apiClient.updateSettings).mock.calls[0]?.[0];
@@ -274,7 +280,7 @@ describe("SettingsPage", () => {
     await user.clear(firstRoot);
     await user.type(firstRoot, "/Documents/Medical");
     // Folders validates on submit, not per-field (no `mode: "onChange"`) -- attempt a save.
-    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 0));
+    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 1));
 
     expect(await screen.findByText("Duplicate folder.")).toBeInTheDocument();
     expect(apiClient.updateSettings).not.toHaveBeenCalled();
@@ -346,7 +352,7 @@ describe("SettingsPage", () => {
     vi.mocked(apiClient.updateSettings).mockResolvedValue(
       settings({ allowed_root_folders: ["/Documents/Legal", "/Documents/Medical"] }),
     );
-    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 0));
+    await user.click(nth(screen.getAllByRole("button", { name: "Save" }), 1));
     await waitFor(() => expect(apiClient.updateSettings).toHaveBeenCalled());
 
     await user.click(screen.getByRole("button", { name: "leave" }));
@@ -363,7 +369,7 @@ describe("SettingsPage", () => {
     await user.type(firstRoot, "/Documents/Legal");
     expect(firstRoot).toHaveValue("/Documents/Legal");
 
-    await user.click(nth(screen.getAllByRole("button", { name: "Discard changes" }), 0));
+    await user.click(nth(screen.getAllByRole("button", { name: "Discard changes" }), 1));
 
     // Resetting a useFieldArray-backed form re-seeds fresh row ids, so the row's DOM node
     // is a new element -- re-query rather than trust the pre-discard reference.
@@ -375,7 +381,7 @@ describe("SettingsPage", () => {
     // originally caught through.
     const hintInput = screen.getByLabelText("Pattern hint");
     await user.type(hintInput, " extra text");
-    await user.click(nth(screen.getAllByRole("button", { name: "Discard changes" }), 1));
+    await user.click(nth(screen.getAllByRole("button", { name: "Discard changes" }), 2));
     expect(hintInput).toHaveValue("");
   });
 });

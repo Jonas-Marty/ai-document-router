@@ -20,9 +20,11 @@ _STATUS_RANK = case(
 QUEUED_STATUSES = (DocumentStatus.pending, DocumentStatus.skipped)
 
 
-def get_document(session: Session, document_id: str) -> Document:
+def get_document(session: Session, user_id: str, document_id: str) -> Document:
+    """Someone else's document is as missing as a deleted one: 404, never 403, so an id
+    cannot be used to find out that a document exists (SPEC 6.5)."""
     document = session.get(Document, document_id)
-    if document is None:
+    if document is None or document.user_id != user_id:
         raise NotFoundError("That document no longer exists.")
     return document
 
@@ -46,9 +48,11 @@ def to_read_schema(session: Session, document: Document) -> DocumentRead:
     return DocumentRead.from_models(document, read_proposal(session, document.id))
 
 
-def request_regenerate(session: Session, document_id: str, *, actor: Actor) -> Document:
+def request_regenerate(
+    session: Session, user_id: str, document_id: str, *, actor: Actor
+) -> Document:
     """Queue a fresh proposal. The poller does the work; this only resets the status."""
-    document = get_document(session, document_id)
+    document = get_document(session, user_id, document_id)
     document.proposal_status = ProposalStatus.pending
     document.proposal_error = None
     session.add(document)
@@ -64,7 +68,7 @@ def request_regenerate(session: Session, document_id: str, *, actor: Actor) -> D
     return document
 
 
-def retry_failed_proposals(session: Session, *, actor: Actor) -> int:
+def retry_failed_proposals(session: Session, user_id: str, *, actor: Actor) -> int:
     """Put every failed proposal in the queue back to pending. Returns how many moved.
 
     The poller only ever looks at `pending` documents, so a proposal that failed stays failed
@@ -79,6 +83,7 @@ def retry_failed_proposals(session: Session, *, actor: Actor) -> int:
     """
     failed = session.exec(
         select(Document)
+        .where(Document.user_id == user_id)
         .where(Document.proposal_status == ProposalStatus.failed)
         # A document that has already been filed keeps its proposal_status; retrying those
         # would burn LLM calls on documents nobody is going to review again.
@@ -100,17 +105,21 @@ def retry_failed_proposals(session: Session, *, actor: Actor) -> int:
     return len(failed)
 
 
-def queue(session: Session, limit: int = 20) -> tuple[list[DocumentRead], int]:
-    """The review queue in SPEC 5 order, plus how many documents are waiting overall."""
+def queue(session: Session, user_id: str, limit: int = 20) -> tuple[list[DocumentRead], int]:
+    """One user's review queue in SPEC 5 order, plus how many of their documents wait."""
     documents = session.exec(
         select(Document)
+        .where(Document.user_id == user_id)
         .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
         .order_by(_STATUS_RANK, Document.skip_count, Document.scanned_at)  # type: ignore[arg-type]
         .limit(limit)
     ).all()
 
     total = session.exec(
-        select(func.count()).select_from(Document).where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
+        select(func.count())
+        .select_from(Document)
+        .where(Document.user_id == user_id)
+        .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
     ).one()
 
     return [to_read_schema(session, document) for document in documents], int(total)

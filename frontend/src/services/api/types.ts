@@ -272,8 +272,22 @@ export interface AiModelsResponse {
 
 export interface HealthResponse {
   status: string;
-  webdav_reachable: boolean;
+  webdav_configured: boolean; // false until this account has connected its Nextcloud
+  webdav_reachable: boolean | null; // null when there is nothing to probe
   queue_depth: number;
+}
+
+// CLAUDE.md rule 5 applies to the app password as to API keys: it goes in, never comes back.
+export interface NextcloudConnection {
+  base_url: string;
+  username: string;
+  password_set: boolean;
+}
+
+export interface NextcloudWrite {
+  base_url: string;
+  username: string;
+  password?: string; // omitted or empty = keep the stored one
 }
 
 // SPEC 5: non-2xx responses always take this shape.

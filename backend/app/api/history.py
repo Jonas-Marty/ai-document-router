@@ -4,7 +4,7 @@ from sqlmodel import select
 
 from app.api import cursors
 from app.deps import CurrentUserDep, SessionDep, WebDavDep
-from app.models import HistoryEntry
+from app.models import Document, HistoryEntry
 from app.schemas import HistoryEntryRead, HistoryPage, RevertResponse
 from app.services import documents as documents_service
 from app.services import router as router_service
@@ -16,7 +16,7 @@ router = APIRouter()
 @router.get("/history")
 def read_history(
     session: SessionDep,
-    _user: CurrentUserDep,
+    user: CurrentUserDep,
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(None),
 ) -> HistoryPage:
@@ -26,7 +26,11 @@ def read_history(
     approved in the same second are ordinary, and a timestamp-only cursor silently skips or
     repeats rows at the page boundary.
     """
-    statement = select(HistoryEntry).order_by(
+    statement = (
+        select(HistoryEntry)
+        .join(Document, Document.id == HistoryEntry.document_id)  # type: ignore[arg-type]
+        .where(Document.user_id == user.id)
+    ).order_by(
         HistoryEntry.processed_at.desc(),  # type: ignore[attr-defined]
         HistoryEntry.id.desc(),  # type: ignore[attr-defined]
     )
@@ -56,7 +60,7 @@ def revert_entry(
     history_id: str, session: SessionDep, user: CurrentUserDep, webdav: WebDavDep
 ) -> RevertResponse:
     entry, document = router_service.revert(
-        session, webdav, history_id, actor=Actor.from_user(user)
+        session, webdav, user.id, history_id, actor=Actor.from_user(user)
     )
     return RevertResponse(
         history_entry=HistoryEntryRead.from_model(entry),

@@ -18,7 +18,7 @@ from app.services.audit import Actor
 from app.services.errors import FilenameCollision
 from app.services.times import to_storage, utc_now
 from tests.conftest import TEST_EMAIL
-from tests.test_router import ROOT, TRASH, FakeWebDav, add_proposal, make_document
+from tests.test_router import OWNER, ROOT, TRASH, FakeWebDav, add_proposal, make_document
 
 ACTOR = Actor(user_id="user-1", label="owner@example.com")
 
@@ -30,7 +30,9 @@ def session() -> Iterator[Session]:
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
-        s.add(AppSettings(id=1, allowed_root_folders=[ROOT], trash_folder_path=TRASH))
+        s.add(
+            AppSettings(id=1, user_id=OWNER, allowed_root_folders=[ROOT], trash_folder_path=TRASH)
+        )
         s.commit()
         yield s
 
@@ -158,11 +160,18 @@ class TestThroughTheApi:
         assert failed.actor_user_id is None
         assert "wrong-password!" not in json.dumps(failed.details)
 
-    def test_only_the_admin_can_read_it(
+    def test_each_account_reads_only_its_own_activity(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        assert client.get("/api/v1/audit").status_code == 200
-
+        # The admin included: another person's documents are theirs alone (SPEC 6.5).
+        client.put(
+            "/api/v1/settings",
+            json={
+                "allowed_root_folders": ["/Documents"],
+                "trash_folder_path": "/Trash",
+                "watch_folder_path": "/Scans/Inbox",
+            },
+        )
         monkeypatch.setattr(config, "allow_registration", True)
         client.post("/api/v1/auth/logout")
         client.post(
@@ -170,10 +179,11 @@ class TestThroughTheApi:
             json={"email": "second@example.com", "password": "another-long-password"},
         )
 
-        response = client.get("/api/v1/audit")
-        assert response.status_code == 403
-        assert response.json()["error"]["code"] == "admin_required"
-        assert client.get("/api/v1/audit/usage").status_code == 403
+        items = client.get("/api/v1/audit").json()["items"]
+
+        assert [item["action"] for item in items] == ["auth.registered"]
+        assert items[0]["actor_label"] == "second@example.com"
+        assert client.get("/api/v1/audit/usage").status_code == 200
 
     def test_pages_newest_first_and_filters_by_category(self, client: TestClient) -> None:
         for hint in ("a", "b", "c"):
@@ -219,11 +229,13 @@ def _summary(extraction: tuple[int, int] | None, filing: tuple[int, int]) -> ai.
 
 class TestUsageTotals:
     def test_adds_up_analyses_and_comparisons_per_model(self, session: Session) -> None:
+        document = make_document(session)
         analysis = _summary((1000, 200), (800, 50))
         audit.record(
             session,
             AuditAction.document_analyzed,
             actor=Actor.system(),
+            document_id=document.id,
             summary="Proposed",
             details=audit.usage_details(analysis),
             usage=[analysis],
@@ -233,31 +245,52 @@ class TestUsageTotals:
             session,
             AuditAction.document_compared,
             actor=ACTOR,
+            document_id=document.id,
             summary="Compared",
             details={"methods": [{"method": "ocr", **audit.usage_details(method)}]},
             usage=[method],
         )
         session.commit()
 
-        totals = audit.usage_totals(session, days=30)
+        totals = audit.usage_totals(session, OWNER, days=30)
 
         assert (totals.analyses, totals.comparisons) == (1, 1)
         assert totals.total_tokens == 1000 + 200 + 800 + 50 + 700 + 40
         filing = next(m for m in totals.by_model if m.task == "filing")
         assert (filing.model_label, filing.prompt_tokens, filing.calls) == ("Hosted · gpt", 1500, 2)
 
+    def test_counts_only_the_owners_documents(self, session: Session) -> None:
+        mine = make_document(session, "mine.pdf")
+        theirs = make_document(session, "theirs.pdf")
+        theirs.user_id = "someone-else"
+        session.add(theirs)
+        for document in (mine, theirs):
+            audit.record(
+                session,
+                AuditAction.document_analyzed,
+                actor=Actor.system(),
+                document_id=document.id,
+                summary="Proposed",
+                usage=[_summary(None, (500, 5))],
+            )
+        session.commit()
+
+        assert audit.usage_totals(session, OWNER, days=30).total_tokens == 505
+
     def test_leaves_out_what_is_older_than_the_window(self, session: Session) -> None:
+        document = make_document(session)
         old = audit.record(
             session,
             AuditAction.document_analyzed,
             actor=Actor.system(),
+            document_id=document.id,
             summary="Proposed",
             usage=[_summary(None, (500, 5))],
         )
         old.occurred_at = to_storage(utc_now() - timedelta(days=40))
         session.commit()
 
-        assert audit.usage_totals(session, days=30).total_tokens == 0
+        assert audit.usage_totals(session, OWNER, days=30).total_tokens == 0
 
 
 class TestPrune:

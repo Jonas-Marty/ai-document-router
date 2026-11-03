@@ -923,3 +923,27 @@ meaningful. One line of "why" each; not a full ADR log.
   folders of open documents are part of `permitted_roots`, trusted because only the poller
   writes those paths. The health probe now checks the WebDAV base URL rather than the watch
   folder, since it runs without a database session.
+- **Multi-user (2026-11-03).** Every owned row carries `user_id`; services take it and an id
+  belonging to someone else answers 404, not 403, so ids cannot be probed for existence.
+  There is no admin override: `is_admin` only decides who claimed the instance. Proposals and
+  history entries are owned through their document rather than a column of their own.
+- **Nextcloud per user, with app passwords rather than Nextcloud OAuth.** An app password is
+  one field, revocable in Nextcloud, and needs no OAuth client registered per Nextcloud
+  server or token refresh. Encrypted with `SECRET_KEY` like AI keys, write-only, and a blank
+  password on save keeps the stored one.
+- **AI endpoints and task chains are per user**, endpoint names unique per user. Sharing one
+  configuration would let one person's settings change another's filing.
+- **Activity is per user, for everyone.** An event belongs to the document's owner, else the
+  actor; a failed sign-in belongs to nobody and is visible to no one in the UI.
+- **Health stays unauthenticated.** Without a session it answers only `status: ok`; with one
+  it reports that user's Nextcloud (`webdav_configured`, `webdav_reachable`, `null` when there
+  is nothing to probe) and queue depth. The probe keeps one client per connection.
+- **Service URL rule shared by Nextcloud and AI endpoints**: https, or http only to a private
+  host. `100.64.0.0/10` counts as private because Tailscale addresses live there.
+- **Existing data goes to the admin** (else the earliest account) in migration `c4d8e1f2a9b3`,
+  which also encrypts `WEBDAV_BASE_URL`/`_USERNAME`/`_PASSWORD` into that user's settings
+  and copies `WEBDAV_WATCH_FOLDER` if the watch folder is still empty. Those variables must
+  still be set for that one deploy; the app no longer reads them. With no users at all the
+  owned tables are emptied, since nothing in them could have been configured.
+- **The poller makes one pass per connected user**, each in its own try/rollback, so one
+  person's unreachable Nextcloud does not stop anyone else's filing.

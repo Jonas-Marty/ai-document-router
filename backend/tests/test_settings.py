@@ -1,6 +1,13 @@
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
+
+from app import db
+from app.services import settings as settings_service
+from app.services import webdav
+from tests.conftest import signed_in_settings
 
 VALID_PAYLOAD: dict[str, Any] = {
     "allowed_root_folders": ["/Documents"],
@@ -152,3 +159,75 @@ class TestWatchFolder:
         payload = {**VALID_PAYLOAD, "watch_folder_path": "/Trash/Scans"}
 
         assert client.put("/api/v1/settings", json=payload).status_code == 422
+
+
+NEXTCLOUD = {
+    "base_url": "https://cloud.example.com/remote.php/dav/files/me/",
+    "username": "me",
+    "password": "app-password-canary",
+}
+
+
+class TestNextcloud:
+    def test_starts_unconnected(self, client: TestClient) -> None:
+        assert client.get("/api/v1/settings/nextcloud").json() == {
+            "base_url": "",
+            "username": "",
+            "password_set": False,
+        }
+
+    def test_saving_never_returns_the_password(self, client: TestClient) -> None:
+        response = client.put("/api/v1/settings/nextcloud", json=NEXTCLOUD)
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "base_url": "https://cloud.example.com/remote.php/dav/files/me",
+            "username": "me",
+            "password_set": True,
+        }
+        assert "app-password-canary" not in client.get("/api/v1/settings/nextcloud").text
+        assert "app-password-canary" not in client.get("/api/v1/audit").text
+
+    def test_a_blank_password_keeps_the_stored_one(self, client: TestClient) -> None:
+        client.put("/api/v1/settings/nextcloud", json=NEXTCLOUD)
+
+        client.put(
+            "/api/v1/settings/nextcloud", json={**NEXTCLOUD, "username": "me2", "password": ""}
+        )
+
+        with Session(db.engine) as session:
+            connection = settings_service.connection_for(signed_in_settings(session))
+        assert connection is not None
+        assert (connection.username, connection.password) == ("me2", "app-password-canary")
+
+    def test_the_first_save_needs_a_password(self, client: TestClient) -> None:
+        response = client.put("/api/v1/settings/nextcloud", json={**NEXTCLOUD, "password": None})
+
+        assert response.status_code == 422
+
+    def test_rejects_plain_http_to_a_public_host(self, client: TestClient) -> None:
+        response = client.put(
+            "/api/v1/settings/nextcloud", json={**NEXTCLOUD, "base_url": "http://cloud.example.com"}
+        )
+
+        assert response.status_code == 422
+
+    def test_test_signs_in_with_the_stored_password_when_left_blank(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client.put("/api/v1/settings/nextcloud", json=NEXTCLOUD)
+        tried: list[webdav.Connection] = []
+        monkeypatch.setattr(webdav, "check_connection", tried.append)
+
+        response = client.post(
+            "/api/v1/settings/nextcloud/test", json={**NEXTCLOUD, "password": ""}
+        )
+
+        assert response.status_code == 204
+        assert [c.password for c in tried] == ["app-password-canary"]
+
+    def test_filing_before_connecting_says_what_to_do(self, client: TestClient) -> None:
+        response = client.get("/api/v1/folders/tree")
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "nextcloud_not_configured"

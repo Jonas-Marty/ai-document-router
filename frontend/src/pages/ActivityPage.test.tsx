@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditEvent, AuditPage, AuditUsage } from "@/services/api/types";
@@ -172,12 +172,11 @@ describe("ActivityPage", () => {
     expect(apiClient.getAudit).toHaveBeenLastCalledWith(50, "cursor-2", undefined);
   });
 
-  it("tells a non-admin the page isn't for them, without asking the backend", async () => {
+  it("shows a non-admin their own activity too", async () => {
     vi.mocked(apiClient.getCurrentUser).mockResolvedValue({ ...ADMIN, is_admin: false });
     renderPage();
 
-    expect(await screen.findByText(/only admins can see activity/i)).toBeInTheDocument();
-    expect(apiClient.getAudit).not.toHaveBeenCalled();
-    expect(apiClient.getAuditUsage).not.toHaveBeenCalled();
+    await waitFor(() => expect(apiClient.getAudit).toHaveBeenCalled());
+    expect(apiClient.getAuditUsage).toHaveBeenCalled();
   });
 });

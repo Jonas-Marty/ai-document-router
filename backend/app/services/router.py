@@ -51,7 +51,7 @@ def approve(
     actor: Actor,
 ) -> tuple[Document, HistoryEntry]:
     """File a document under a new name. Synchronous -- the user is waiting."""
-    document = _require_queued(session, document_id)
+    document = _require_queued(session, app_settings.user_id, document_id)
 
     stem = naming.validate_stem(final_name)
     # Checked against allowed_root_folders specifically, NOT the WebDAV service's wider
@@ -175,9 +175,9 @@ def _store_searchable_copy(
     return True
 
 
-def skip(session: Session, document_id: str, *, actor: Actor) -> Document:
+def skip(session: Session, user_id: str, document_id: str, *, actor: Actor) -> Document:
     """Send a document to the back of the queue. Touches nothing on the server."""
-    document = _require_queued(session, document_id)
+    document = _require_queued(session, user_id, document_id)
     document.status = DocumentStatus.skipped
     document.skip_count += 1
     session.add(document)
@@ -204,7 +204,7 @@ def trash(
     actor: Actor,
 ) -> tuple[Document, HistoryEntry]:
     """Move a document to the trash folder. Never deletes -- CLAUDE.md rule 1."""
-    document = _require_queued(session, document_id)
+    document = _require_queued(session, app_settings.user_id, document_id)
 
     if not app_settings.trash_folder_path:
         raise ValidationError("No trash folder is configured yet — set one in Settings.")
@@ -265,18 +265,16 @@ def trash(
 
 
 def revert(
-    session: Session, webdav: WebDavService, history_id: str, *, actor: Actor
+    session: Session, webdav: WebDavService, user_id: str, history_id: str, *, actor: Actor
 ) -> tuple[HistoryEntry, Document]:
     """Put a filed document back where it came from (SPEC 6.4)."""
     entry = session.get(HistoryEntry, history_id)
-    if entry is None:
+    document = session.get(Document, entry.document_id) if entry is not None else None
+    # Someone else's entry reads exactly like a missing one (SPEC 6.5).
+    if entry is None or document is None or document.user_id != user_id:
         raise NotRevertible("That history entry no longer exists.")
     if not entry.revertible:
         raise NotRevertible("That document has already been reverted.")
-
-    document = session.get(Document, entry.document_id)
-    if document is None:
-        raise NotRevertible("The document behind that history entry no longer exists.")
 
     current = normalize_path(f"{entry.final_folder_path}/{entry.final_filename}")
     destination = normalize_path(f"{entry.source_folder_path}/{entry.original_filename}")
@@ -288,10 +286,14 @@ def revert(
         session.commit()
         raise NotRevertible("That file isn't where it was filed any more, so it can't be put back.")
 
-    # webdav_path is unique. A different document already sitting at the original path
-    # would otherwise surface as an IntegrityError 500 instead of a readable conflict.
+    # webdav_path is unique per owner. A different document already sitting at the original
+    # path would otherwise surface as an IntegrityError 500 instead of a readable conflict.
     clash = session.exec(
-        select(Document).where(Document.webdav_path == destination, Document.id != document.id)
+        select(Document).where(
+            Document.user_id == user_id,
+            Document.webdav_path == destination,
+            Document.id != document.id,
+        )
     ).first()
     if clash is not None:
         raise NotRevertible(
@@ -323,8 +325,8 @@ def revert(
     return entry, document
 
 
-def _require_queued(session: Session, document_id: str) -> Document:
-    document = get_document(session, document_id)
+def _require_queued(session: Session, user_id: str, document_id: str) -> Document:
+    document = get_document(session, user_id, document_id)
     if document.status not in (DocumentStatus.pending, DocumentStatus.skipped):
         raise ValidationError("That document has already been filed.")
     return document

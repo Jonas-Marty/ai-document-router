@@ -32,6 +32,9 @@ from app.services import ai, transcribe
 from app.services.times import utc_now
 from app.services.webdav import WebDavEntry
 
+# Rows need an owner; foreign keys are not enforced here, so no user row is needed.
+OWNER = "owner-1"
+
 
 def pdf_with_text(text: str) -> bytes:
     """pypdf cannot author text, so pad a blank page's metadata instead.
@@ -84,6 +87,7 @@ def session() -> Iterator[Session]:
         s.add(
             AppSettings(
                 id=1,
+                user_id=OWNER,
                 allowed_root_folders=["/Documents"],
                 trash_folder_path="/Trash",
                 watch_folder_path="/Test-Inbox",
@@ -91,8 +95,20 @@ def session() -> Iterator[Session]:
         )
         # A filing chain with one step: the poller takes its endpoint and model from here,
         # so without it every proposal fails before it reaches the stubbed request_proposal.
-        s.add(AiEndpoint(id="ep", name="Local", base_url="http://ai.test/v1", created_at=utc_now()))
-        s.add(AiTaskStep(task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"))
+        s.add(
+            AiEndpoint(
+                user_id=OWNER,
+                id="ep",
+                name="Local",
+                base_url="http://ai.test/v1",
+                created_at=utc_now(),
+            )
+        )
+        s.add(
+            AiTaskStep(
+                user_id=OWNER, task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"
+            )
+        )
         s.commit()
         yield s
 
@@ -239,6 +255,7 @@ class TestOcrPhase:
 
     def _scan(self, session: Session, **overrides: Any) -> Document:
         fields: dict[str, Any] = {
+            "user_id": OWNER,
             "webdav_path": "/Test-Inbox/scan.pdf",
             "original_filename": "scan.pdf",
             "mime_type": "application/pdf",
@@ -485,17 +502,30 @@ class TestFullTick:
             setup.add(
                 AppSettings(
                     id=1,
+                    user_id=OWNER,
                     allowed_root_folders=["/Documents"],
                     trash_folder_path="/Trash",
                     watch_folder_path="/Test-Inbox",
+                    # run_once only polls users with a connection; build_service is stubbed.
+                    webdav_base_url="https://cloud.example.com/remote.php/dav/files/owner",
+                    webdav_username="owner",
+                    webdav_password_encrypted=b"not-read-here",
                 )
             )
             setup.add(
                 AiEndpoint(
-                    id="ep", name="Local", base_url="http://ai.test/v1", created_at=utc_now()
+                    user_id=OWNER,
+                    id="ep",
+                    name="Local",
+                    base_url="http://ai.test/v1",
+                    created_at=utc_now(),
                 )
             )
-            setup.add(AiTaskStep(task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"))
+            setup.add(
+                AiTaskStep(
+                    user_id=OWNER, task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"
+                )
+            )
             setup.commit()
 
         monkeypatch.setattr(poller.db, "engine", engine)
@@ -563,16 +593,20 @@ class TestFullTick:
         summary = [r for r in caplog.records if r.getMessage().startswith("Tick done")]
         assert len(summary) == 1
         assert "ingested 1, OCR 1, proposals 1 ready / 0 failed" in summary[0].getMessage()
-        # Every line of the tick shares one id, and it is gone once the tick is over.
+        # Every line of the tick shares one id -- the per-user pass adds to it rather than
+        # replacing it -- and it is gone once the tick is over.
         contexts = {str(getattr(r, "context", "")) for r in caplog.records}
-        assert len(contexts) == 1
-        assert contexts.pop().startswith("tick=")
+        tick_ids = {context.split()[0] for context in contexts}
+        assert len(tick_ids) == 1
+        assert tick_ids.pop().startswith("tick=")
+        assert f"user={OWNER[:8]}" in " ".join(contexts)
         assert log.context_var.get() == ""
 
 
 class TestProposals:
     def _document(self, session: Session) -> Document:
         document = Document(
+            user_id=OWNER,
             webdav_path="/Test-Inbox/scan.pdf",
             original_filename="scan.pdf",
             mime_type="application/pdf",
@@ -750,7 +784,9 @@ class TestExtractionStage:
             ),
         )
         session.add(
-            AiTaskStep(task=AiTask.extraction, position=0, endpoint_id="ep", model_name="v")
+            AiTaskStep(
+                user_id=OWNER, task=AiTask.extraction, position=0, endpoint_id="ep", model_name="v"
+            )
         )
         session.commit()
         return document
@@ -945,3 +981,52 @@ class TestExtractionStage:
         assert "flat text" in seen["prompt"]
         session.refresh(document)
         assert document.extraction_error is None
+
+
+class TestEveryUser:
+    def test_each_connected_user_is_polled_and_one_failure_does_not_stop_the_others(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = create_engine(
+            "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        )
+        SQLModel.metadata.create_all(engine)
+        connected = {
+            "webdav_base_url": "https://cloud.example.com/remote.php/dav/files/x",
+            "webdav_username": "x",
+            "webdav_password_encrypted": b"not-read-here",
+        }
+        with Session(engine) as setup:
+            for user_id in ("broken", "works"):
+                setup.add(
+                    AppSettings(
+                        user_id=user_id,
+                        allowed_root_folders=["/Documents"],
+                        trash_folder_path="/Trash",
+                        watch_folder_path="/Test-Inbox",
+                        **connected,
+                    )
+                )
+            # Never connected: nothing to poll, and no error for it either.
+            setup.add(AppSettings(user_id="idle", watch_folder_path="/Test-Inbox"))
+            setup.commit()
+
+        polled: list[str] = []
+
+        def build(_session: Session, settings: AppSettings) -> FakeService:
+            polled.append(settings.user_id)
+            if settings.user_id == "broken":
+                raise RuntimeError("their Nextcloud is down")
+            return FakeService([entry("scan.pdf")], {"/Test-Inbox/scan.pdf": b"%PDF"})
+
+        monkeypatch.setattr(poller.db, "engine", engine)
+        monkeypatch.setattr(poller, "build_service", build)
+        monkeypatch.setattr(poller, "generate_proposals", lambda *args: (0, 0))
+
+        poller.run_once()
+
+        assert sorted(polled) == ["broken", "works"]
+        with Session(engine) as check:
+            (document,) = check.exec(select(Document)).all()
+            # Filed under the account whose inbox it came from, not the first one polled.
+            assert document.user_id == "works"

@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, LargeBinary
+from sqlalchemy import JSON, Column, LargeBinary, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -81,9 +81,13 @@ class AuditAction(enum.StrEnum):
 
 class Document(SQLModel, table=True):
     __tablename__ = "document"
+    # Unique per owner, not globally: two people's Nextclouds can both hold /Scans/Inbox/scan.pdf.
+    __table_args__ = (UniqueConstraint("user_id", "webdav_path", name="uq_document_user_path"),)
 
     id: str = Field(default_factory=_uuid, primary_key=True)
-    webdav_path: str = Field(unique=True, index=True)
+    # Whose Nextcloud the file is on. Every read and write is scoped by it (SPEC 6.5).
+    user_id: str = Field(foreign_key="user.id", index=True)
+    webdav_path: str = Field(index=True)
     original_filename: str
     mime_type: str
     file_size_bytes: int
@@ -145,9 +149,17 @@ class HistoryEntry(SQLModel, table=True):
 
 
 class AppSettings(SQLModel, table=True):
+    """One user's settings, their Nextcloud connection included. A row per user (SPEC 6.5)."""
+
     __tablename__ = "app_settings"
 
-    id: int = Field(default=1, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", unique=True, index=True)
+    # The user's own Nextcloud: the WebDAV files URL, their login, and an app password.
+    # The password is Fernet-encrypted with SECRET_KEY and never returned (CLAUDE.md rule 5).
+    webdav_base_url: str = ""
+    webdav_username: str = ""
+    webdav_password_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
     allowed_root_folders: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     trash_folder_path: str = ""
     # Where the scanner drops new files. A setting rather than env because it describes the
@@ -176,9 +188,12 @@ class AiEndpoint(SQLModel, table=True):
     """
 
     __tablename__ = "ai_endpoint"
+    # Names are how a person tells their endpoints apart, so unique per person only.
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_ai_endpoint_user_name"),)
 
     id: str = Field(default_factory=_uuid, primary_key=True)
-    name: str = Field(unique=True, index=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    name: str = Field(index=True)
     base_url: str
     api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
     created_at: datetime
@@ -196,6 +211,7 @@ class AiTaskStep(SQLModel, table=True):
     __tablename__ = "ai_task_step"
 
     id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
     task: AiTask = Field(index=True)
     position: int
     endpoint_id: str = Field(foreign_key="ai_endpoint.id", index=True)
@@ -216,6 +232,10 @@ class AuditEvent(SQLModel, table=True):
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     occurred_at: datetime = Field(index=True)
+    # Whose activity this is: the document's owner, or the actor for events with no document.
+    # Separate from the actor because the poller acts on someone's documents as "system".
+    # None only for events about no one, like a sign-in attempt for an unknown address.
+    user_id: str | None = Field(default=None, index=True)
     actor_user_id: str | None = None
     actor_label: str
     action: str = Field(index=True)

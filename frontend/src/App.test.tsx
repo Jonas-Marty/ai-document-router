@@ -105,7 +105,8 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
   });
 }
 
-const healthy = () => healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 0 });
+const healthy = () =>
+  healthResponse({ status: "ok", webdav_configured: true, webdav_reachable: true, queue_depth: 0 });
 
 describe("routing", () => {
   beforeEach(() => mockApi(healthy));
@@ -141,14 +142,14 @@ describe("routing", () => {
     expect(await screen.findByRole("heading", { name: "Activity" })).toBeInTheDocument();
   });
 
-  it("links to Activity only for admins", async () => {
+  it("links to Activity for every account, not only admins", async () => {
     vi.restoreAllMocks();
     mockApi(healthy, { ...SIGNED_IN, is_admin: false });
     renderApp("/");
     await screen.findByRole("heading", { name: "Review" });
 
     expect(screen.getByRole("link", { name: /history/i })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /activity/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /activity/i })).toBeInTheDocument();
   });
 });
 
@@ -201,20 +202,48 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
   afterEach(() => vi.restoreAllMocks());
 
   it("shows no banner when the backend and WebDAV are both healthy", async () => {
-    mockApi(() => healthResponse({ status: "ok", webdav_reachable: true, queue_depth: 3 }));
+    mockApi(() =>
+      healthResponse({
+        status: "ok",
+        webdav_configured: true,
+        webdav_reachable: true,
+        queue_depth: 3,
+      }),
+    );
     renderApp("/");
 
     await screen.findByRole("heading", { name: "Review" });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("shows a WebDAV-specific message when the backend is up but WebDAV is not", async () => {
-    mockApi(() => healthResponse({ status: "ok", webdav_reachable: false, queue_depth: 3 }));
+  it("shows a Nextcloud-specific message when the backend is up but Nextcloud is not", async () => {
+    mockApi(() =>
+      healthResponse({
+        status: "ok",
+        webdav_configured: true,
+        webdav_reachable: false,
+        queue_depth: 3,
+      }),
+    );
     renderApp("/");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/webdav is unreachable/i);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/nextcloud is unreachable/i);
     // The page itself still rendered -- not a broken page.
     expect(screen.getByRole("heading", { name: "Review" })).toBeInTheDocument();
+  });
+
+  it("asks an account that has not connected a Nextcloud yet to do so", async () => {
+    mockApi(() =>
+      healthResponse({
+        status: "ok",
+        webdav_configured: false,
+        webdav_reachable: null,
+        queue_depth: 0,
+      }),
+    );
+    renderApp("/");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/connect your nextcloud/i);
   });
 
   it("shows a distinct message when the backend itself can't be reached at all", async () => {

@@ -3,11 +3,13 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import db
 from app.config import settings as config
 from app.main import app
+from app.models import AppSettings, User
+from app.services import settings as settings_service
 from app.services import webdav
 
 
@@ -19,7 +21,7 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     requests to whatever WEBDAV_BASE_URL happens to be set to. Tests that care about the
     probe patch it themselves.
     """
-    monkeypatch.setattr(webdav, "probe_reachable", lambda: False)
+    monkeypatch.setattr(webdav, "probe_reachable", lambda connection: False)
 
 
 @pytest.fixture(autouse=True)
@@ -83,3 +85,14 @@ def client(anonymous_client: TestClient) -> TestClient:
     )
     assert response.status_code == 201, response.text
     return anonymous_client
+
+
+def signed_in_user_id() -> str:
+    """The id of the account `client` signs in as. It owns everything an API test adds."""
+    with Session(db.engine) as session:
+        return session.exec(select(User).where(User.email == TEST_EMAIL)).one().id
+
+
+def signed_in_settings(session: Session) -> AppSettings:
+    """That account's settings row, created on first use exactly as a request would."""
+    return settings_service.get_settings(session, signed_in_user_id())

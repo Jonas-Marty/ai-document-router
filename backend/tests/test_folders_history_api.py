@@ -20,6 +20,10 @@ from app.models import (
 )
 from app.services.errors import NotFoundError
 from app.services.webdav import WebDavEntry
+from tests.conftest import signed_in_settings, signed_in_user_id
+
+# Rows need an owner; foreign keys are not enforced here, so no user row is needed.
+OWNER = "owner-1"
 
 ROOT = "/Test-Outbox"
 TRASH = "/Test-Trash"
@@ -84,8 +88,7 @@ def fake() -> Iterator[FakeWebDav]:
 @pytest.fixture
 def configured(client: TestClient) -> TestClient:
     with Session(db.engine) as session:
-        settings = session.get(AppSettings, 1)
-        assert settings is not None
+        settings = signed_in_settings(session)
         settings.allowed_root_folders = [ROOT]
         settings.trash_folder_path = TRASH
         settings.watch_folder_path = WATCH
@@ -97,6 +100,7 @@ def configured(client: TestClient) -> TestClient:
 def make_document(name: str = "scan.pdf") -> str:
     with Session(db.engine) as session:
         document = Document(
+            user_id=signed_in_user_id(),
             webdav_path=f"{WATCH}/{name}",
             original_filename=name,
             mime_type="application/pdf",
@@ -295,8 +299,7 @@ class TestWatchFolderBoundary:
     ) -> None:
         # Filed there, the poller would ingest it again on the next tick, forever.
         with Session(db.engine) as session:
-            settings = session.get(AppSettings, 1)
-            assert settings is not None
+            settings = signed_in_settings(session)
             settings.watch_folder_path = f"{ROOT}/Inbox"
             session.add(settings)
             session.commit()
@@ -327,8 +330,7 @@ class TestWatchFolderBoundary:
             filed.webdav_path = "/Elsewhere/filed.pdf"
             filed.status = DocumentStatus.moved
             session.add(filed)
-            settings = session.get(AppSettings, 1)
-            assert settings is not None
+            settings = signed_in_settings(session)
             settings.watch_folder_path = "/New-Inbox"
             session.add(settings)
             session.commit()
@@ -346,6 +348,7 @@ class TestWatchFolderBoundary:
 class TestHistory:
     def _entry(self, session: Session, name: str, processed_at: datetime) -> HistoryEntry:
         document = Document(
+            user_id=signed_in_user_id(),
             webdav_path=f"{ROOT}/{name}",
             original_filename=name,
             mime_type="application/pdf",
@@ -504,6 +507,7 @@ class TestPromptContext:
 
         app_settings = AppSettings(
             id=1,
+            user_id=OWNER,
             allowed_root_folders=["/Docs"],
             trash_folder_path="/Docs/Trash",
             watch_folder_path="/Docs/Inbox",

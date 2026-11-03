@@ -33,9 +33,13 @@ services:
       # Deploy fails immediately with this message if the variable is unset, rather than
       # starting an API that cannot decrypt the stored AI API key.
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in the Dokploy Environment tab}
-      WEBDAV_BASE_URL: ${WEBDAV_BASE_URL:?set WEBDAV_BASE_URL in the Dokploy Environment tab}
-      WEBDAV_USERNAME: ${WEBDAV_USERNAME:?set WEBDAV_USERNAME in the Dokploy Environment tab}
-      WEBDAV_PASSWORD: ${WEBDAV_PASSWORD:?set WEBDAV_PASSWORD in the Dokploy Environment tab}
+      # Each user connects their own Nextcloud in Settings. These are read only by the
+      # migration to per-user data, once, to give the existing admin the connection the
+      # instance used to have; after that deploy they can be removed from Dokploy.
+      WEBDAV_BASE_URL: ${WEBDAV_BASE_URL:-}
+      WEBDAV_USERNAME: ${WEBDAV_USERNAME:-}
+      WEBDAV_PASSWORD: ${WEBDAV_PASSWORD:-}
+      WEBDAV_WATCH_FOLDER: ${WEBDAV_WATCH_FOLDER:-}
       # The public URL. Without it the session cookie is not marked Secure and the OIDC
       # redirect URI points at localhost, so single sign-on cannot work.
       APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL to the domain this is served on}

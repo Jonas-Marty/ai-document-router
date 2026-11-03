@@ -235,3 +235,21 @@ class TestModelListing:
         body = response.json()["error"]
         assert body["code"] == "ai_unavailable"
         assert "Couldn't reach" in body["message"]
+
+
+class TestPerAccount:
+    def test_endpoints_and_their_names_belong_to_one_account(
+        self, client: TestClient, monkeypatch: Any
+    ) -> None:
+        mine = add(client, "Local")
+        monkeypatch.setattr(app_config, "allow_registration", True)
+        client.post("/api/v1/auth/logout")
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "second@example.com", "password": "another-long-password"},
+        )
+
+        # Not listed, not reachable by id, and its name is free to reuse.
+        assert client.get("/api/v1/ai/endpoints").json() == []
+        assert client.delete(f"/api/v1/ai/endpoints/{mine['id']}").status_code == 404
+        assert add(client, "Local")["id"] != mine["id"]
