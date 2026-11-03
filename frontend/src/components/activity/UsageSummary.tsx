@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { formatTokens } from "@/lib/tokens";
 import type { AuditUsage } from "@/services/api/types";
 
@@ -9,9 +10,14 @@ export function UsageSummary({ usage }: { usage: AuditUsage }) {
 
   return (
     <section aria-labelledby="usage-heading" className="space-y-3">
-      <h2 id="usage-heading" className="text-sm font-medium text-muted-foreground">
-        AI usage · last {usage.days} days
-      </h2>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="usage-heading" className="text-sm font-medium text-muted-foreground">
+          AI usage · last {usage.days} days
+        </h2>
+        <Link to="/activity/usage" className="text-sm underline-offset-4 hover:underline">
+          Breakdown by connection, model and feature →
+        </Link>
+      </div>
       {idle ? (
         <p className="text-sm text-muted-foreground">No documents were analysed in this period.</p>
       ) : (

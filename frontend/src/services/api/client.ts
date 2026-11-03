@@ -9,6 +9,7 @@ import type {
   AiTaskChain,
   AiTaskChainUpdate,
   AiTaskContext,
+  AiUsageReport,
   ApiErrorBody,
   ApproveRequest,
   AuditCategory,
@@ -66,6 +67,7 @@ export interface ApiClient {
   updateNextcloud(body: NextcloudWrite): Promise<NextcloudConnection>;
   testNextcloud(body: NextcloudWrite): Promise<void>;
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
+  getAiUsage(start: string, end: string): Promise<AiUsageReport>;
   listAiEndpoints(): Promise<AiEndpoint[]>;
   createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint>;
   updateAiEndpoint(id: string, body: AiEndpointWrite): Promise<AiEndpoint>;
@@ -183,6 +185,10 @@ export class HttpApiClient implements ApiClient {
 
   testNextcloud(body: NextcloudWrite): Promise<void> {
     return this.request<void>("POST", "/settings/nextcloud/test", body);
+  }
+
+  getAiUsage(start: string, end: string): Promise<AiUsageReport> {
+    return this.request<AiUsageReport>("GET", `/ai/usage${query({ start, end })}`);
   }
 
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse> {

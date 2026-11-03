@@ -369,6 +369,33 @@ class AuditUsageRead(BaseModel):
     by_model: list[ModelUsageRead]
 
 
+class AiUsageRowRead(BaseModel):
+    """One day, connection, model and feature, summed. See services/ai_usage.py."""
+
+    day: str
+    endpoint_id: str | None
+    connection: str
+    connection_exists: bool
+    model: str
+    model_configured: bool
+    feature: str
+    requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    cached_tokens: int
+    without_usage: int
+    failed: int
+    fallback: int
+    duration_ms: int
+    timed: int
+
+
+class AiUsageRead(BaseModel):
+    rows: list[AiUsageRowRead]
+    analyses: int
+    comparisons: int
+
+
 class RevertResponse(BaseModel):
     history_entry: HistoryEntryRead
     document: DocumentRead

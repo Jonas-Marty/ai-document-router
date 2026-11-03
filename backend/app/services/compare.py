@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from sqlmodel import Session
 
 from app.models import AiTask, AppSettings, AuditAction, Document
-from app.services import ai, ai_tasks, audit, extraction, folders, ocr, transcribe
+from app.services import ai, ai_tasks, ai_usage, audit, extraction, folders, ocr, transcribe
 from app.services.audit import Actor
 from app.services.errors import AppError
 from app.services.webdav import WebDavService
@@ -73,9 +73,12 @@ def compare(
     folder_tree, sample_filenames = folders.prompt_context(webdav, app_settings)
 
     results: list[MethodResult] = []
+    meters: list[ai.UsageMeter] = []
 
     def propose(method: str, label: str, text: str, meter: ai.UsageMeter | None = None) -> None:
         meter = meter or ai.UsageMeter()
+        if meter not in meters:
+            meters.append(meter)
         started = time.monotonic()
         prompt = ai.build_prompt(
             text,
@@ -95,7 +98,7 @@ def compare(
                     api_key=step.api_key,
                     prompt=prompt,
                     allowed_roots=list(app_settings.allowed_root_folders),
-                    usage=meter.scope(AiTask.filing, step.label),
+                    usage=step.usage(meter, AiTask.filing),
                 ),
                 AiTask.filing,
             )
@@ -170,6 +173,7 @@ def compare(
     else:
         label = f"Markdown · {extracting[0].label}"
         meter = ai.UsageMeter()
+        meters.append(meter)
         try:
             transcription = transcribe.transcribe(
                 data, extracting, app_settings.extraction_instructions, meter
@@ -180,11 +184,17 @@ def compare(
         else:
             propose(MARKDOWN, label, transcription.markdown, meter)
 
-    _audit(session, document, results, actor)
+    _audit(session, document, results, actor, meters)
     return results
 
 
-def _audit(session: Session, document: Document, results: list[MethodResult], actor: Actor) -> None:
+def _audit(
+    session: Session,
+    document: Document,
+    results: list[MethodResult],
+    actor: Actor,
+    meters: list[ai.UsageMeter],
+) -> None:
     """Nothing else here is stored, but what the comparison spent is: it is real money."""
     audit.record(
         session,
@@ -206,6 +216,9 @@ def _audit(session: Session, document: Document, results: list[MethodResult], ac
             ]
         },
         usage=[result.usage for result in results],
+    )
+    ai_usage.store(
+        session, meters, user_id=document.user_id, document_id=document.id, comparison=True
     )
     session.commit()
 

@@ -270,6 +270,34 @@ export interface AiModelsResponse {
   models: string[]; // ids from the endpoint's /models, sorted
 }
 
+// One day, connection, model and feature, summed (GET /ai/usage).
+export type AiUsageFeature = "extraction" | "filing" | "comparison";
+
+export interface AiUsageRow {
+  day: string; // YYYY-MM-DD, UTC
+  endpoint_id: string | null; // null for usage carried over from an endpoint since renamed or deleted
+  connection: string;
+  connection_exists: boolean;
+  model: string;
+  model_configured: boolean;
+  feature: AiUsageFeature | string;
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cached_tokens: number;
+  without_usage: number; // replied, but sent no token counts
+  failed: number; // got no reply
+  fallback: number; // made by a later step because an earlier one was unavailable
+  duration_ms: number; // summed over `timed`
+  timed: number;
+}
+
+export interface AiUsageReport {
+  rows: AiUsageRow[];
+  analyses: number;
+  comparisons: number;
+}
+
 export interface HealthResponse {
   status: string;
   webdav_configured: boolean; // false until this account has connected its Nextcloud

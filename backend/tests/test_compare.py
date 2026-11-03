@@ -109,6 +109,7 @@ class FakeWebDav:
 class FakeDocument:
     def __init__(self, filename: str = "scan.pdf", mime_type: str = "application/pdf"):
         self.id = "doc-1"
+        self.user_id = OWNER
         self.webdav_path = f"/Test-Inbox/{filename}"
         self.original_filename = filename
         self.mime_type = mime_type

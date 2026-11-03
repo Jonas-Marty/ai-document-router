@@ -32,11 +32,24 @@ class ResolvedStep:
     endpoint_url: str
     api_key: str | None
     model_name: str
+    endpoint_id: str | None = None
+    position: int = 0
 
     @property
     def label(self) -> str:
         """How this step is named in a failure message, and on the review screen."""
         return f"{self.endpoint_name} · {self.model_name}"
+
+    def usage(self, meter: ai.UsageMeter, task: AiTask) -> ai.UsageRecorder:
+        """A recorder for calls made through this step, carrying what usage is grouped by."""
+        return meter.scope(
+            task,
+            self.label,
+            endpoint_id=self.endpoint_id,
+            connection=self.endpoint_name,
+            model=self.model_name,
+            fallback=self.position > 0,
+        )
 
 
 @dataclass(frozen=True)
@@ -67,8 +80,10 @@ def resolve_chain(session: Session, user_id: str, task: AiTask) -> list[Resolved
             endpoint_url=endpoint.base_url,
             api_key=decrypt_key(endpoint),
             model_name=step.model_name,
+            endpoint_id=endpoint.id,
+            position=position,
         )
-        for step, endpoint in _rows(session, user_id, task)
+        for position, (step, endpoint) in enumerate(_rows(session, user_id, task))
     ]
 
 

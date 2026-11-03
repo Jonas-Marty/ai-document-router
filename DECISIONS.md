@@ -947,3 +947,12 @@ meaningful. One line of "why" each; not a full ADR log.
   owned tables are emptied, since nothing in them could have been configured.
 - **The poller makes one pass per connected user**, each in its own try/rollback, so one
   person's unreachable Nextcloud does not stop anyone else's filing.
+- **AI usage page (2026-11-03), after cash-flow's.** A separate `ai_call` table, one row per
+  model call, rather than summing audit-event JSON: it is summed in SQL per day, connection,
+  model and feature, keeps the endpoint id so a renamed connection stays one group, and is not
+  cut short by `AUDIT_RETENTION_DAYS`. Failed calls (no reply) are recorded too, because they
+  are what makes a fallback happen; they stay out of the analysis's own usage summary.
+  History is carried over from the audit log once, per stage, without durations or failures.
+  Days are UTC days, like every other stored time. The chart is plain SVG, as in cash-flow:
+  no chart library. The chart colour tokens were grey shades, which do not tell stacked
+  series apart; they now use shadcn's coloured chart palette.

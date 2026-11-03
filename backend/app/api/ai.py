@@ -1,5 +1,8 @@
 """Endpoints and the task chains built from them (SPEC 6.3a, 8.7)."""
 
+from dataclasses import asdict
+from datetime import date
+
 from fastapi import APIRouter
 
 from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
@@ -13,8 +16,10 @@ from app.schemas import (
     AiTaskChainUpdate,
     AiTaskContextRead,
     AiTaskStepRead,
+    AiUsageRead,
+    AiUsageRowRead,
 )
-from app.services import ai_context, ai_tasks
+from app.services import ai_context, ai_tasks, ai_usage
 from app.services.audit import Actor
 
 router = APIRouter()
@@ -105,6 +110,17 @@ def write_chain(
         actor=Actor.from_user(user),
     )
     return _chain(session, user.id, task)
+
+
+@router.get("/ai/usage")
+def read_usage(session: SessionDep, user: CurrentUserDep, start: date, end: date) -> AiUsageRead:
+    """Tokens per day, connection, model and feature from `start` to `end`, inclusive."""
+    report = ai_usage.report(session, user.id, start, end)
+    return AiUsageRead(
+        rows=[AiUsageRowRead(**asdict(row)) for row in report.rows],
+        analyses=report.analyses,
+        comparisons=report.comparisons,
+    )
 
 
 def _read(session: SessionDep, endpoint: AiEndpoint) -> AiEndpointRead:

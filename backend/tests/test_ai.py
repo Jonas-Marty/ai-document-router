@@ -515,7 +515,18 @@ class TestUsage:
                 usage=meter.scope("filing", "Hosted · m"),
             )
 
+        # No cost to the analysis, but the usage page counts the call as failed.
         assert meter.summary() is None
+        (failed,) = meter.calls
+        assert failed.failed is True
+
+    def test_reads_cached_prompt_tokens_where_the_provider_reports_them(self) -> None:
+        openai = {"prompt_tokens": 100, "completion_tokens": 5}
+        openai["prompt_tokens_details"] = {"cached_tokens": 60}  # type: ignore[assignment]
+        anthropic = {"prompt_tokens": 100, "completion_tokens": 5, "cache_read_input_tokens": 40}
+
+        assert ai._extract_usage({"usage": openai}) == ai.TokenUsage(100, 5, 60)
+        assert ai._extract_usage({"usage": anthropic}) == ai.TokenUsage(100, 5, 40)
 
     def test_the_summary_adds_up_calls_and_counts_the_silent_ones(self) -> None:
         meter = ai.UsageMeter()

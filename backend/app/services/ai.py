@@ -84,6 +84,8 @@ class TokenUsage:
 
     prompt_tokens: int
     completion_tokens: int
+    # Prompt tokens the provider served from its cache; part of prompt_tokens, not on top.
+    cached_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -96,6 +98,15 @@ class CallRecord:
     label: str
     usage: TokenUsage | None
     duration_ms: int
+    # Which connection and model answered, kept apart so usage can be grouped by either.
+    endpoint_id: str | None = None
+    connection: str = ""
+    model: str = ""
+    # No reply at all: the endpoint was down or refused. Costs nothing that was reported,
+    # but is what makes a fallback happen, so the usage page counts it.
+    failed: bool = False
+    # Made by a step after the first, because an earlier one was unavailable.
+    fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,17 +171,27 @@ class UsageMeter:
         """Wall time since the analysis began -- reading, waiting and retrying included."""
         return int((time.monotonic() - self.started) * 1000)
 
-    def scope(self, task: str, label: str) -> "UsageRecorder":
-        return UsageRecorder(self, task, label)
+    def scope(
+        self,
+        task: str,
+        label: str,
+        *,
+        endpoint_id: str | None = None,
+        connection: str = "",
+        model: str = "",
+        fallback: bool = False,
+    ) -> "UsageRecorder":
+        return UsageRecorder(self, task, label, endpoint_id, connection, model, fallback)
 
     def summary(self) -> UsageSummary | None:
         """None when nothing was called, which is different from a call that cost nothing."""
-        if not self.calls:
+        if all(call.failed for call in self.calls):
             return None
         return UsageSummary(extraction=self._stage("extraction"), filing=self._stage("filing"))
 
     def _stage(self, task: str) -> StageUsage | None:
-        calls = [call for call in self.calls if call.task == task]
+        # A call that got no reply is a fact about the endpoint, not a cost of the analysis.
+        calls = [call for call in self.calls if call.task == task and not call.failed]
         if not calls:
             return None
         reported = [call.usage for call in calls if call.usage is not None]
@@ -191,9 +212,29 @@ class UsageRecorder:
     meter: UsageMeter
     task: str
     label: str
+    endpoint_id: str | None = None
+    connection: str = ""
+    model: str = ""
+    fallback: bool = False
+
+    def _call(self, usage: TokenUsage | None, duration_ms: int, failed: bool) -> CallRecord:
+        return CallRecord(
+            task=self.task,
+            label=self.label,
+            usage=usage,
+            duration_ms=duration_ms,
+            endpoint_id=self.endpoint_id,
+            connection=self.connection or self.label,
+            model=self.model,
+            failed=failed,
+            fallback=self.fallback,
+        )
+
+    def record_failure(self, duration_ms: int) -> None:
+        self.meter.calls.append(self._call(None, duration_ms, failed=True))
 
     def record(self, usage: TokenUsage | None, duration_ms: int) -> None:
-        self.meter.calls.append(CallRecord(self.task, self.label, usage, duration_ms))
+        self.meter.calls.append(self._call(usage, duration_ms, failed=False))
         # Counted here too, so /metrics and the stored usage come from the same moment and
         # cannot disagree about which calls happened.
         if usage is None:
@@ -308,6 +349,9 @@ def request_proposal(
                 )
             except _Rejected as plain:
                 raise AIUnavailable(plain.message) from plain
+    except AIUnavailable:
+        _record_failure(usage, started)
+        raise
     finally:
         if owned:
             http.close()
@@ -351,7 +395,11 @@ def request_completion(
     try:
         body = _post_with_retry(url, payload, headers, http)
     except _Rejected as rejected:
+        _record_failure(usage, started)
         raise AIUnavailable(rejected.message) from rejected
+    except AIUnavailable:
+        _record_failure(usage, started)
+        raise
     finally:
         if owned:
             http.close()
@@ -363,6 +411,11 @@ def request_completion(
 def _record_usage(recorder: UsageRecorder | None, body: dict[str, object], started: float) -> None:
     if recorder is not None:
         recorder.record(_extract_usage(body), int((time.monotonic() - started) * 1000))
+
+
+def _record_failure(recorder: UsageRecorder | None, started: float) -> None:
+    if recorder is not None:
+        recorder.record_failure(int((time.monotonic() - started) * 1000))
 
 
 def _extract_usage(body: dict[str, object]) -> TokenUsage | None:
@@ -377,8 +430,22 @@ def _extract_usage(body: dict[str, object]) -> TokenUsage | None:
     prompt = usage.get("prompt_tokens")
     completion = usage.get("completion_tokens")
     if _is_count(prompt) and _is_count(completion):
-        return TokenUsage(prompt_tokens=prompt, completion_tokens=completion)
+        return TokenUsage(
+            prompt_tokens=prompt, completion_tokens=completion, cached_tokens=_cached(usage)
+        )
     return None
+
+
+def _cached(usage: dict[object, object]) -> int:
+    """Cached prompt tokens wherever the server reports them: OpenAI's
+    `prompt_tokens_details.cached_tokens`, or Anthropic-style `cache_read_input_tokens`."""
+    details = usage.get("prompt_tokens_details")
+    candidates = [
+        details.get("cached_tokens") if isinstance(details, dict) else None,
+        usage.get("cache_read_input_tokens"),
+        usage.get("cached_tokens"),
+    ]
+    return next((value for value in candidates if _is_count(value)), 0)
 
 
 def _is_count(value: object) -> TypeGuard[int]:

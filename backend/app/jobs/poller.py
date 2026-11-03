@@ -32,6 +32,7 @@ from app.models import (
 from app.services import (
     ai,
     ai_tasks,
+    ai_usage,
     audit,
     extraction,
     folders,
@@ -486,7 +487,7 @@ def propose_for(
             api_key=step.api_key,
             prompt=prompt,
             allowed_roots=allowed_roots,
-            usage=meter.scope(AiTask.filing, step.label),
+            usage=step.usage(meter, AiTask.filing),
         )
 
     try:
@@ -668,6 +669,7 @@ def _store(
         },
         usage=[usage],
     )
+    ai_usage.store(session, [meter], user_id=document.user_id, document_id=document.id)
     session.commit()
     metrics.analyses.labels("ready").inc()
     logger.info(
@@ -703,6 +705,8 @@ def _fail(
         },
         usage=[usage],
     )
+    if meter is not None:
+        ai_usage.store(session, [meter], user_id=document.user_id, document_id=document.id)
     session.commit()
     metrics.analyses.labels("failed").inc()
     logger.info("Proposal failed for %s: %s%s", document.webdav_path, reason, _usage_suffix(usage))

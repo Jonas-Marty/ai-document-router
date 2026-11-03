@@ -247,6 +247,41 @@ class AuditEvent(SQLModel, table=True):
     total_tokens: int | None = None
 
 
+class AiCall(SQLModel, table=True):
+    """Model calls, for the AI usage page: one row per call, or per stage of an analysis
+    carried over from before calls were recorded one by one (`requests` > 1 then).
+
+    Kept apart from audit_event so the figures survive audit retention, and so a period can
+    be summed in SQL. `endpoint_id` is not a foreign key and `connection` keeps the name as
+    it was: usage outlives the endpoint it ran on.
+    """
+
+    __tablename__ = "ai_call"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(index=True)
+    occurred_at: datetime = Field(index=True)
+    # One analysis or one comparison; counts them without double-counting their calls.
+    run_id: str = Field(index=True)
+    document_id: str | None = None
+    # extraction | filing | comparison
+    feature: str
+    endpoint_id: str | None = None
+    connection: str
+    model: str
+    requests: int = 1
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0
+    # Of `requests`: how many replied without a usage block, got no reply, ran as a fallback.
+    without_usage: int = 0
+    failed: int = 0
+    fallback: int = 0
+    # Summed over `timed` calls; carried-over rows have no durations.
+    duration_ms: int = 0
+    timed: int = 0
+
+
 class User(SQLModel, table=True):
     """A person who can sign in. Password and OIDC are two ways into the same row.
 

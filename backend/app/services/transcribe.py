@@ -76,7 +76,7 @@ def transcribe(
                 system_prompt=SYSTEM_PROMPT,
                 prompt=prompt,
                 images=batch,
-                usage=meter.scope(AiTask.extraction, step.label) if meter else None,
+                usage=step.usage(meter, AiTask.extraction) if meter else None,
             )
             for batch in _batched(pages, PAGES_PER_REQUEST)
         ]

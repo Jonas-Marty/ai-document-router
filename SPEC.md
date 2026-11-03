@@ -251,6 +251,24 @@ ai-document-router/
 | `details` | JSON — per action; never a secret |
 | `prompt_tokens` / `completion_tokens` / `total_tokens` | int \| null — set when a model was called |
 
+**`ai_call`** — one model call, for the AI usage page (8.12). Written with the audit event of
+the analysis or comparison that made it; not subject to audit retention.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | str, indexed |
+| `occurred_at` | datetime, indexed |
+| `run_id` | str, indexed — one analysis or comparison |
+| `document_id` | str \| null |
+| `feature` | `extraction` \| `filing` \| `comparison` |
+| `endpoint_id` | str \| null — not a FK, so usage outlives the endpoint |
+| `connection` / `model` | str — the endpoint's name and the model, as they were |
+| `requests` | int — 1, or a stage's call count for usage carried over from the audit log |
+| `prompt_tokens` / `completion_tokens` / `cached_tokens` | int |
+| `without_usage` / `failed` / `fallback` | int — of `requests`: no token counts in the reply, no reply, made by a step after the first |
+| `duration_ms` / `timed` | int — summed duration over `timed` calls |
+
 ### 4.2 Shared TypeScript types
 
 Mirror these exactly in `frontend/src/services/api/types.ts`. The API returns camel-free
@@ -490,6 +508,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | PUT | `/ai/endpoints/{id}` | `AiEndpointWrite` | `AiEndpoint` |
 | DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a task still references it |
 | GET | `/ai/tasks` | — | `AiTaskChain[]`, one per task |
+| GET | `/ai/usage?start=YYYY-MM-DD&end=YYYY-MM-DD` | — | `{ rows, analyses, comparisons }` — the caller's calls summed per UTC day, connection, model and feature, both ends inclusive, at most three years |
 | PUT | `/ai/tasks/{task}` | `AiTaskChainUpdate` | `AiTaskChain` — replaces the chain wholesale |
 | GET | `/ai/context` | — | `AiTaskContext[]` — what each task is sent right now; walks WebDAV for the folder tree |
 | POST | `/ai/models` | `AiModelsRequest` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
@@ -865,7 +884,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Review · `/history` History · `/activity` Activity · `/settings` Settings
+`/` Review · `/history` History · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -1056,6 +1075,21 @@ first, `Load more` via cursor. Desktop: a table of when (relative, absolute on h
 the summary, and tokens. Mobile: stacked cards with the summary as the title and who · when ·
 tokens beneath. Every event has a `Details` disclosure listing the action, document id, token
 split and each `details` entry; nested values show as indented JSON.
+
+### 8.12 AI usage
+
+Reached from the usage summary on Activity. How many tokens the account's model calls used,
+modelled on the same page in cash-flow.
+
+- *Period*: This month (default), Last month, This year, or a date range.
+- *Tiles*: Requests (with analyses · comparisons), Tokens in (with how many were cached),
+  Tokens out, Total (Ø per request that reported tokens), Failed (no reply), Without counts
+  (replied without a usage block).
+- *Chart*: stacked bars of tokens per day — per month beyond about two months — grouped by
+  Connection, Model or Feature (Reading, Filing, Comparisons). The legend toggles a group.
+- *Breakdown*: per group, requests, in, out, total, share, Ø / request, Ø duration, failed.
+  A connection opens into the models it ran. Pills mark fallback use, a model no longer in
+  any chain, a removed connection. Desktop: a table; phone: one card per line.
 
 ---
 
