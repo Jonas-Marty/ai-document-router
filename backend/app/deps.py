@@ -23,17 +23,18 @@ def get_app_settings(session: SessionDep) -> AppSettings:
 AppSettingsDep = Annotated[AppSettings, Depends(get_app_settings)]
 
 
-def get_webdav(app_settings: AppSettingsDep) -> WebDavService:
+def get_webdav(session: SessionDep, app_settings: AppSettingsDep) -> WebDavService:
     """A WebDAV service scoped to the *current* settings.
 
     Built per request rather than once at import: allowed_root_folders is editable at
     runtime, and a service frozen at startup would keep enforcing a stale set of roots.
 
-    Note this carries the *permitted* roots (allowed + trash + watch), which is the I/O
+    Note this carries the *permitted* roots (allowed + trash + watch + the folders of open
+    documents), which is the I/O
     backstop. Anything acting on a user-supplied destination must additionally check
     against allowed_root_folders alone -- see router.approve.
     """
-    return WebDavService(build_client(), settings_service.permitted_roots(app_settings))
+    return WebDavService(build_client(), settings_service.permitted_roots(session, app_settings))
 
 
 WebDavDep = Annotated[WebDavService, Depends(get_webdav)]

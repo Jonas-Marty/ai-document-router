@@ -81,7 +81,14 @@ def session() -> Iterator[Session]:
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as s:
-        s.add(AppSettings(id=1, allowed_root_folders=["/Documents"], trash_folder_path="/Trash"))
+        s.add(
+            AppSettings(
+                id=1,
+                allowed_root_folders=["/Documents"],
+                trash_folder_path="/Trash",
+                watch_folder_path="/Test-Inbox",
+            )
+        )
         # A filing chain with one step: the poller takes its endpoint and model from here,
         # so without it every proposal fails before it reaches the stubbed request_proposal.
         s.add(AiEndpoint(id="ep", name="Local", base_url="http://ai.test/v1", created_at=utc_now()))
@@ -101,7 +108,6 @@ class TestIngest:
     def test_records_a_new_file(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("scan.pdf")])
 
         added = poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
@@ -114,7 +120,6 @@ class TestIngest:
     def test_is_idempotent_across_ticks(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("scan.pdf")])
 
         poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
@@ -127,7 +132,6 @@ class TestIngest:
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """SPEC 6.2 rule 3: a file modified seconds ago may still be uploading."""
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("fresh.pdf", age_seconds=2)])
 
         assert poller.ingest(session, service, app_settings) == {}  # type: ignore[arg-type]
@@ -140,7 +144,6 @@ class TestIngest:
         monkeypatch: pytest.MonkeyPatch,
         name: str,
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry(name)])
 
         assert poller.ingest(session, service, app_settings) == {}  # type: ignore[arg-type]
@@ -148,7 +151,6 @@ class TestIngest:
     def test_skips_directories(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("subfolder", is_dir=True)])
 
         assert poller.ingest(session, service, app_settings) == {}  # type: ignore[arg-type]
@@ -156,7 +158,6 @@ class TestIngest:
     def test_dedupes_identical_content_under_a_different_name(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         body = pdf_with_text("same")
         service = FakeService(
             [entry("first.pdf"), entry("second.pdf")],
@@ -171,7 +172,6 @@ class TestIngest:
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A first run against 52 real scans must not download all of them in one tick."""
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         monkeypatch.setattr(config, "poller_ingest_batch", 2)
         bodies = {f"/Test-Inbox/s{i}.pdf": f"body-{i}".encode() for i in range(5)}
         service = FakeService([entry(f"s{i}.pdf") for i in range(5)], bodies=bodies)
@@ -181,7 +181,6 @@ class TestIngest:
     def test_a_file_with_no_text_layer_lands_as_failed_not_an_exception(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("blank.pdf")])
 
         poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
@@ -203,7 +202,6 @@ class TestNoDoubleDownload:
     ) -> None:
         """Ingest already read the bytes; extracting the same text again would double
         every tick's network cost against the server."""
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         monkeypatch.setattr(
             poller.ai,
             "request_proposal",
@@ -226,7 +224,6 @@ class TestNoDoubleDownload:
     def test_a_document_from_an_earlier_tick_is_read_when_needed(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
         service = FakeService([entry("scan.pdf")])
         poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
         service.read_paths.clear()
@@ -486,7 +483,12 @@ class TestFullTick:
         SQLModel.metadata.create_all(engine)
         with Session(engine) as setup:
             setup.add(
-                AppSettings(id=1, allowed_root_folders=["/Documents"], trash_folder_path="/Trash")
+                AppSettings(
+                    id=1,
+                    allowed_root_folders=["/Documents"],
+                    trash_folder_path="/Trash",
+                    watch_folder_path="/Test-Inbox",
+                )
             )
             setup.add(
                 AiEndpoint(
@@ -497,8 +499,9 @@ class TestFullTick:
             setup.commit()
 
         monkeypatch.setattr(poller.db, "engine", engine)
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Test-Inbox")
-        monkeypatch.setattr(poller, "build_service", lambda s: FakeService([entry("scan.pdf")]))
+        monkeypatch.setattr(
+            poller, "build_service", lambda _session, _settings: FakeService([entry("scan.pdf")])
+        )
 
         # The scan reads as image-only until it has been through OCR, and as text after.
         ocred = {"done": False}

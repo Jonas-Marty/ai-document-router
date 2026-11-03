@@ -36,7 +36,6 @@ services:
       WEBDAV_BASE_URL: ${WEBDAV_BASE_URL:?set WEBDAV_BASE_URL in the Dokploy Environment tab}
       WEBDAV_USERNAME: ${WEBDAV_USERNAME:?set WEBDAV_USERNAME in the Dokploy Environment tab}
       WEBDAV_PASSWORD: ${WEBDAV_PASSWORD:?set WEBDAV_PASSWORD in the Dokploy Environment tab}
-      WEBDAV_WATCH_FOLDER: ${WEBDAV_WATCH_FOLDER:-/Scans/Inbox}
       # The public URL. Without it the session cookie is not marked Secure and the OIDC
       # redirect URI points at localhost, so single sign-on cannot work.
       APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL to the domain this is served on}

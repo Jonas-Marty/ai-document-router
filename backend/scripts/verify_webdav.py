@@ -32,6 +32,11 @@ INFO = "\033[36m  -- \033[0m"
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--watch",
+        required=True,
+        help="the watch folder to list, as set in Settings (e.g. /Scans/Inbox)",
+    )
+    parser.add_argument(
         "--write",
         metavar="ROOT",
         help="also exercise mkdir_p and move inside a scratch folder under ROOT",
@@ -43,7 +48,7 @@ def main() -> int:
         print(f"{INFO} Fill in the WEBDAV_* values in .env first.")
         return 1
 
-    watch = config.webdav_watch_folder
+    watch = args.watch
     permitted = [watch] + ([args.write] if args.write else [])
     service = WebDavService(build_client(), permitted)
 

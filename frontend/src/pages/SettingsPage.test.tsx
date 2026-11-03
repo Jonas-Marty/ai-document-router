@@ -42,6 +42,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
   return {
     allowed_root_folders: ["/Documents/Finance", "/Documents/Medical"],
     trash_folder_path: "/Documents/.trash",
+    watch_folder_path: "/Scans/Inbox",
     filename_pattern: null,
     filename_pattern_hint: null,
     store_ocr_text: true,
@@ -167,6 +168,7 @@ describe("SettingsPage", () => {
     expect(payload).toMatchObject({
       allowed_root_folders: ["/Documents/Finance", "/Documents/Medical"],
       trash_folder_path: "/Documents/.trash",
+      watch_folder_path: "/Scans/Inbox",
     });
   });
 
@@ -192,6 +194,7 @@ describe("SettingsPage", () => {
     expect(payload).toMatchObject({
       allowed_root_folders: ["/Documents/Legal", "/Documents/Medical"],
       trash_folder_path: "/Documents/.trash",
+      watch_folder_path: "/Scans/Inbox",
     });
     await waitFor(() =>
       expect(nth(screen.getAllByRole("button", { name: "Save" }), 0)).toBeDisabled(),
@@ -275,6 +278,55 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByText("Duplicate folder.")).toBeInTheDocument();
     expect(apiClient.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("requires a watch folder before folders can be saved", async () => {
+    // A fresh install, and anyone upgrading from the WEBDAV_WATCH_FOLDER variable.
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings({ watch_folder_path: "" }));
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    await user.type(screen.getByLabelText("Allowed root folder 1"), "x");
+    await user.click(sectionSave("Folders"));
+
+    expect(await screen.findByText("Watch folder is required.")).toBeInTheDocument();
+    expect(apiClient.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("refuses a watch folder that is an allowed root, where filed documents land", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    const watch = screen.getByLabelText("Watch folder");
+    await user.clear(watch);
+    await user.type(watch, "/Documents/Finance");
+    await user.click(sectionSave("Folders"));
+
+    expect(
+      await screen.findByText("Watch folder must not be an allowed root folder or contain one."),
+    ).toBeInTheDocument();
+    expect(apiClient.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("accepts a watch folder inside an allowed root", async () => {
+    vi.mocked(apiClient.getSettings).mockResolvedValue(settings());
+    vi.mocked(apiClient.updateSettings).mockResolvedValue(
+      settings({ watch_folder_path: "/Documents/Finance/Inbox" }),
+    );
+    const user = userEvent.setup();
+    await renderReadyPage();
+
+    const watch = screen.getByLabelText("Watch folder");
+    await user.clear(watch);
+    await user.type(watch, "/Documents/Finance/Inbox");
+    await user.click(sectionSave("Folders"));
+
+    await waitFor(() =>
+      expect(apiClient.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ watch_folder_path: "/Documents/Finance/Inbox" }),
+      ),
+    );
   });
 
   it("arms the navigation guard once any section is dirty, and disarms after a successful save", async () => {

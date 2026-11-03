@@ -147,6 +147,7 @@ export interface FolderContext {
 export interface Settings {
   allowed_root_folders: string[];
   trash_folder_path: string;
+  watch_folder_path: string;
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
   store_ocr_text: boolean; // file a searchable copy of a scan instead of the original

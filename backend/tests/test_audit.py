@@ -99,12 +99,20 @@ class TestSameTransaction:
 
 class TestThroughTheApi:
     def test_a_settings_save_lists_only_what_changed(self, client: TestClient) -> None:
-        payload = {"allowed_root_folders": ["/Documents"], "trash_folder_path": "/Trash"}
+        payload = {
+            "allowed_root_folders": ["/Documents"],
+            "trash_folder_path": "/Trash",
+            "watch_folder_path": "/Scans/Inbox",
+        }
         client.put("/api/v1/settings", json=payload)
         client.put("/api/v1/settings", json={**payload, "filename_pattern_hint": "YYYY.MM.DD"})
 
         first, second = db_events(AuditAction.settings_updated)
-        assert set(first.details["changed"]) == {"allowed_root_folders", "trash_folder_path"}  # type: ignore[arg-type]
+        assert set(first.details["changed"]) == {  # type: ignore[arg-type]
+            "allowed_root_folders",
+            "trash_folder_path",
+            "watch_folder_path",
+        }
         assert second.details["changed"] == {
             "filename_pattern_hint": {"from": None, "to": "YYYY.MM.DD"}
         }
@@ -174,6 +182,7 @@ class TestThroughTheApi:
                 json={
                     "allowed_root_folders": ["/Documents"],
                     "trash_folder_path": "/Trash",
+                    "watch_folder_path": "/Scans/Inbox",
                     "filename_pattern_hint": hint,
                 },
             )

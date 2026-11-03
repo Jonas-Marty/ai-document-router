@@ -150,6 +150,9 @@ class AppSettings(SQLModel, table=True):
     id: int = Field(default=1, primary_key=True)
     allowed_root_folders: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     trash_folder_path: str = ""
+    # Where the scanner drops new files. A setting rather than env because it describes the
+    # archive, like the roots and the trash; empty until set, and nothing is ingested before.
+    watch_folder_path: str = ""
     filename_pattern: str | None = None
     filename_pattern_hint: str | None = None
     # When a scanned document has no text layer, OCR one in and file that copy instead of

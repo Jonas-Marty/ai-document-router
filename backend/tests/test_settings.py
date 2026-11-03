@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 VALID_PAYLOAD: dict[str, Any] = {
     "allowed_root_folders": ["/Documents"],
     "trash_folder_path": "/Trash",
+    "watch_folder_path": "/Scans/Inbox",
     "filename_pattern": None,
     "filename_pattern_hint": None,
 }
@@ -18,6 +19,7 @@ def test_get_settings_returns_seeded_defaults(client: TestClient) -> None:
     assert data == {
         "allowed_root_folders": [],
         "trash_folder_path": "",
+        "watch_folder_path": "",
         "filename_pattern": None,
         "filename_pattern_hint": None,
         "store_ocr_text": True,
@@ -123,3 +125,30 @@ def test_unknown_route_returns_error_envelope(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+class TestWatchFolder:
+    def test_is_required(self, client: TestClient) -> None:
+        response = client.put("/api/v1/settings", json={**VALID_PAYLOAD, "watch_folder_path": ""})
+
+        assert response.status_code == 422
+
+    def test_may_sit_inside_an_allowed_root(self, client: TestClient) -> None:
+        payload = {**VALID_PAYLOAD, "watch_folder_path": "/Documents/Inbox/"}
+
+        response = client.put("/api/v1/settings", json=payload)
+
+        assert response.status_code == 200
+        assert response.json()["watch_folder_path"] == "/Documents/Inbox"
+
+    def test_must_not_be_or_contain_an_allowed_root(self, client: TestClient) -> None:
+        # Approved documents land in the roots; a watch folder there re-ingests them.
+        for watch in ("/Documents", "/"):
+            payload = {**VALID_PAYLOAD, "watch_folder_path": watch}
+
+            assert client.put("/api/v1/settings", json=payload).status_code == 422
+
+    def test_must_not_overlap_the_trash(self, client: TestClient) -> None:
+        payload = {**VALID_PAYLOAD, "watch_folder_path": "/Trash/Scans"}
+
+        assert client.put("/api/v1/settings", json=payload).status_code == 422

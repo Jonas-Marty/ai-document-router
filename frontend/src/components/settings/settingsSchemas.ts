@@ -13,6 +13,7 @@ export const foldersFormSchema = z
       .array(z.object({ value: z.string() }))
       .min(1, "At least one allowed root folder is required."),
     trash_folder_path: z.string(),
+    watch_folder_path: z.string(),
   })
   .superRefine((values, ctx) => {
     const roots = values.allowed_root_folders.map((r) => r.value.trim());
@@ -83,6 +84,43 @@ export const foldersFormSchema = z
           message: "Trash folder must not be inside any allowed root folder.",
           path: ["trash_folder_path"],
         });
+      }
+    }
+
+    // May sit inside a root (a common layout), but not be or contain one: filed documents
+    // landing directly in it would be ingested again.
+    const watch = values.watch_folder_path.trim();
+    if (!watch) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Watch folder is required.",
+        path: ["watch_folder_path"],
+      });
+    } else if (!isAbsolutePath(watch)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Must be an absolute path, starting with /.",
+        path: ["watch_folder_path"],
+      });
+    } else {
+      const normalizedWatch = normalizeFolderPath(watch);
+      const within = (outer: string, inner: string) =>
+        outer === "/" || inner === outer || inner.startsWith(`${outer}/`);
+      if (normalized.some((root) => root && within(normalizedWatch, root))) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Watch folder must not be an allowed root folder or contain one.",
+          path: ["watch_folder_path"],
+        });
+      } else if (trash && isAbsolutePath(trash)) {
+        const normalizedTrash = normalizeFolderPath(trash);
+        if (within(normalizedTrash, normalizedWatch) || within(normalizedWatch, normalizedTrash)) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Watch folder and trash folder must not overlap.",
+            path: ["watch_folder_path"],
+          });
+        }
       }
     }
   });

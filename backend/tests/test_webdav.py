@@ -566,22 +566,9 @@ class TestProbe:
 
         assert real_probe_reachable() is False
 
-    def test_treats_a_malformed_watch_folder_as_unreachable_and_warns(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        monkeypatch.setattr(config, "webdav_base_url", "https://cloud.example.com")
-        monkeypatch.setattr(config, "webdav_watch_folder", "not-absolute")
-
-        with caplog.at_level("WARNING"):
-            assert real_probe_reachable() is False
-
-        # A config typo must be distinguishable from a server being down.
-        assert "WEBDAV_WATCH_FOLDER" in caplog.text
-
     def test_reuses_one_client_across_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         webdav.reset_probe_client()
         monkeypatch.setattr(config, "webdav_base_url", "https://cloud.example.com")
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Scans/Inbox")
 
         built: list[FakeClient] = []
 

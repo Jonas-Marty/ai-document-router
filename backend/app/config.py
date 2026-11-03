@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     webdav_base_url: str = ""
     webdav_username: str = ""
     webdav_password: str = ""
-    webdav_watch_folder: str = "/Scans/Inbox"
     webdav_timeout_seconds: float = 30.0
     # The health probe gets its own short timeout: the frontend polls /health on an interval
     # and an outage banner that takes 30s to appear is worse than no banner.

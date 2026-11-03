@@ -108,16 +108,10 @@ def probe_reachable() -> bool:
     if not config.webdav_base_url:
         return False
 
+    # The base URL itself rather than the watch folder: the probe runs without a database
+    # session, and "is the server there" is the question; a missing folder is Settings' job.
     try:
-        watch_folder = normalize_path(config.webdav_watch_folder).lstrip("/")
-    except ValueError:
-        # A malformed WEBDAV_WATCH_FOLDER is a configuration mistake, not an outage.
-        # Logged at warning so it is distinguishable from a server that is simply down.
-        logger.warning("WEBDAV_WATCH_FOLDER is not a valid path: %r", config.webdav_watch_folder)
-        return False
-
-    try:
-        _probe_client().exists(watch_folder)
+        _probe_client().exists("")
     except Exception as exc:  # noqa: BLE001 - a health probe must never propagate
         logger.debug("WebDAV health probe failed: %s", exc)
         metrics.webdav_reachable.set(0)

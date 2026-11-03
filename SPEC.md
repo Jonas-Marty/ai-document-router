@@ -171,6 +171,7 @@ ai-document-router/
 |---|---|
 | `allowed_root_folders` | JSON list[str] |
 | `trash_folder_path` | str |
+| `watch_folder_path` | str — where the scanner saves; `""` until set, and nothing is ingested before |
 | `filename_pattern` | str \| null — regex, soft validation |
 | `filename_pattern_hint` | str \| null |
 | `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
@@ -534,7 +535,7 @@ Operations: `list_dir`, `list_dirs_only`, `exists`, `stat`, `read_stream`, `move
 
 APScheduler interval job inside the API process, every `POLL_INTERVAL_SECONDS` (default 60).
 
-1. List the watch folder. For each file not already tracked (by path + `content_hash`),
+1. List the watch folder (`watch_folder_path`; skipped while it is empty). For each file not already tracked (by path + `content_hash`),
    create a `document` with `status=pending`, `proposal_status=pending`.
 2. For each queued document with `ocr_status=pending`, produce a searchable copy (6.2a).
 3. For each document with `proposal_status=pending`, generate a proposal (6.3).
@@ -810,6 +811,11 @@ likely to divide by are created at zero on startup.
 - At least one allowed root; each absolute; no duplicates; none a prefix of another.
 - Trash folder absolute, required, **must not be inside any allowed root** — otherwise
   trashed files become valid targets again and can cycle.
+- Watch folder absolute, required. It **may** sit inside an allowed root, but must not be one
+  or contain one, and must not overlap the trash — filed documents landing directly in it
+  would be ingested again. Approve refuses a destination inside it for the same reason.
+- Changing the watch folder leaves queued documents where they are: the folders of open
+  documents stay permitted for I/O until those documents are filed or trashed.
 - `filename_pattern` must compile as a regex; reject on save if it doesn't.
 - An endpoint needs a name, unique across endpoints, and a `base_url` that parses as
   `https://` (allow `http://` only for RFC1918 and localhost hosts — the key travels on
@@ -914,7 +920,7 @@ Empty: "Nothing filed yet. Approved and trashed documents show up here."
 ### 8.7 Settings
 
 One form per section, save disabled until dirty, `Discard changes` alongside, unsaved-changes
-navigation guard. Sections: Folders (allowed roots list, trash folder), Naming (pattern +
+navigation guard. Sections: Folders (watch folder, allowed roots list, trash folder), Naming (pattern +
 hint, with a live regex validity check), AI endpoints, one card per AI task, AI instructions,
 What the models are given, OCR.
 
@@ -1048,7 +1054,7 @@ happened and what to do next, without apologising. Empty states invite an action
 `.env` at the repo root, loaded by both sides. See `.env.example`.
 
 Backend: `DATABASE_URL`, `SECRET_KEY`, `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
-`WEBDAV_PASSWORD`, `WEBDAV_WATCH_FOLDER`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`,
+`WEBDAV_PASSWORD`, `POLL_INTERVAL_SECONDS`, `CORS_ORIGINS`, `LOG_LEVEL`,
 `LOG_FORMAT` (`text` | `json`), `AUDIT_RETENTION_DAYS` (default 365; `0` keeps every event),
 `METRICS_TOKEN` (empty turns `/metrics` off).
 

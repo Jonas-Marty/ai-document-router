@@ -98,7 +98,7 @@ def run_once() -> None:
                     logger.warning("Settings row missing; skipping tick.")
                     metrics.poller_ticks.labels("skipped").inc()
                     return
-                service = build_service(app_settings)
+                service = build_service(session, app_settings)
                 # Carry the bytes we just read straight into the proposal step, so a document
                 # ingested this tick is not downloaded a second time to extract the same text.
                 fresh = ingest(session, service, app_settings)
@@ -137,8 +137,8 @@ def run_once() -> None:
         )
 
 
-def build_service(app_settings: AppSettings) -> WebDavService:
-    return WebDavService(build_client(), settings_service.permitted_roots(app_settings))
+def build_service(session: Session, app_settings: AppSettings) -> WebDavService:
+    return WebDavService(build_client(), settings_service.permitted_roots(session, app_settings))
 
 
 def ingest(
@@ -149,7 +149,10 @@ def ingest(
     Returns what was extracted from each newly ingested document, keyed by document id, so
     the proposal step in the same tick can reuse it instead of re-downloading.
     """
-    watch_folder = config.webdav_watch_folder
+    watch_folder = app_settings.watch_folder_path
+    if not watch_folder:
+        logger.debug("No watch folder set in Settings yet; nothing to ingest.")
+        return {}
     try:
         entries = service.list_dir(watch_folder)
     except AppError as exc:

@@ -75,8 +75,9 @@ just secret-key          # paste the output into SECRET_KEY in .env
 ```
 
 Fill in the rest of `.env` — at minimum `WEBDAV_BASE_URL`, `WEBDAV_USERNAME`,
-`WEBDAV_PASSWORD`, `WEBDAV_WATCH_FOLDER`, and `APP_BASE_URL` (the public URL the browser will
-use). Use a WebDAV **app password**, never the account password. Then:
+`WEBDAV_PASSWORD`, and `APP_BASE_URL` (the public URL the browser will use). Use a WebDAV
+**app password**, never the account password. The folder your scanner saves into is set in the
+app, under Settings → Folders → Watch folder; nothing is ingested until it is. Then:
 
 ```bash
 just up

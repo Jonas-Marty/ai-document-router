@@ -45,6 +45,7 @@ const baseDocument: Document = {
 const emptySettings: Settings = {
   allowed_root_folders: ["/Documents"],
   trash_folder_path: "/Trash",
+  watch_folder_path: "/Scans/Inbox",
   filename_pattern: null,
   filename_pattern_hint: null,
   store_ocr_text: true,

@@ -1,15 +1,15 @@
 import logging
 import re
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from app.config import settings as config
-from app.models import AppSettings, AuditAction
+from app.models import AppSettings, AuditAction, Document, DocumentStatus
 from app.schemas import SettingsRead, SettingsUpdate
 from app.services import audit
 from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.paths import is_within, normalize_path
+from app.services.webdav import parent_of
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ _SETTINGS_ID = 1
 _LABELS = {
     "allowed_root_folders": "allowed folders",
     "trash_folder_path": "trash folder",
+    "watch_folder_path": "watch folder",
     "filename_pattern": "filename pattern",
     "filename_pattern_hint": "pattern hint",
     "store_ocr_text": "searchable copies",
@@ -34,17 +35,28 @@ def get_settings(session: Session) -> AppSettings:
     return settings
 
 
-def permitted_roots(settings: AppSettings) -> list[str]:
+def permitted_roots(session: Session, settings: AppSettings) -> list[str]:
     """Every path tree the app may touch: allowed roots plus the deliberate exceptions.
 
     Empties are dropped. On a freshly seeded database `trash_folder_path` is "" and
     `allowed_root_folders` is [], and `normalize_path("")` raises -- without this filter the
     poller's first tick would die in the WebDavService constructor before reaching WebDAV.
+
+    The folders of documents still open in the queue are included too. After the watch
+    folder changes in Settings, documents ingested from the old one must stay approvable,
+    skippable and trashable where they are. These paths are trusted because only the poller
+    writes them, from a listing of whatever was the watch folder at the time.
     """
+    open_paths = session.exec(
+        select(Document.webdav_path).where(
+            Document.status.in_((DocumentStatus.pending, DocumentStatus.skipped))  # type: ignore[attr-defined]
+        )
+    ).all()
     candidates = (
         *settings.allowed_root_folders,
         settings.trash_folder_path,
-        config.webdav_watch_folder,
+        settings.watch_folder_path,
+        *sorted({parent_of(normalize_path(path)) for path in open_paths}),
     )
     return [root for root in candidates if root]
 
@@ -53,6 +65,7 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
     return SettingsRead(
         allowed_root_folders=settings.allowed_root_folders,
         trash_folder_path=settings.trash_folder_path,
+        watch_folder_path=settings.watch_folder_path,
         filename_pattern=settings.filename_pattern,
         filename_pattern_hint=settings.filename_pattern_hint,
         store_ocr_text=settings.store_ocr_text,
@@ -66,11 +79,13 @@ def update_settings(session: Session, payload: SettingsUpdate, *, actor: Actor) 
 
     allowed_roots = _validate_allowed_roots(payload.allowed_root_folders)
     trash_folder = _validate_trash_folder(payload.trash_folder_path, allowed_roots)
+    watch_folder = _validate_watch_folder(payload.watch_folder_path, allowed_roots, trash_folder)
     _validate_filename_pattern(payload.filename_pattern)
 
     updated = {
         "allowed_root_folders": allowed_roots,
         "trash_folder_path": trash_folder,
+        "watch_folder_path": watch_folder,
         "filename_pattern": payload.filename_pattern,
         "filename_pattern_hint": payload.filename_pattern_hint,
         "store_ocr_text": payload.store_ocr_text,
@@ -131,6 +146,24 @@ def _validate_trash_folder(trash: str, allowed_roots: list[str]) -> str:
     for root in allowed_roots:
         if is_within(root, normalized):
             raise ValidationError("Trash folder must not be inside any allowed root folder.")
+    return normalized
+
+
+def _validate_watch_folder(watch: str, allowed_roots: list[str], trash: str) -> str:
+    """The watch folder may sit inside an allowed root (a common layout), but not be one or
+    contain one: the poller ingests every file directly in it, so filed documents landing
+    there would come straight back into the queue."""
+    if not watch.strip():
+        raise ValidationError("A watch folder is required: the folder your scanner saves into.")
+    try:
+        normalized = normalize_path(watch)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    for root in allowed_roots:
+        if is_within(normalized, root):
+            raise ValidationError("Watch folder must not be an allowed root folder or contain one.")
+    if is_within(trash, normalized) or is_within(normalized, trash):
+        raise ValidationError("Watch folder and trash folder must not overlap.")
     return normalized
 
 

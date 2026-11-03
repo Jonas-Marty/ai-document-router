@@ -7,7 +7,6 @@ selectable. That is enforced here, not only in the picker.
 import logging
 from datetime import UTC, datetime
 
-from app.config import settings as config
 from app.models import AppSettings
 from app.schemas import FolderContext, FolderNode, SiblingFile
 from app.services import ai, naming
@@ -154,7 +153,7 @@ def prompt_context(
     """
     excluded = [
         normalize_path(path)
-        for path in (config.webdav_watch_folder, app_settings.trash_folder_path)
+        for path in (app_settings.watch_folder_path, app_settings.trash_folder_path)
         if path
     ]
     tree: list[str] = []

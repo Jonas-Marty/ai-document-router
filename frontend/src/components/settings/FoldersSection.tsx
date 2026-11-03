@@ -33,6 +33,7 @@ export function FoldersSection({
     () => ({
       allowed_root_folders: settings.allowed_root_folders.map((value) => ({ value })),
       trash_folder_path: settings.trash_folder_path,
+      watch_folder_path: settings.watch_folder_path,
     }),
     [settings],
   );
@@ -67,6 +68,7 @@ export function FoldersSection({
         ...settings,
         allowed_root_folders: values.allowed_root_folders.map((r) => r.value.trim()),
         trash_folder_path: values.trash_folder_path.trim(),
+        watch_folder_path: values.watch_folder_path.trim(),
       },
       {
         onSuccess: (saved) => {
@@ -74,6 +76,7 @@ export function FoldersSection({
             {
               allowed_root_folders: saved.allowed_root_folders.map((value) => ({ value })),
               trash_folder_path: saved.trash_folder_path,
+              watch_folder_path: saved.watch_folder_path,
             },
             { keepDirtyValues: false },
           );
@@ -96,6 +99,26 @@ export function FoldersSection({
         isSaving={updateSettings.isPending}
         onDiscard={() => methods.reset(values, { keepDirtyValues: false })}
       >
+        <div className="space-y-1.5">
+          <Label htmlFor="watch_folder_path">Watch folder</Label>
+          <Input
+            id="watch_folder_path"
+            className="font-mono"
+            placeholder="/Scans/Inbox"
+            aria-invalid={!!errors.watch_folder_path}
+            aria-describedby="watch_folder_path_help"
+            {...register("watch_folder_path")}
+          />
+          {errors.watch_folder_path ? (
+            <p className="text-sm text-destructive">{errors.watch_folder_path.message}</p>
+          ) : (
+            <p id="watch_folder_path_help" className="text-sm text-muted-foreground">
+              Where your scanner saves. New files here are added to the review queue. Documents
+              already queued stay where they are if you change it.
+            </p>
+          )}
+        </div>
+
         <div className="space-y-2">
           <Label>Allowed root folders</Label>
           <div className="space-y-2">

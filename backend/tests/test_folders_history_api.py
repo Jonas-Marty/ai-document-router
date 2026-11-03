@@ -88,6 +88,7 @@ def configured(client: TestClient) -> TestClient:
         assert settings is not None
         settings.allowed_root_folders = [ROOT]
         settings.trash_folder_path = TRASH
+        settings.watch_folder_path = WATCH
         session.add(settings)
         session.commit()
     return client
@@ -288,6 +289,60 @@ class TestRoutingEndpoints:
         assert fake.moves == [(f"{WATCH}/scan.pdf", f"{TRASH}/scan.pdf")]
 
 
+class TestWatchFolderBoundary:
+    def test_approve_refuses_a_watch_folder_inside_an_allowed_root(
+        self, configured: TestClient, fake: FakeWebDav
+    ) -> None:
+        # Filed there, the poller would ingest it again on the next tick, forever.
+        with Session(db.engine) as session:
+            settings = session.get(AppSettings, 1)
+            assert settings is not None
+            settings.watch_folder_path = f"{ROOT}/Inbox"
+            session.add(settings)
+            session.commit()
+        document_id = make_document()
+
+        response = configured.post(
+            f"/api/v1/documents/{document_id}/approve",
+            json={
+                "final_name": "Filed",
+                "final_folder_path": f"{ROOT}/Inbox",
+                "document_date": None,
+            },
+        )
+
+        assert response.status_code == 422
+        assert fake.moves == []
+
+    def test_documents_from_a_previous_watch_folder_stay_reachable(
+        self, configured: TestClient
+    ) -> None:
+        from app.services import settings as settings_service
+
+        open_id = make_document("open.pdf")
+        filed_id = make_document("filed.pdf")
+        with Session(db.engine) as session:
+            filed = session.get(Document, filed_id)
+            assert filed is not None
+            filed.webdav_path = "/Elsewhere/filed.pdf"
+            filed.status = DocumentStatus.moved
+            session.add(filed)
+            settings = session.get(AppSettings, 1)
+            assert settings is not None
+            settings.watch_folder_path = "/New-Inbox"
+            session.add(settings)
+            session.commit()
+            assert session.get(Document, open_id) is not None
+
+            roots = settings_service.permitted_roots(session, settings)
+
+        # Still queued from the old folder: approvable where it is. Already filed: not a
+        # reason to widen anything.
+        assert WATCH in roots
+        assert "/New-Inbox" in roots
+        assert "/Elsewhere" not in roots
+
+
 class TestHistory:
     def _entry(self, session: Session, name: str, processed_at: datetime) -> HistoryEntry:
         document = Document(
@@ -423,12 +478,9 @@ class TestPromptContext:
     """The folder tree and example filenames sent to the AI with every proposal."""
 
     @pytest.fixture
-    def archive(self, monkeypatch: pytest.MonkeyPatch) -> FakeWebDav:
+    def archive(self) -> FakeWebDav:
         # The watch folder and trash living *inside* an allowed root is a common layout,
         # and exactly where unsorted scans used to leak into the naming examples.
-        from app.config import settings as config
-
-        monkeypatch.setattr(config, "webdav_watch_folder", "/Docs/Inbox")
         stub = FakeWebDav()
         stub.listings = {
             "/Docs": [folder("/Docs/Inbox"), folder("/Docs/Trash"), folder("/Docs/Finance")],
@@ -451,7 +503,10 @@ class TestPromptContext:
         from app.services import folders
 
         app_settings = AppSettings(
-            id=1, allowed_root_folders=["/Docs"], trash_folder_path="/Docs/Trash"
+            id=1,
+            allowed_root_folders=["/Docs"],
+            trash_folder_path="/Docs/Trash",
+            watch_folder_path="/Docs/Inbox",
         )
         return folders.prompt_context(stub, app_settings)  # type: ignore[arg-type]
 

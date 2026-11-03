@@ -32,7 +32,7 @@ from app.services.errors import (
     WebDAVConflict,
 )
 from app.services.extraction import extension_of, sha256
-from app.services.paths import assert_within_allowed_roots, normalize_path
+from app.services.paths import assert_within_allowed_roots, is_within, normalize_path
 from app.services.times import to_storage, utc_now
 from app.services.webdav import WebDavService, parent_of
 
@@ -59,6 +59,10 @@ def approve(
     # the watch folder would have the poller re-ingest the file on its next tick, putting
     # the document back in the queue forever. SPEC 7.2.
     folder = assert_within_allowed_roots(final_folder_path, app_settings.allowed_root_folders)
+    # The watch folder may sit inside an allowed root, so the check above does not cover it.
+    watch_folder = app_settings.watch_folder_path
+    if watch_folder and is_within(normalize_path(watch_folder), folder):
+        raise ValidationError("Can't file into the watch folder; it would be picked up again.")
 
     extension = extension_of(document.original_filename)
     destination = normalize_path(f"{folder}/{stem}{extension}")

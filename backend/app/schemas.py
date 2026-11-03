@@ -162,6 +162,7 @@ class CredentialsRequest(BaseModel):
 class SettingsRead(BaseModel):
     allowed_root_folders: list[str]
     trash_folder_path: str
+    watch_folder_path: str
     filename_pattern: str | None
     filename_pattern_hint: str | None
     store_ocr_text: bool
@@ -172,6 +173,7 @@ class SettingsRead(BaseModel):
 class SettingsUpdate(BaseModel):
     allowed_root_folders: list[str]
     trash_folder_path: str
+    watch_folder_path: str
     filename_pattern: str | None = None
     filename_pattern_hint: str | None = None
     store_ocr_text: bool = True

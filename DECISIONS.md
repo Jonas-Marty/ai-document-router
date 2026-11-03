@@ -916,3 +916,10 @@ meaningful. One line of "why" each; not a full ADR log.
   walk met -- the unsorted scans in the inbox. Examples are now the most recently modified
   filed documents, which show the naming convention currently in use. No setting for it: the
   two folders to exclude are already configured.
+- **The watch folder moved from `WEBDAV_WATCH_FOLDER` to Settings, with no env fallback.** It
+  describes the archive, like the roots and the trash, and changing it should not need a
+  redeploy. One source only, so there is never a question of which value applies; ingest waits
+  until it is set. Documents already queued from a previous watch folder stay approvable: the
+  folders of open documents are part of `permitted_roots`, trusted because only the poller
+  writes those paths. The health probe now checks the WebDAV base URL rather than the watch
+  folder, since it runs without a database session.
