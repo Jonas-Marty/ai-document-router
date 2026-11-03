@@ -528,6 +528,29 @@ class TestPromptContext:
 
         assert tree == ["/Docs", "/Docs/Finance"]
 
+    def test_a_watch_folder_listed_as_an_allowed_root_is_still_skipped(self) -> None:
+        # Settings refuses this layout, but the move to per-user settings copied the old
+        # WEBDAV_WATCH_FOLDER in without checking it, so existing data can have it.
+        from app.services import folders
+
+        stub = FakeWebDav()
+        stub.listings = {
+            "/Test-Inbox": [file_entry("/Test-Inbox/08_22_2026_10_24_10_AM.pdf")],
+            "/Docs": [file_entry("/Docs/2026.08.13 green Rechnung 9253636.pdf")],
+        }
+        app_settings = AppSettings(
+            id=1,
+            user_id=OWNER,
+            allowed_root_folders=["/Test-Inbox", "/Docs"],
+            trash_folder_path="/Trash",
+            watch_folder_path="/Test-Inbox",
+        )
+
+        tree, samples = folders.prompt_context(stub, app_settings)  # type: ignore[arg-type]
+
+        assert tree == ["/Docs"]
+        assert samples == ["2026.08.13 green Rechnung 9253636.pdf"]
+
     def test_most_recently_filed_examples_come_first(self, archive: FakeWebDav) -> None:
         # The naming convention drifts; the newest files show the one in use now.
         _, samples = self._context(archive)

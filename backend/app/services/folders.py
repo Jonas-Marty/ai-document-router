@@ -146,8 +146,9 @@ def prompt_context(
     /Archive/2026) has no files at the root at all -- sampling only there would send the
     model an empty list and lose the naming convention entirely.
 
-    The watch folder and the trash are skipped when they sit inside an allowed root: their
-    files are unsorted scans, the opposite of an example, and neither is a destination.
+    The watch folder and the trash are skipped wherever they are -- inside an allowed root or
+    listed as one: their files are unsorted scans, the opposite of an example, and neither is
+    a destination.
     Samples are the most recently modified files, because the convention drifts and the
     newest names show the one in use now.
     """
@@ -160,6 +161,10 @@ def prompt_context(
     files: list[WebDavEntry] = []
 
     for root in app_settings.allowed_root_folders:
+        # Settings refuses a root that is or sits in the watch folder or trash, but data
+        # saved before that check (or seeded by a migration) can still have one.
+        if any(is_within(skip, normalize_path(root)) for skip in excluded):
+            continue
         tree.append(root)
         frontier = [(root, 0)]
         while frontier:
