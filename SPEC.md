@@ -629,7 +629,8 @@ Input assembled by the backend:
   either way.
 - The folder tree under the allowed roots, as an indented path list, depth-capped at 4.
 - Up to 8 example filenames sampled from across those folders, so the model can see the
-  naming convention.
+  naming convention. With a `filename_pattern` set, only names that match it (without
+  their extension) are sent.
 - `filename_pattern_hint` if set.
 - `filing_instructions` if set, under "Additional instructions from the person whose archive
   this is:", before the document text. In the user message rather than the system prompt, so
@@ -702,6 +703,9 @@ endpoint is for. A reply that failed validation is the model having *answered*; 
 different one would hide a problem the person needs to see and spend a second call doing it.
 An exhausted chain raises with every step's failure named. An empty chain raises
 `NoStepsConfigured`, which reads as "no endpoint is assigned to this task yet".
+A step that raised `AIUnavailable` is skipped by every chain for the next 5 minutes (keyed
+by endpoint and model, in memory), unless every step is cooling down; saving the endpoint in
+Settings ends its cooldown. The review screen names the skipped step.
 
 Endpoints are named, and the name is what appears in failure messages and on the review
 screen (`"Workshop PC · qwen3"`). Deleting one is **refused** while any task still references

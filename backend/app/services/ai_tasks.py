@@ -7,6 +7,7 @@ document still gets read on the days that machine is off.
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,6 +23,44 @@ from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
 
 logger = logging.getLogger(__name__)
+
+# An endpoint that just failed to answer is skipped for this long. Without it every document
+# in a batch waits out the same reply timeout before falling back: ten documents, twenty
+# minutes, against a computer that was switched off for all of them.
+COOLDOWN_SECONDS = 300.0
+# (endpoint id, model) -> monotonic time until which it is skipped. Per model, not per
+# endpoint: a local model that times out says nothing about the other model on the same
+# machine, and a machine that is off costs only a 5-second connect failure per model.
+# In memory: a restart forgets it, which costs at most one more wait.
+_cooling: dict[tuple[str, str], float] = {}
+_cooling_lock = threading.Lock()
+
+
+def _is_cooling(step: "ResolvedStep") -> bool:
+    key = _cooling_key(step)
+    with _cooling_lock:
+        until = _cooling.get(key)
+        if until is not None and until <= time.monotonic():
+            del _cooling[key]
+            return False
+        return until is not None
+
+
+def _cool_down(step: "ResolvedStep") -> None:
+    with _cooling_lock:
+        _cooling[_cooling_key(step)] = time.monotonic() + COOLDOWN_SECONDS
+
+
+def _cooling_key(step: "ResolvedStep") -> tuple[str, str]:
+    return (step.endpoint_id or step.endpoint_url, step.model_name)
+
+
+def clear_cooldown(endpoint_id: str) -> None:
+    """After the person edits an endpoint (a longer timeout, a fixed URL), try it again now."""
+    with _cooling_lock:
+        for key in [key for key in _cooling if key[0] == endpoint_id]:
+            del _cooling[key]
+
 
 _VERBS = {AiTask.extraction: "Reading the document", AiTask.filing: "Choosing a name and folder"}
 
@@ -117,17 +156,26 @@ def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], t
 
     failures: list[str] = []
     unanswered: list[str] = []
-    for position, step in enumerate(steps):
+    skipped = [step.label for step in steps if _is_cooling(step)]
+    # Every step cooling down: try them all anyway rather than fail without asking anyone.
+    live = [step for step in steps if not _is_cooling(step)] or steps
+    if live is steps:
+        skipped = []
+    for position, step in enumerate(live):
+        notes = [f"{label} didn't answer" for label in unanswered] + [
+            f"{label} skipped, didn't answer a moment ago" for label in skipped
+        ]
         progress.report(
             f"{_VERBS.get(task, str(task))} with {step.label}…"
-            + (f" ({', '.join(unanswered)} didn't answer)" if unanswered else "")
+            + (f" ({'; '.join(notes)})" if notes else "")
         )
         started = time.monotonic()
         try:
             result = call(step)
         except AIUnavailable as exc:
             _observe_step(task, step, "unavailable", started)
-            if position < len(steps) - 1:
+            _cool_down(step)
+            if position < len(live) - 1:
                 metrics.ai_fallbacks.labels(task).inc()
             logger.warning(
                 "%s via %s unavailable after %.1fs: %s",
@@ -298,6 +346,7 @@ def update_endpoint(
 ) -> AiEndpoint:
     """A blank key leaves the stored one alone -- the form is never given it back to resend."""
     endpoint = get_endpoint(session, user_id, endpoint_id)
+    clear_cooldown(endpoint_id)
     before: dict[str, object] = {
         "name": endpoint.name,
         "base_url": endpoint.base_url,

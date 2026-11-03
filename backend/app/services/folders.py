@@ -5,6 +5,8 @@ selectable. That is enforced here, not only in the picker.
 """
 
 import logging
+import os
+import re
 from datetime import UTC, datetime
 
 from app.models import AppSettings
@@ -159,6 +161,7 @@ def prompt_context(
     ]
     tree: list[str] = []
     files: list[WebDavEntry] = []
+    pattern = _compile_pattern(app_settings.filename_pattern)
 
     for root in app_settings.allowed_root_folders:
         # Settings refuses a root that is or sits in the watch folder or trash, but data
@@ -188,5 +191,26 @@ def prompt_context(
     newest_first = sorted(
         files, key=lambda entry: entry.modified or datetime.min.replace(tzinfo=UTC), reverse=True
     )
-    samples = [entry.name for entry in newest_first[: ai.MAX_SAMPLE_FILENAMES]]
+    matching = [entry.name for entry in newest_first if _fits(entry.name, pattern)]
+    samples = matching[: ai.MAX_SAMPLE_FILENAMES]
     return tree, samples
+
+
+def _compile_pattern(pattern: str | None) -> re.Pattern[str] | None:
+    if not pattern:
+        return None
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
+def _fits(filename: str, pattern: re.Pattern[str] | None) -> bool:
+    """Whether a file is an example worth showing the model.
+
+    With a pattern, only names that follow it: the model copies examples more readily than it
+    follows a written rule, so one old "2026 Steuern.pdf" teaches it to write year-only names
+    however clearly the pattern asks for a full date. Matched without the extension, as the
+    review form matches the name field.
+    """
+    return pattern is None or pattern.search(os.path.splitext(filename)[0]) is not None

@@ -9,7 +9,7 @@ from app import db
 from app.config import settings as config
 from app.main import app
 from app.models import AppSettings, User
-from app.services import ai, webdav
+from app.services import ai, ai_tasks, webdav
 from app.services import settings as settings_service
 
 
@@ -28,8 +28,10 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def fresh_response_formats() -> Iterator[None]:
     """ai remembers which response_format each endpoint accepted; no test inherits that."""
     ai._known_format.clear()
+    ai_tasks._cooling.clear()
     yield
     ai._known_format.clear()
+    ai_tasks._cooling.clear()
 
 
 @pytest.fixture(autouse=True)

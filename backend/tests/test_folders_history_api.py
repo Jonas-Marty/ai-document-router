@@ -551,6 +551,31 @@ class TestPromptContext:
         assert tree == ["/Docs"]
         assert samples == ["2026.08.13 green Rechnung 9253636.pdf"]
 
+    def test_only_examples_that_follow_the_filename_pattern_are_sent(self) -> None:
+        # The model copies examples over a written rule: an old year-only name taught it to
+        # write "2026 Helvetia ..." despite a pattern asking for the full date.
+        from app.services import folders
+
+        stub = FakeWebDav()
+        stub.listings = {
+            "/Docs": [
+                file_entry("/Docs/2026 Steuern.pdf"),
+                file_entry("/Docs/2026.08.13 green Rechnung 9253636.pdf"),
+            ],
+        }
+        app_settings = AppSettings(
+            id=1,
+            user_id=OWNER,
+            allowed_root_folders=["/Docs"],
+            trash_folder_path="/Trash",
+            watch_folder_path="/Inbox",
+            filename_pattern=r"^\d{4}\.\d{2}\.\d{2} .+$",
+        )
+
+        _, samples = folders.prompt_context(stub, app_settings)  # type: ignore[arg-type]
+
+        assert samples == ["2026.08.13 green Rechnung 9253636.pdf"]
+
     def test_most_recently_filed_examples_come_first(self, archive: FakeWebDav) -> None:
         # The naming convention drifts; the newest files show the one in use now.
         _, samples = self._context(archive)

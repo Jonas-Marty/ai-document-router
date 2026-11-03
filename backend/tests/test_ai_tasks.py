@@ -4,6 +4,7 @@ SPEC 6.3a. The behaviour worth pinning is which failures move to the next endpoi
 unreachable server should, a model that answered with something unusable should not.
 """
 
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -50,7 +51,11 @@ def endpoint(session: Session, name: str, *, key: bytes | None = None) -> AiEndp
 
 def step(name: str) -> ResolvedStep:
     return ResolvedStep(
-        endpoint_name=name, endpoint_url=f"https://{name}/v1", api_key=None, model_name="m"
+        endpoint_name=name,
+        endpoint_url=f"https://{name}/v1",
+        api_key=None,
+        model_name="m",
+        endpoint_id=f"ep-{name}",
     )
 
 
@@ -76,6 +81,54 @@ class TestRunChain:
 
         assert run_chain([step("local"), step("cloud")], call, AiTask.filing) == "answer"
         assert tried == ["local", "cloud"]
+
+    def test_an_endpoint_that_did_not_answer_is_skipped_for_the_rest_of_the_batch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point: ten documents must not each wait out the same reply timeout.
+        tried: list[str] = []
+
+        def call(s: ResolvedStep) -> str:
+            tried.append(s.endpoint_name)
+            if s.endpoint_name == "local":
+                raise AIUnavailable("No answer within the reply timeout.")
+            return "answer"
+
+        chain = [step("local"), step("cloud")]
+        for _ in range(3):
+            assert run_chain(chain, call, AiTask.filing) == "answer"
+        assert tried == ["local", "cloud", "cloud", "cloud"]
+
+        # Once the cooldown is over, the preferred endpoint is asked first again.
+        now = time.monotonic()
+        monkeypatch.setattr(ai_tasks.time, "monotonic", lambda: now + ai_tasks.COOLDOWN_SECONDS + 1)
+        tried.clear()
+        run_chain(chain, call, AiTask.filing)
+        assert tried == ["local", "cloud"]
+
+    def test_a_cooling_endpoint_is_still_tried_when_it_is_the_only_one_left(self) -> None:
+        tried: list[str] = []
+
+        def call(s: ResolvedStep) -> str:
+            tried.append(s.endpoint_name)
+            if len(tried) == 1:
+                raise AIUnavailable("No answer within the reply timeout.")
+            return "answer"
+
+        with pytest.raises(AIUnavailable):
+            run_chain([step("local")], call, AiTask.filing)
+        assert run_chain([step("local")], call, AiTask.filing) == "answer"
+
+    def test_editing_an_endpoint_ends_its_cooldown(self) -> None:
+        def call(s: ResolvedStep) -> str:
+            raise AIUnavailable("No answer within the reply timeout.")
+
+        with pytest.raises(AIUnavailable):
+            run_chain([step("local"), step("cloud")], call, AiTask.filing)
+        ai_tasks.clear_cooldown("ep-local")
+
+        assert not ai_tasks._is_cooling(step("local"))
+        assert ai_tasks._is_cooling(step("cloud"))
 
     def test_says_which_step_it_is_waiting_on(self) -> None:
         """For the review screen, while it shows "Waiting for the AI proposal"."""

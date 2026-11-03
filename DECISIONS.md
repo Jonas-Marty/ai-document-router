@@ -980,3 +980,8 @@ meaningful. One line of "why" each; not a full ADR log.
 - The filing reply asks for reasoning, date and folder before the name. Asked name-first,
   a capable hosted model still wrote "2026 ..." and the correct full date after it; the
   order of the keys, not the model's size, was the cause.
+- An endpoint+model that fails to answer (timeout, refused, 5xx) is skipped by every chain
+  for 5 minutes, in memory, unless it is the only step left; editing the endpoint ends it.
+  Otherwise each document of a batch waited out the same reply timeout before falling back.
+- Example filenames in the filing prompt are limited to those matching `filename_pattern`:
+  the model imitates examples more than it follows the written pattern.
