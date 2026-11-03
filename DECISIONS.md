@@ -965,3 +965,6 @@ meaningful. One line of "why" each; not a full ADR log.
   reply timeout is no longer retried -- SPEC 6.3 said "retry on timeout", which with a
   long timeout doubles the longest wait for nothing. The response_format an endpoint
   accepted is cached in memory, not stored: a restart costs at most one refused request.
+- Extraction and filing run as two passes over each poll's batch rather than per document,
+  so a GPU that holds one model at a time loads each model once per batch (5 documents),
+  not once per document. The reading and its usage meter carry over to the filing pass.

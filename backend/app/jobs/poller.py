@@ -12,6 +12,7 @@ call per document inside a single job run, while `max_instances=1` blocks the ne
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -445,13 +446,59 @@ def generate_proposals(
     ).all()
 
     cache = already_extracted or {}
+    readings = _read_all(session, service, app_settings, pending, cache)
     ready = 0
     for document in pending:
         with progress.tracking(document.id):
             progress.report("Starting the analysis…")
-            if propose_for(session, service, app_settings, document, cache.get(document.id)):
+            if propose_for(
+                session,
+                service,
+                app_settings,
+                document,
+                cache.get(document.id),
+                prepared=readings.get(document.id),
+            ):
                 ready += 1
     return ready, len(pending) - ready
+
+
+def _read_all(
+    session: Session,
+    service: WebDavService,
+    app_settings: AppSettings,
+    documents: Sequence[Document],
+    cache: dict[str, ExtractedDocument],
+) -> dict[str, tuple["_Reading", ai.UsageMeter]]:
+    """Run the extraction task for the whole batch before any filing starts.
+
+    Reading and filing usually use different models, and on one home GPU only one of them
+    fits at a time: alternating per document would unload and reload both for every
+    document. Done batch-wise, each model is loaded once per tick.
+    """
+    steps = ai_tasks.resolve_chain(session, app_settings.user_id, AiTask.extraction)
+    if not steps or not app_settings.allowed_root_folders:
+        return {}
+    readings: dict[str, tuple[_Reading, ai.UsageMeter]] = {}
+    to_read = [document for document in documents if not document.extracted_markdown]
+    for document in to_read:
+        meter = ai.UsageMeter()
+        with progress.tracking(document.id):
+            try:
+                reading = _read_document(
+                    session,
+                    service,
+                    document,
+                    cache.get(document.id),
+                    app_settings.extraction_instructions,
+                    meter,
+                )
+            except AppError as exc:
+                reading = _Reading(fatal=f"Couldn't read the file: {exc.message}")
+        readings[document.id] = (reading, meter)
+        # tracking() clears the stage on the way out; say why it is still waiting.
+        progress.set_stage(document.id, "Read; waiting for the other documents to be read…")
+    return readings
 
 
 def propose_for(
@@ -460,8 +507,13 @@ def propose_for(
     app_settings: AppSettings,
     document: Document,
     already_extracted: ExtractedDocument | None = None,
+    *,
+    prepared: tuple["_Reading", ai.UsageMeter] | None = None,
 ) -> bool:
     """Generate and store one proposal. Returns True when a proposal was stored.
+
+    `prepared` is a reading the batch already made (see _read_all), with the meter that
+    counted it, so the document is not read twice and its usage covers both stages.
 
     Every failure path lands on `proposal_status=failed` with a readable message rather
     than an exception: the document stays approvable by hand either way.
@@ -470,20 +522,23 @@ def propose_for(
         _fail(session, document, "No allowed folders are configured yet — set them in Settings.")
         return False
 
-    # Every model call below, extraction and filing alike, reports what it cost here.
-    meter = ai.UsageMeter()
-    try:
-        reading = _read_document(
-            session,
-            service,
-            document,
-            already_extracted,
-            app_settings.extraction_instructions,
-            meter,
-        )
-    except AppError as exc:
-        _fail(session, document, f"Couldn't read the file: {exc.message}", meter)
-        return False
+    if prepared is not None:
+        reading, meter = prepared
+    else:
+        # Every model call below, extraction and filing alike, reports what it cost here.
+        meter = ai.UsageMeter()
+        try:
+            reading = _read_document(
+                session,
+                service,
+                document,
+                already_extracted,
+                app_settings.extraction_instructions,
+                meter,
+            )
+        except AppError as exc:
+            _fail(session, document, f"Couldn't read the file: {exc.message}", meter)
+            return False
 
     if reading.fatal is not None:
         _fail(session, document, reading.fatal, meter)

@@ -606,6 +606,9 @@ Only when `store_ocr_text` is on, and only for a PDF whose pages carry no text.
 ### 6.3 Proposal generation (`services/ai.py`)
 
 Filing is the second stage of the workflow in 6.3a; extraction is the first.
+Each poll runs extraction for its whole batch of pending documents first, then filing for
+all of them: on a single home GPU the two models rarely fit together, and alternating per
+document would reload both models for each one.
 
 Input assembled by the backend:
 - The document's text, first 6000 characters. Preferred source is `extracted_markdown` from

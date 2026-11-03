@@ -40,3 +40,9 @@ def report(stage: str) -> None:
 def stage_of(document_id: str) -> str | None:
     with _lock:
         return _stages.get(document_id)
+
+
+def set_stage(document_id: str, stage: str) -> None:
+    """Set a stage outside tracking(): between two passes over a batch, say."""
+    with _lock:
+        _stages[document_id] = stage

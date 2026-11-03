@@ -982,6 +982,54 @@ class TestExtractionStage:
         session.refresh(document)
         assert document.extraction_error is None
 
+    def test_a_batch_is_read_in_full_before_any_document_is_filed(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reading and filing models rarely fit on one GPU together; alternating would swap
+        # them for every document.
+        first = self._prepare(session, monkeypatch)
+        second = Document(
+            user_id=OWNER,
+            webdav_path="/Test-Inbox/b.pdf",
+            original_filename="b.pdf",
+            mime_type="application/pdf",
+            file_size_bytes=100,
+            content_hash="h2",
+            scanned_at=datetime(2026, 8, 21, 9, 0),
+            discovered_at=datetime(2026, 8, 21, 9, 2),
+            status=DocumentStatus.pending,
+            proposal_status=ProposalStatus.pending,
+        )
+        session.add(second)
+        session.commit()
+        calls: list[str] = []
+
+        def read(
+            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
+        ) -> transcribe.Transcription:
+            calls.append("read")
+            return transcribe.Transcription(markdown="# Read", model_label="v")
+
+        def propose(**kwargs: Any) -> ai.Proposal:
+            calls.append("file")
+            return ai.Proposal(
+                suggested_name="n",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.9,
+                reasoning_text="r",
+                model_name="m",
+            )
+
+        monkeypatch.setattr(poller.transcribe, "transcribe", read)
+        monkeypatch.setattr(poller.ai, "request_proposal", propose)
+
+        assert poller.generate_proposals(session, FakeService([]), app_settings) == (2, 0)  # type: ignore[arg-type]
+        assert calls == ["read", "read", "file", "file"]
+        for document in (first, second):
+            session.refresh(document)
+            assert document.extracted_markdown == "# Read"
+
 
 class TestEveryUser:
     def test_each_connected_user_is_polled_and_one_failure_does_not_stop_the_others(
