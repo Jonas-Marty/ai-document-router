@@ -77,6 +77,7 @@ def transcribe(
                 prompt=prompt,
                 images=batch,
                 usage=step.usage(meter, AiTask.extraction) if meter else None,
+                timeout=step.timeout_seconds,
             )
             for batch in _batched(pages, PAGES_PER_REQUEST)
         ]

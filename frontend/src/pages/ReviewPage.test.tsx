@@ -32,6 +32,7 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
     status: "pending",
     skip_count: 0,
     proposal_status: "ready",
+    analysis_stage: null,
     proposal: {
       suggested_name: suggestedName,
       target_folder_path: "/Documents/Finance",
@@ -195,6 +196,20 @@ describe("ReviewPage queue overview", () => {
 
     await user.click(await screen.findByRole("button", { name: /run again/i }));
     await waitFor(() => expect(apiClient.compareDocument).toHaveBeenCalledTimes(2));
+  });
+
+  it("says which step the analysis is on while the proposal is being made", async () => {
+    renderReview([
+      doc("1", "scan.pdf", {
+        proposal_status: "pending",
+        proposal: null,
+        analysis_stage: "Reading the document with Jonas-PC · chandra-ocr-2…",
+      }),
+    ]);
+
+    expect(
+      await screen.findByText("Reading the document with Jonas-PC · chandra-ocr-2…"),
+    ).toBeInTheDocument();
   });
 
   it("re-runs the analysis of a document whose proposal is already ready", async () => {

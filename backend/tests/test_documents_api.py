@@ -9,8 +9,10 @@ from sqlmodel import Session
 
 from app import db
 from app.deps import get_webdav
+from app.jobs import poller
 from app.main import app
 from app.models import Document, DocumentStatus, Proposal, ProposalStatus, User
+from app.services import progress
 from app.services.errors import NotFoundError
 from tests.conftest import signed_in_user_id
 
@@ -274,6 +276,36 @@ class TestRegenerate:
 
     def test_unknown_id_is_a_404(self, client: TestClient) -> None:
         assert client.post("/api/v1/documents/nope/regenerate").status_code == 404
+
+    def test_starts_the_poller_now_rather_than_at_the_next_interval(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kicked: list[bool] = []
+        monkeypatch.setattr(poller, "kick", lambda: kicked.append(True))
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf")
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        client.post(f"/api/v1/documents/{document_id}/regenerate")
+
+        assert kicked == [True]
+
+    def test_reports_what_the_analysis_is_doing(self, client: TestClient) -> None:
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf", proposal_status=ProposalStatus.pending)
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        with progress.tracking(document_id):
+            progress.report("Reading the document with Jonas-PC · chandra-ocr-2…")
+            during = client.get(f"/api/v1/documents/{document_id}").json()
+        after = client.get(f"/api/v1/documents/{document_id}").json()
+
+        assert during["analysis_stage"].startswith("Reading the document")
+        assert after["analysis_stage"] is None
 
 
 class TestRetryFailed:

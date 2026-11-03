@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.models import AuditAction, Document, DocumentStatus, Proposal, ProposalStatus
 from app.schemas import AIProposalRead, DocumentRead
-from app.services import audit
+from app.services import audit, progress
 from app.services.audit import Actor
 from app.services.errors import NotFoundError
 
@@ -45,7 +45,9 @@ def read_proposal(session: Session, document_id: str) -> AIProposalRead | None:
 
 
 def to_read_schema(session: Session, document: Document) -> DocumentRead:
-    return DocumentRead.from_models(document, read_proposal(session, document.id))
+    return DocumentRead.from_models(
+        document, read_proposal(session, document.id), progress.stage_of(document.id)
+    )
 
 
 def request_regenerate(

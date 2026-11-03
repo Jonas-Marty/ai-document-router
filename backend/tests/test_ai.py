@@ -258,8 +258,45 @@ class TestTransport:
             return httpx.Response(200, json=completion(VALID_REPLY))
 
         assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
-        assert len(bodies) == 2
-        assert bodies[1]["messages"] == bodies[0]["messages"]
+        formats = [body.get("response_format", {}).get("type") for body in bodies]
+        assert formats == ["json_object", "json_schema", None]
+        assert bodies[2]["messages"] == bodies[0]["messages"]
+
+    def test_remembers_the_format_an_endpoint_accepted(self) -> None:
+        """Infomaniak refuses json_object but takes json_schema. Asking json_object first on
+        every document would double every request to it."""
+        formats: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            kind = body.get("response_format", {}).get("type")
+            formats.append(kind)
+            if kind == "json_object":
+                return httpx.Response(400, json={"error": {"message": "use json_schema"}})
+            return httpx.Response(200, json=completion(VALID_REPLY))
+
+        self._call(handler)
+        self._call(handler)
+
+        assert formats == ["json_object", "json_schema", "json_schema"]
+
+    def test_a_reply_that_takes_too_long_is_not_asked_again(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            raise httpx.ReadTimeout("slow")
+
+        with pytest.raises(AIUnavailable, match="reply timeout"):
+            self._call(handler)
+        assert calls == 1
+
+    def test_accepts_one_answer_wrapped_in_a_list(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=completion(json.dumps([VALID_REPLY])))
+
+        assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
 
     def test_reports_the_reason_the_endpoint_gave(self) -> None:
         """A 400 with no detail is unactionable: an unsupported field, a context overflow and

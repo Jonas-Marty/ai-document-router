@@ -13,6 +13,7 @@ call per document inside a single job run, while `max_instances=1` blocks the ne
 import logging
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlmodel import Session, select
@@ -37,6 +38,7 @@ from app.services import (
     extraction,
     folders,
     metrics,
+    progress,
     searchable,
     transcribe,
 )
@@ -56,6 +58,7 @@ SYSTEM = audit.Actor.system()
 PARTIAL_SUFFIXES = (".part", ".tmp", ".crdownload", ".filepart")
 
 _scheduler: BackgroundScheduler | None = None
+JOB_ID = "poll_watch_folder"
 
 
 def start_scheduler() -> None:
@@ -75,10 +78,24 @@ def start_scheduler() -> None:
         # A slow LLM call must not let ticks stack up on top of each other.
         max_instances=1,
         coalesce=True,
-        id="poll_watch_folder",
+        id=JOB_ID,
     )
     _scheduler.start()
     logger.info("Poller started, every %ss.", config.poll_interval_seconds)
+
+
+def kick() -> None:
+    """Run the next tick now rather than at the end of the interval.
+
+    For a person who just asked for something and is watching the screen. A tick that is
+    already running is left alone: max_instances=1 skips the extra run, and documents it has
+    not reached yet are still picked up by it or by the next one.
+    """
+    if _scheduler is None:
+        return
+    job = _scheduler.get_job(JOB_ID)
+    if job is not None:
+        job.modify(next_run_time=datetime.now(UTC))
 
 
 def stop_scheduler() -> None:
@@ -430,8 +447,10 @@ def generate_proposals(
     cache = already_extracted or {}
     ready = 0
     for document in pending:
-        if propose_for(session, service, app_settings, document, cache.get(document.id)):
-            ready += 1
+        with progress.tracking(document.id):
+            progress.report("Starting the analysis…")
+            if propose_for(session, service, app_settings, document, cache.get(document.id)):
+                ready += 1
     return ready, len(pending) - ready
 
 
@@ -488,6 +507,7 @@ def propose_for(
             prompt=prompt,
             allowed_roots=allowed_roots,
             usage=step.usage(meter, AiTask.filing),
+            timeout=step.timeout_seconds,
         )
 
     try:

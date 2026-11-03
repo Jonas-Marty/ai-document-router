@@ -12,7 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.config import settings as config
 from app.models import AiEndpoint, AiTask, AiTaskStep
-from app.services import ai_tasks, crypto
+from app.services import ai_tasks, crypto, progress
 from app.services.ai import AIUnavailable, ProposalRejected
 from app.services.ai_tasks import NoStepsConfigured, ResolvedStep, replace_chain, run_chain
 from app.services.audit import Actor
@@ -76,6 +76,25 @@ class TestRunChain:
 
         assert run_chain([step("local"), step("cloud")], call, AiTask.filing) == "answer"
         assert tried == ["local", "cloud"]
+
+    def test_says_which_step_it_is_waiting_on(self) -> None:
+        """For the review screen, while it shows "Waiting for the AI proposal"."""
+        seen: list[str | None] = []
+
+        def call(s: ResolvedStep) -> str:
+            seen.append(progress.stage_of("doc"))
+            if s.endpoint_name == "local":
+                raise AIUnavailable("Connection refused.")
+            return "answer"
+
+        with progress.tracking("doc"):
+            run_chain([step("local"), step("cloud")], call, AiTask.filing)
+
+        assert seen == [
+            "Choosing a name and folder with local · m…",
+            "Choosing a name and folder with cloud · m… (local · m didn't answer)",
+        ]
+        assert progress.stage_of("doc") is None  # cleared once the analysis is over
 
     def test_a_model_that_answered_badly_stops_the_chain(self) -> None:
         """A reply that failed validation would fail the same way everywhere. Trying the next

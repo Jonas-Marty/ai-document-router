@@ -40,6 +40,7 @@ def create_endpoint(
         payload.name,
         payload.base_url,
         payload.api_key,
+        timeout_seconds=payload.timeout_seconds,
         actor=Actor.from_user(user),
     )
     return _read(session, endpoint)
@@ -56,6 +57,7 @@ def update_endpoint(
         payload.name,
         payload.base_url,
         payload.api_key,
+        timeout_seconds=payload.timeout_seconds,
         actor=Actor.from_user(user),
     )
     return _read(session, endpoint)
@@ -129,6 +131,7 @@ def _read(session: SessionDep, endpoint: AiEndpoint) -> AiEndpointRead:
         name=endpoint.name,
         base_url=endpoint.base_url,
         api_key_set=endpoint.api_key_encrypted is not None,
+        timeout_seconds=endpoint.timeout_seconds,
         used_by=ai_tasks.endpoint_in_use(session, endpoint.id),
     )
 

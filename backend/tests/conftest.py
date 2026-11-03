@@ -9,8 +9,8 @@ from app import db
 from app.config import settings as config
 from app.main import app
 from app.models import AppSettings, User
+from app.services import ai, webdav
 from app.services import settings as settings_service
-from app.services import webdav
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +22,14 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     probe patch it themselves.
     """
     monkeypatch.setattr(webdav, "probe_reachable", lambda connection: False)
+
+
+@pytest.fixture(autouse=True)
+def fresh_response_formats() -> Iterator[None]:
+    """ai remembers which response_format each endpoint accepted; no test inherits that."""
+    ai._known_format.clear()
+    yield
+    ai._known_format.clear()
 
 
 @pytest.fixture(autouse=True)

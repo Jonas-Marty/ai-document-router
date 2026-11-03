@@ -24,6 +24,7 @@ function doc(id: string): Document {
     status: "pending",
     skip_count: 0,
     proposal_status: "ready",
+    analysis_stage: null,
     proposal: null,
     proposal_error: null,
     ocr_status: "not_needed",

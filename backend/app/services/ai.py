@@ -23,7 +23,9 @@ from app.services.paths import is_within, normalize_path
 
 logger = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT_SECONDS = 30.0
+# The default reply timeout; each endpoint sets its own (AiEndpoint.timeout_seconds).
+REQUEST_TIMEOUT_SECONDS = 120.0
+CONNECT_TIMEOUT_SECONDS = 5.0
 # Listing models backs a button someone is waiting on, so it fails fast rather than
 # holding the Settings form for the proposal timeout.
 MODELS_TIMEOUT_SECONDS = 10.0
@@ -309,6 +311,7 @@ def request_proposal(
     images: list[bytes] | None = None,
     client: httpx.Client | None = None,
     usage: UsageRecorder | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> Proposal:
     """Call the model and validate its reply.
 
@@ -317,38 +320,42 @@ def request_proposal(
     It is the same call either way: one request that returns a proposal, not an OCR step
     bolted in front of a second one.
 
-    Raises AIUnavailable if the endpoint could not be reached (after one retry), or
-    ProposalRejected if it replied with something unusable.
+    Raises AIUnavailable if the endpoint could not be reached, or ProposalRejected if it
+    replied with something unusable.
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = f"{endpoint_url.rstrip('/')}/chat/completions"
     started = time.monotonic()
+    cache_key = (url, model_name)
 
     owned = client is None
-    http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+    http = client or _client(timeout)
     try:
-        try:
-            body = _post_with_retry(
-                url, _payload(model_name, prompt, images, json_mode=True), headers, http
-            )
-        except _Rejected as rejected:
-            # SPEC 6.3 asks for response_format JSON, but the endpoint is whatever the user
-            # configured, and plenty of OpenAI-compatible servers answer 400 to that field
-            # instead of ignoring it. The system prompt already demands JSON-only, so one
-            # plain retry beats failing the document over an optional field. Only 400: a 401
-            # or a 404 means the key or the URL is wrong, and would fail identically twice.
-            if rejected.status_code != 400:
-                raise AIUnavailable(rejected.message) from rejected
-            logger.warning(
-                "AI endpoint refused the request (400: %s); retrying without response_format",
-                rejected.detail or "no reason given",
-            )
+        # SPEC 6.3 asks for JSON output, but servers disagree on how to ask: some want
+        # json_object, some only the newer json_schema, some 400 on either. Try them in
+        # that order, and remember what worked so the next document goes straight there.
+        formats = RESPONSE_FORMATS[
+            RESPONSE_FORMATS.index(_known_format.get(cache_key, "json_object")) :
+        ]
+        for position, response_format in enumerate(formats):
             try:
                 body = _post_with_retry(
-                    url, _payload(model_name, prompt, images, json_mode=False), headers, http
+                    url, _payload(model_name, prompt, images, response_format), headers, http
                 )
-            except _Rejected as plain:
-                raise AIUnavailable(plain.message) from plain
+            except _Rejected as rejected:
+                # Only 400: a 401 or a 404 means the key or the URL is wrong, and would fail
+                # the same way whatever format was asked for.
+                if rejected.status_code != 400 or position == len(formats) - 1:
+                    raise AIUnavailable(rejected.message) from rejected
+                logger.warning(
+                    "AI endpoint refused response_format %s (400: %s); trying %s",
+                    response_format,
+                    rejected.detail or "no reason given",
+                    formats[position + 1] or "none",
+                )
+                continue
+            _known_format[cache_key] = response_format
+            break
     except AIUnavailable:
         _record_failure(usage, started)
         raise
@@ -371,6 +378,7 @@ def request_completion(
     images: list[bytes] | None = None,
     client: httpx.Client | None = None,
     usage: UsageRecorder | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> str:
     """Call the model and hand back its reply verbatim.
 
@@ -391,7 +399,7 @@ def request_completion(
 
     started = time.monotonic()
     owned = client is None
-    http = client or httpx.Client(timeout=REQUEST_TIMEOUT_SECONDS)
+    http = client or _client(timeout)
     try:
         body = _post_with_retry(url, payload, headers, http)
     except _Rejected as rejected:
@@ -453,8 +461,32 @@ def _is_count(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+RESPONSE_FORMATS: list[str | None] = ["json_object", "json_schema", None]
+# (url, model) -> the response_format that endpoint last accepted. In memory: a restart
+# costs at most one refused request per endpoint to find out again.
+_known_format: dict[tuple[str, str], str | None] = {}
+
+PROPOSAL_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "suggested_name": {"type": "string"},
+        "target_folder_path": {"type": "string"},
+        "document_date": {"type": ["string", "null"]},
+        "confidence_score": {"type": "number"},
+        "reasoning_text": {"type": "string"},
+    },
+    "required": [
+        "suggested_name",
+        "target_folder_path",
+        "document_date",
+        "confidence_score",
+        "reasoning_text",
+    ],
+}
+
+
 def _payload(
-    model_name: str, prompt: str, images: list[bytes] | None, *, json_mode: bool
+    model_name: str, prompt: str, images: list[bytes] | None, response_format: str | None
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "model": model_name,
@@ -463,9 +495,20 @@ def _payload(
             {"role": "user", "content": _user_content(prompt, images)},
         ],
     }
-    if json_mode:
+    if response_format == "json_object":
         payload["response_format"] = {"type": "json_object"}
+    elif response_format == "json_schema":
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "proposal", "schema": PROPOSAL_SCHEMA},
+        }
     return payload
+
+
+def _client(timeout: float) -> httpx.Client:
+    """Connecting gets a few seconds whatever the reply timeout: a computer that is switched
+    off should be skipped almost at once, not after the minutes a slow model may need."""
+    return httpx.Client(timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_SECONDS))
 
 
 def _user_content(prompt: str, images: list[bytes] | None) -> object:
@@ -584,7 +627,10 @@ def _post_with_retry(
     headers: Mapping[str, str],
     http: httpx.Client,
 ) -> dict[str, object]:
-    """POST with a single retry on 5xx or timeout, per SPEC 6.3.
+    """POST with a single retry on 5xx or a failed connection, per SPEC 6.3.
+
+    A reply that times out is not retried: the timeout is already the longest the endpoint
+    is allowed, and a second wait would only double it before the next step is tried.
 
     4xx is not retried here: a bad key or a wrong model name fails the same way twice, and
     retrying only doubles the user's wait. It is raised as _Rejected rather than AIUnavailable
@@ -594,6 +640,13 @@ def _post_with_retry(
     for attempt in (1, 2):
         try:
             response = http.post(url, json=dict(payload), headers=dict(headers))
+        except httpx.ReadTimeout as exc:
+            # The server took the request and did not answer within the endpoint's timeout.
+            # Asking again would only double a wait that is already the longest allowed.
+            raise AIUnavailable(
+                "The AI endpoint didn't answer within its reply timeout. If it is just slow "
+                "(a large local model, say), raise the timeout in Settings."
+            ) from exc
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             last_error = f"the request timed out or the host was unreachable ({exc})"
             logger.warning("AI request attempt %d failed: %s", attempt, exc)
@@ -691,6 +744,9 @@ def _validate(content: str, model_name: str, allowed_roots: list[str]) -> Propos
         parsed = json.loads(_strip_code_fence(content))
     except ValueError as exc:
         raise ProposalRejected(f"The model's reply wasn't valid JSON: {exc}") from exc
+    # Some models wrap their one answer in a list. One object in a list is still one answer.
+    if isinstance(parsed, list) and len(parsed) == 1:
+        parsed = parsed[0]
     if not isinstance(parsed, dict):
         raise ProposalRejected("The model's reply wasn't a JSON object.")
 

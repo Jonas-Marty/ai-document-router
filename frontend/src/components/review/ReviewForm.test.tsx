@@ -26,6 +26,7 @@ const baseDocument: Document = {
   status: "pending",
   skip_count: 0,
   proposal_status: "ready",
+  analysis_stage: null,
   proposal: {
     suggested_name: "2026.05.18 Test Invoice",
     target_folder_path: "/Documents/Finance",

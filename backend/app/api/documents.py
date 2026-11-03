@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
+from app.jobs import poller
 from app.schemas import (
     AIProposalRead,
     ApproveRequest,
@@ -42,11 +43,11 @@ def retry_failed_proposals(session: SessionDep, user: CurrentUserDep) -> Retried
     asynchronous contract as the single-document regenerate: this only resets status, and
     the poller does the work on its next tick.
     """
-    return RetriedResponse(
-        retried=documents_service.retry_failed_proposals(
-            session, user.id, actor=Actor.from_user(user)
-        )
+    retried = documents_service.retry_failed_proposals(
+        session, user.id, actor=Actor.from_user(user)
     )
+    poller.kick()
+    return RetriedResponse(retried=retried)
 
 
 @router.get("/documents/{document_id}")
@@ -99,6 +100,8 @@ def regenerate_proposal(
     document = documents_service.request_regenerate(
         session, user.id, document_id, actor=Actor.from_user(user)
     )
+    # Someone is watching the screen for this one; do not make them wait out the interval.
+    poller.kick()
     return DocumentResponse(document=documents_service.to_read_schema(session, document))
 
 

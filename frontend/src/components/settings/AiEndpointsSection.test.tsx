@@ -25,6 +25,7 @@ function endpoint(overrides: Partial<AiEndpoint> = {}): AiEndpoint {
     name: "Workshop PC",
     base_url: "http://192.168.1.50:11434/v1",
     api_key_set: false,
+    timeout_seconds: 120,
     used_by: [],
     ...overrides,
   };
@@ -82,7 +83,34 @@ describe("AiEndpointsSection", () => {
     expect(vi.mocked(apiClient.createAiEndpoint).mock.calls[0]?.[0]).toEqual({
       name: "Workshop PC",
       base_url: "http://192.168.1.50:11434/v1",
+      timeout_seconds: 120,
       api_key: "sk-secret-value",
+    });
+  });
+
+  it("saves a longer reply timeout and refuses one out of range", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint()]);
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
+    const timeout = screen.getByLabelText("Reply timeout (seconds)");
+    expect(timeout).toHaveValue(120);
+
+    await user.clear(timeout);
+    await user.type(timeout, "5");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Between 10 and 900 seconds.")).toBeInTheDocument();
+    expect(apiClient.updateAiEndpoint).not.toHaveBeenCalled();
+
+    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint({ timeout_seconds: 300 }));
+    await user.clear(timeout);
+    await user.type(timeout, "300");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.updateAiEndpoint).mock.calls[0]?.[1]).toMatchObject({
+      timeout_seconds: 300,
     });
   });
 
@@ -106,7 +134,11 @@ describe("AiEndpointsSection", () => {
     await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
     const [id, body] = vi.mocked(apiClient.updateAiEndpoint).mock.calls[0] ?? [];
     expect(id).toBe("ep-1");
-    expect(body).toEqual({ name: "Renamed", base_url: "http://192.168.1.50:11434/v1" });
+    expect(body).toEqual({
+      name: "Renamed",
+      base_url: "http://192.168.1.50:11434/v1",
+      timeout_seconds: 120,
+    });
     expect(body).not.toHaveProperty("api_key");
   });
 

@@ -15,13 +15,15 @@ from sqlmodel import Session, select
 
 from app.config import settings as config
 from app.models import AiEndpoint, AiTask, AiTaskStep, AuditAction
-from app.services import ai, audit, crypto, metrics, urls
+from app.services import ai, audit, crypto, metrics, progress, urls
 from app.services.ai import AIUnavailable
 from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
 
 logger = logging.getLogger(__name__)
+
+_VERBS = {AiTask.extraction: "Reading the document", AiTask.filing: "Choosing a name and folder"}
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,7 @@ class ResolvedStep:
     model_name: str
     endpoint_id: str | None = None
     position: int = 0
+    timeout_seconds: float = ai.REQUEST_TIMEOUT_SECONDS
 
     @property
     def label(self) -> str:
@@ -82,6 +85,7 @@ def resolve_chain(session: Session, user_id: str, task: AiTask) -> list[Resolved
             model_name=step.model_name,
             endpoint_id=endpoint.id,
             position=position,
+            timeout_seconds=endpoint.timeout_seconds,
         )
         for position, (step, endpoint) in enumerate(_rows(session, user_id, task))
     ]
@@ -112,7 +116,12 @@ def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], t
         )
 
     failures: list[str] = []
+    unanswered: list[str] = []
     for position, step in enumerate(steps):
+        progress.report(
+            f"{_VERBS.get(task, str(task))} with {step.label}…"
+            + (f" ({', '.join(unanswered)} didn't answer)" if unanswered else "")
+        )
         started = time.monotonic()
         try:
             result = call(step)
@@ -128,6 +137,7 @@ def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], t
                 exc.message,
             )
             failures.append(f"{step.label} ({exc.message})")
+            unanswered.append(step.label)
             continue
         except Exception as exc:
             _observe_step(task, step, "rejected", started)
@@ -245,6 +255,7 @@ def create_endpoint(
     base_url: str,
     api_key: str | None,
     *,
+    timeout_seconds: int | None = None,
     actor: Actor,
 ) -> AiEndpoint:
     endpoint = AiEndpoint(
@@ -252,6 +263,7 @@ def create_endpoint(
         name=_validate_name(session, user_id, name, endpoint_id=None),
         base_url=validate_endpoint_url(base_url),
         api_key_encrypted=crypto.encrypt(config.secret_key, api_key) if api_key else None,
+        timeout_seconds=_validate_timeout(timeout_seconds),
         created_at=utc_now(),
     )
     session.add(endpoint)
@@ -264,6 +276,7 @@ def create_endpoint(
         details={
             "name": endpoint.name,
             "base_url": endpoint.base_url,
+            "timeout_seconds": endpoint.timeout_seconds,
             "api_key_set": endpoint.api_key_encrypted is not None,
         },
     )
@@ -280,18 +293,29 @@ def update_endpoint(
     base_url: str,
     api_key: str | None,
     *,
+    timeout_seconds: int | None = None,
     actor: Actor,
 ) -> AiEndpoint:
     """A blank key leaves the stored one alone -- the form is never given it back to resend."""
     endpoint = get_endpoint(session, user_id, endpoint_id)
-    before = {"name": endpoint.name, "base_url": endpoint.base_url}
+    before: dict[str, object] = {
+        "name": endpoint.name,
+        "base_url": endpoint.base_url,
+        "timeout_seconds": endpoint.timeout_seconds,
+    }
     endpoint.name = _validate_name(session, user_id, name, endpoint_id=endpoint_id)
     endpoint.base_url = validate_endpoint_url(base_url)
+    if timeout_seconds is not None:
+        endpoint.timeout_seconds = _validate_timeout(timeout_seconds)
     if api_key:
         endpoint.api_key_encrypted = crypto.encrypt(config.secret_key, api_key)
 
     session.add(endpoint)
-    after = {"name": endpoint.name, "base_url": endpoint.base_url}
+    after: dict[str, object] = {
+        "name": endpoint.name,
+        "base_url": endpoint.base_url,
+        "timeout_seconds": endpoint.timeout_seconds,
+    }
     audit.record(
         session,
         AuditAction.ai_endpoint_updated,
@@ -310,6 +334,22 @@ def update_endpoint(
     session.commit()
     session.refresh(endpoint)
     return endpoint
+
+
+MIN_TIMEOUT_SECONDS = 10
+MAX_TIMEOUT_SECONDS = 900
+DEFAULT_TIMEOUT_SECONDS = 120
+
+
+def _validate_timeout(value: int | None) -> int:
+    if value is None:
+        return DEFAULT_TIMEOUT_SECONDS
+    if not MIN_TIMEOUT_SECONDS <= value <= MAX_TIMEOUT_SECONDS:
+        raise ValidationError(
+            f"The reply timeout must be between {MIN_TIMEOUT_SECONDS} and "
+            f"{MAX_TIMEOUT_SECONDS} seconds."
+        )
+    return value
 
 
 def delete_endpoint(session: Session, user_id: str, endpoint_id: str, *, actor: Actor) -> None:

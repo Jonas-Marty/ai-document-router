@@ -55,6 +55,8 @@ class UsageSummaryRead(BaseModel):
 
 class DocumentRead(BaseModel):
     id: str
+    # What the analysis is doing right now, while the poller works on it; else None.
+    analysis_stage: str | None = None
     original_filename: str
     extension: str
     mime_type: str
@@ -79,8 +81,14 @@ class DocumentRead(BaseModel):
         return from_storage(value).isoformat()
 
     @classmethod
-    def from_models(cls, document: Document, proposal: AIProposalRead | None) -> "DocumentRead":
+    def from_models(
+        cls,
+        document: Document,
+        proposal: AIProposalRead | None,
+        analysis_stage: str | None = None,
+    ) -> "DocumentRead":
         return cls(
+            analysis_stage=analysis_stage,
             id=document.id,
             original_filename=document.original_filename,
             extension=extension_of(document.original_filename),
@@ -206,6 +214,7 @@ class AiEndpointRead(BaseModel):
     name: str
     base_url: str
     api_key_set: bool
+    timeout_seconds: int
     used_by: list[AiTask]
 
 
@@ -215,6 +224,8 @@ class AiEndpointWrite(BaseModel):
     # Omitted or empty on an update means "keep the stored key", because the form is never
     # given the key back and so cannot send it again.
     api_key: str | None = None
+    # Omitted keeps the stored value (or the default, for a new endpoint).
+    timeout_seconds: int | None = None
 
 
 class AiTaskStepWrite(BaseModel):

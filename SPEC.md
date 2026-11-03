@@ -193,6 +193,7 @@ ai-document-router/
 | `name` | str, unique per user — the user's own label ("Workshop PC", "Infomaniak") |
 | `base_url` | str |
 | `api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
+| `timeout_seconds` | int, 10–900, default 120 — how long to wait for a reply |
 | `created_at` | datetime |
 
 **`ai_task_step`** — one rung of one task's fallback chain.
@@ -626,7 +627,12 @@ Input assembled by the backend:
   reply format.
 
 Call: `POST {endpoint.base_url}/chat/completions` for the first step of the filing chain,
-OpenAI-compatible, `response_format` JSON, 30-second timeout, one retry on 5xx or timeout.
+OpenAI-compatible. JSON output is asked for with `response_format` `json_object`, then
+`json_schema`, then none, each tried only after the previous one was refused with a 400; the
+one an endpoint and model accepted is remembered in memory and asked for first from then on.
+Connecting gives up after 5 seconds; the reply gets the endpoint's own `timeout_seconds`
+(default 120). One retry on 5xx or a failed connection; a reply that timed out is not
+retried, since the timeout is already the longest allowed.
 The model must return exactly:
 
 ```json
@@ -1032,8 +1038,12 @@ fetch. An endpoint that answers but lists nothing is not an error.
   without this a setting corrected after the fact cannot heal a queue that already failed
   against the old one.
 - Refetch on a 60 s interval and on window refocus.
-- `proposal_status = "pending"`: form skeleton, actions disabled, "Waiting for the AI
-  proposal."
+- `proposal_status = "pending"`: form skeleton, actions disabled, and the document's
+  `analysis_stage` while the poller is working on it — "Reading the document with Jonas-PC ·
+  chandra-ocr-2…", "Choosing a name and folder with Infomaniak · … (Jonas-PC · … didn't
+  answer)" — else "Waiting for the AI proposal." The queue refetches every 3 s while any
+  document is pending. Re-running an analysis, or retrying failed ones, starts a poller tick
+  at once instead of at the end of the interval.
 - `proposal_status = "failed"`: show `proposal_error`, empty but editable fields, a
   `Try again` button hitting `/regenerate`, and full manual approvability.
 

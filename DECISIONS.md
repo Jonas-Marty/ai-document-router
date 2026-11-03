@@ -956,3 +956,12 @@ meaningful. One line of "why" each; not a full ADR log.
   Days are UTC days, like every other stored time. The chart is plain SVG, as in cash-flow:
   no chart library. The chart colour tokens were grey shades, which do not tell stacked
   series apart; they now use shadcn's coloured chart palette.
+- **Analysis progress and timeouts (2026-11-03).** The current step is kept in memory per
+  document (`services/progress.py`) and served as `analysis_stage`: it is only true while this
+  process is analysing, and writing it to SQLite from inside the poller's transaction would
+  contend with that transaction. Streaming replies would also show that a model had started
+  answering; not needed yet. Connect timeout is a fixed 5 s so a switched-off machine is
+  skipped at once; the reply timeout is per endpoint (default 120 s, was 30 s for all), and a
+  reply timeout is no longer retried -- SPEC 6.3 said "retry on timeout", which with a
+  long timeout doubles the longest wait for nothing. The response_format an endpoint
+  accepted is cached in memory, not stored: a restart costs at most one refused request.

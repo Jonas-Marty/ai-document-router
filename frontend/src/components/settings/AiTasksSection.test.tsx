@@ -23,6 +23,7 @@ const LOCAL: AiEndpoint = {
   name: "Workshop PC",
   base_url: "http://192.168.1.50:11434/v1",
   api_key_set: false,
+  timeout_seconds: 120,
   used_by: [],
 };
 const HOSTED: AiEndpoint = {
@@ -30,6 +31,7 @@ const HOSTED: AiEndpoint = {
   name: "Infomaniak",
   base_url: "https://api.infomaniak.com/v1",
   api_key_set: true,
+  timeout_seconds: 120,
   used_by: [],
 };
 

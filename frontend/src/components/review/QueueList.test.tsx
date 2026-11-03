@@ -30,6 +30,7 @@ function doc(id: string, overrides: Partial<Document> = {}): Document {
     status: "pending",
     skip_count: 0,
     proposal_status: "ready",
+    analysis_stage: null,
     proposal: proposal(),
     proposal_error: null,
     ocr_status: "not_needed",

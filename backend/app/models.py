@@ -196,6 +196,9 @@ class AiEndpoint(SQLModel, table=True):
     name: str = Field(index=True)
     base_url: str
     api_key_encrypted: bytes | None = Field(default=None, sa_column=Column(LargeBinary))
+    # How long to wait for a reply. Per endpoint because a hosted API answers in seconds
+    # and a 14B model on a home GPU, loading cold and thinking first, can take minutes.
+    timeout_seconds: int = Field(default=120, sa_column_kwargs={"server_default": "120"})
     created_at: datetime
 
 

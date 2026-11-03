@@ -211,6 +211,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       name: endpoint?.name ?? "",
       base_url: endpoint?.base_url ?? "",
       api_key: "",
+      timeout_seconds: String(endpoint?.timeout_seconds ?? 120),
     },
   });
   const isSaving = create.isPending || update.isPending;
@@ -245,6 +246,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
     const body = {
       name: values.name.trim(),
       base_url: values.base_url.trim(),
+      timeout_seconds: Number(values.timeout_seconds),
       ...(key ? { api_key: key } : {}),
     };
     const handlers = {
@@ -267,6 +269,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const nameId = `endpoint-name-${endpoint?.id ?? "new"}`;
   const urlId = `endpoint-url-${endpoint?.id ?? "new"}`;
   const keyId = `endpoint-key-${endpoint?.id ?? "new"}`;
+  const timeoutId = `endpoint-timeout-${endpoint?.id ?? "new"}`;
 
   return (
     <form
@@ -308,6 +311,27 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
             ? "Leave blank to keep the current key."
             : "Leave blank if this endpoint needs no key."}
         </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={timeoutId}>Reply timeout (seconds)</Label>
+        <Input
+          id={timeoutId}
+          type="number"
+          inputMode="numeric"
+          className="w-32"
+          aria-invalid={!!errors.timeout_seconds}
+          aria-describedby={`${timeoutId}-help`}
+          {...register("timeout_seconds")}
+        />
+        {errors.timeout_seconds ? (
+          <p className="text-sm text-destructive">{errors.timeout_seconds.message}</p>
+        ) : (
+          <p id={`${timeoutId}-help`} className="text-sm text-muted-foreground">
+            How long to wait for an answer before trying the next endpoint. A local model that loads
+            cold and thinks first needs minutes; a hosted API, much less. Connecting gives up after
+            5 seconds either way.
+          </p>
+        )}
       </div>
       <div className="flex flex-wrap justify-between gap-2">
         <Button type="button" variant="outline" disabled={listModels.isPending} onClick={onTest}>

@@ -174,6 +174,10 @@ export const endpointFormSchema = z.object({
     .string()
     .refine((value) => /^https?:\/\//.test(value.trim()), "Must start with http:// or https://."),
   api_key: z.string(), // empty = leave the stored key unchanged
+  timeout_seconds: z.string().refine((value) => {
+    const seconds = Number(value);
+    return Number.isInteger(seconds) && seconds >= 10 && seconds <= 900;
+  }, "Between 10 and 900 seconds."),
 });
 
 export type EndpointFormValues = z.infer<typeof endpointFormSchema>;

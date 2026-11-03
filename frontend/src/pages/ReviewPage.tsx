@@ -298,7 +298,9 @@ function DocumentReview({
 
   const pendingSkeleton = (
     <div className="space-y-3" aria-busy="true">
-      <p className="text-sm text-muted-foreground">Waiting for the AI proposal…</p>
+      <p className="text-sm text-muted-foreground" aria-live="polite">
+        {document.analysis_stage ?? "Waiting for the AI proposal…"}
+      </p>
       <Skeleton className="h-9 w-full" />
       <Skeleton className="h-9 w-full" />
       <Skeleton className="h-9 w-full" />

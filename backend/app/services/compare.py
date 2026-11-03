@@ -99,6 +99,7 @@ def compare(
                     prompt=prompt,
                     allowed_roots=list(app_settings.allowed_root_folders),
                     usage=step.usage(meter, AiTask.filing),
+                    timeout=step.timeout_seconds,
                 ),
                 AiTask.filing,
             )

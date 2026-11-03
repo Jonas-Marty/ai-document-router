@@ -253,3 +253,24 @@ class TestPerAccount:
         assert client.get("/api/v1/ai/endpoints").json() == []
         assert client.delete(f"/api/v1/ai/endpoints/{mine['id']}").status_code == 404
         assert add(client, "Local")["id"] != mine["id"]
+
+
+class TestReplyTimeout:
+    def test_defaults_to_two_minutes_and_can_be_changed(self, client: TestClient) -> None:
+        created = add(client)
+        assert created["timeout_seconds"] == 120
+
+        updated = client.put(
+            f"/api/v1/ai/endpoints/{created['id']}",
+            json={"name": "Local", "base_url": created["base_url"], "timeout_seconds": 300},
+        ).json()
+
+        assert updated["timeout_seconds"] == 300
+
+    def test_rejects_a_timeout_out_of_range(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/v1/ai/endpoints",
+            json={"name": "x", "base_url": "https://api.example.com/v1", "timeout_seconds": 5},
+        )
+
+        assert response.status_code == 422

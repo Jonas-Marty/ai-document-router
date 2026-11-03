@@ -23,6 +23,7 @@ export interface AIProposal {
 
 export interface Document {
   id: string;
+  analysis_stage: string | null; // what the analysis is doing right now, while it runs
   original_filename: string;
   extension: string; // ".pdf", lowercase, includes the dot
   mime_type: string;
@@ -166,6 +167,7 @@ export interface AiEndpoint {
   name: string;
   base_url: string;
   api_key_set: boolean; // never the key itself
+  timeout_seconds: number; // how long to wait for a reply before trying the next step
   used_by: AiTask[]; // tasks that would lose a step if this were removed
 }
 
@@ -173,6 +175,7 @@ export interface AiEndpointWrite {
   name: string;
   base_url: string;
   api_key?: string; // omitted or empty = leave the stored key unchanged
+  timeout_seconds?: number; // omitted = keep the stored value (120 for a new endpoint)
 }
 
 export interface AiTaskStep {
