@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     # make one LLM call per document in a single tick. Caps keep each tick bounded; the
     # backlog drains over subsequent ticks.
     poller_ingest_batch: int = 20
-    poller_proposal_batch: int = 5
     # Much smaller than the others on purpose: OCRing a whole document is tens of seconds
     # where a proposal is a few, and a tick that spent minutes in ocrmypdf would leave newly
     # scanned files unnoticed. The backlog drains over subsequent ticks.

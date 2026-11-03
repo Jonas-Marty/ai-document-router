@@ -21,6 +21,7 @@ const SETTINGS: Settings = {
   store_ocr_text: true,
   filing_instructions: "Receipts go to /Documents/Belege.",
   extraction_instructions: null,
+  proposal_batch_size: 10,
 };
 
 function renderSection() {
@@ -84,5 +85,28 @@ describe("AiInstructionsSection", () => {
     );
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(apiClient.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("saves the batch size as a number and rejects one out of range", async () => {
+    vi.mocked(apiClient.updateSettings).mockImplementation(async (body) => body);
+    const user = userEvent.setup();
+    renderSection();
+    const field = screen.getByLabelText("Documents per batch");
+
+    await user.clear(field);
+    await user.type(field, "0");
+    expect(await screen.findByText("Between 1 and 50 documents.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(apiClient.updateSettings).not.toHaveBeenCalled();
+
+    await user.clear(field);
+    await user.type(field, "20");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(apiClient.updateSettings).toHaveBeenCalledWith({
+        ...SETTINGS,
+        proposal_batch_size: 20,
+      }),
+    );
   });
 });

@@ -23,8 +23,11 @@ _LABELS = {
     "store_ocr_text": "searchable copies",
     "filing_instructions": "filing instructions",
     "extraction_instructions": "extraction instructions",
+    "proposal_batch_size": "batch size",
 }
 MAX_INSTRUCTIONS_CHARS = 2000
+MIN_BATCH_SIZE = 1
+MAX_BATCH_SIZE = 50
 
 
 class NextcloudNotConfigured(AppError):
@@ -176,6 +179,7 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
         store_ocr_text=settings.store_ocr_text,
         filing_instructions=settings.filing_instructions,
         extraction_instructions=settings.extraction_instructions,
+        proposal_batch_size=settings.proposal_batch_size,
     )
 
 
@@ -199,6 +203,7 @@ def update_settings(
         "extraction_instructions": _validate_instructions(
             payload.extraction_instructions, "Extraction"
         ),
+        "proposal_batch_size": _validate_batch_size(payload.proposal_batch_size),
     }
     changed = {
         field: {"from": getattr(settings, field), "to": value}
@@ -282,6 +287,15 @@ def _validate_instructions(text: str | None, label: str) -> str | None:
             f"{label} instructions must be {MAX_INSTRUCTIONS_CHARS} characters or fewer."
         )
     return trimmed or None
+
+
+def _validate_batch_size(size: int) -> int:
+    """Capped so one tick cannot hold the scheduler for an hour of local-model work."""
+    if not MIN_BATCH_SIZE <= size <= MAX_BATCH_SIZE:
+        raise ValidationError(
+            f"Batch size must be between {MIN_BATCH_SIZE} and {MAX_BATCH_SIZE} documents."
+        )
+    return size
 
 
 def _validate_filename_pattern(pattern: str | None) -> None:

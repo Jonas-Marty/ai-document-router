@@ -41,6 +41,9 @@ const baseDocument: Document = {
   ocr_status: "not_needed",
   ocr_error: null,
   analysis_usage: null,
+  extracted_markdown: null,
+  extraction_model: null,
+  extraction_error: null,
 };
 
 const emptySettings: Settings = {
@@ -52,6 +55,7 @@ const emptySettings: Settings = {
   store_ocr_text: true,
   filing_instructions: null,
   extraction_instructions: null,
+  proposal_batch_size: 10,
 };
 
 function folderContextOf(overrides: Partial<FolderContext> = {}): FolderContext {
@@ -138,6 +142,34 @@ describe("ReviewForm", () => {
 
     await user.click(screen.getByRole("button", { name: /hide what was sent to the ai/i }));
     expect(screen.queryByText("You file scanned documents.")).not.toBeInTheDocument();
+  });
+
+  it("shows the extracted text, and the model that read it, only once asked", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const user = userEvent.setup();
+    render(
+      <Harness
+        document={{
+          ...baseDocument,
+          extracted_markdown: "# Swisscom\nRechnung Mai",
+          extraction_model: "Jonas-PC · chandra-ocr-2",
+        }}
+      />,
+    );
+
+    expect(screen.queryByText(/Rechnung Mai/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /show extracted text/i }));
+    expect(screen.getByText(/Rechnung Mai/)).toBeInTheDocument();
+    expect(screen.getByText("Read by Jonas-PC · chandra-ocr-2")).toBeInTheDocument();
+  });
+
+  it("offers no extracted text when nothing was extracted", () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    render(<Harness document={baseDocument} />);
+
+    expect(screen.queryByRole("button", { name: /extracted text/i })).not.toBeInTheDocument();
   });
 
   it("explains when the document-specific prompt wasn't recorded for an older proposal", async () => {

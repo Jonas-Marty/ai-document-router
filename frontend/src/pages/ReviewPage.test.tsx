@@ -47,6 +47,9 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
     ocr_status: "not_needed",
     ocr_error: null,
     analysis_usage: null,
+    extracted_markdown: null,
+    extraction_model: null,
+    extraction_error: null,
     ...overrides,
   };
 }
@@ -60,6 +63,7 @@ const SETTINGS: Settings = {
   store_ocr_text: true,
   filing_instructions: null,
   extraction_instructions: null,
+  proposal_batch_size: 10,
 };
 
 const FOLDER_CONTEXT: FolderContext = {

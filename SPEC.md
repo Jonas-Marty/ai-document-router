@@ -183,6 +183,7 @@ ai-document-router/
 | `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
 | `filing_instructions` | str \| null — the person's own instructions for filing, ≤ 2000 chars (6.3) |
 | `extraction_instructions` | str \| null — the same for extraction, ≤ 2000 chars (6.3a) |
+| `proposal_batch_size` | int, default 10 — documents read then filed per poll tick, 1–50 (6.2) |
 
 **`ai_endpoint`** — one place a model request can be sent. Any number of them (6.3a).
 
@@ -363,6 +364,7 @@ export interface Settings {
   store_ocr_text: boolean;
   filing_instructions: string | null;
   extraction_instructions: string | null;
+  proposal_batch_size: number;
 }
 
 export type SettingsUpdate = Settings;
@@ -581,8 +583,8 @@ back and logged, and the next user's pass runs regardless.
    (6.4), after the move that puts the document where it belongs.
 
 Jobs are serialized (`max_instances=1`) so a slow LLM call can't stack runs. Each phase is
-capped per tick: `POLLER_INGEST_BATCH` (20), `POLLER_OCR_BATCH` (2), `POLLER_PROPOSAL_BATCH`
-(5). OCR gets the smallest cap because it is the slowest by an order of magnitude.
+capped per tick: `POLLER_INGEST_BATCH` (20), `POLLER_OCR_BATCH` (2), and proposals by each
+user's `proposal_batch_size` (default 10, 1–50, set in Settings → AI instructions). OCR gets the smallest cap because it is the slowest by an order of magnitude.
 
 ### 6.2a Searchable copies (`services/searchable.py`)
 

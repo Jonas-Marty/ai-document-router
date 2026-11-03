@@ -8,6 +8,7 @@ import { trimStemOnBlur } from "@/lib/naming";
 import { relativeTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { ConfidenceBadge, isLowConfidence } from "./ConfidenceBadge";
+import { ExtractedText } from "./ExtractedText";
 import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
 import type { ReviewFormValues } from "./reviewFormSchema";
@@ -146,6 +147,7 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
 
       {document.proposal && <ReasoningBlock text={document.proposal.reasoning_text} />}
       {document.proposal && <PromptDetails proposal={document.proposal} />}
+      <ExtractedText document={document} />
       {/* Outside the proposal check: a failed analysis spent tokens too. */}
       <TokenUsage usage={document.analysis_usage} />
 

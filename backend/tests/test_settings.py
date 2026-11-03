@@ -32,6 +32,7 @@ def test_get_settings_returns_seeded_defaults(client: TestClient) -> None:
         "store_ocr_text": True,
         "filing_instructions": None,
         "extraction_instructions": None,
+        "proposal_batch_size": 10,
     }
 
 
@@ -49,6 +50,21 @@ def test_put_settings_stores_trimmed_instructions_and_blank_as_none(client: Test
         "Insurance letters go under /Documents/Versicherung."
     )
     assert response.json()["extraction_instructions"] is None
+
+
+@pytest.mark.parametrize("size", [0, 51])
+def test_put_settings_rejects_a_batch_size_out_of_range(client: TestClient, size: int) -> None:
+    response = client.put("/api/v1/settings", json={**VALID_PAYLOAD, "proposal_batch_size": size})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == ("Batch size must be between 1 and 50 documents.")
+
+
+def test_put_settings_stores_the_batch_size(client: TestClient) -> None:
+    response = client.put("/api/v1/settings", json={**VALID_PAYLOAD, "proposal_batch_size": 3})
+
+    assert response.status_code == 200
+    assert response.json()["proposal_batch_size"] == 3
 
 
 def test_put_settings_rejects_overlong_instructions(client: TestClient) -> None:

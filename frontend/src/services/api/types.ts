@@ -38,6 +38,9 @@ export interface Document {
   ocr_status: OcrStatus;
   ocr_error: string | null;
   analysis_usage: UsageSummary | null; // tokens the most recent analysis spent, success or not
+  extracted_markdown: string | null; // what extraction read off the pages, fed to filing
+  extraction_model: string | null;
+  extraction_error: string | null; // why extraction failed and the text layer was used
 }
 
 /** Every call one task made during one analysis, added up. */
@@ -154,6 +157,7 @@ export interface Settings {
   store_ocr_text: boolean; // file a searchable copy of a scan instead of the original
   filing_instructions: string | null; // added to the filing prompt; max 2000 characters
   extraction_instructions: string | null; // added to the extraction prompt; max 2000 characters
+  proposal_batch_size: number; // documents read, then filed, per poll tick; 1-50
 }
 
 export type SettingsUpdate = Settings;

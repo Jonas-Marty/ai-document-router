@@ -36,6 +36,9 @@ function doc(id: string, overrides: Partial<Document> = {}): Document {
     ocr_status: "not_needed",
     ocr_error: null,
     analysis_usage: null,
+    extracted_markdown: null,
+    extraction_model: null,
+    extraction_error: null,
     ...overrides,
   };
 }

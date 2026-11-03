@@ -442,7 +442,7 @@ def generate_proposals(
         # call and attach a proposal to an already-filed document.
         .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
         .order_by(Document.discovered_at)  # type: ignore[arg-type]
-        .limit(config.poller_proposal_batch)
+        .limit(app_settings.proposal_batch_size)
     ).all()
 
     cache = already_extracted or {}

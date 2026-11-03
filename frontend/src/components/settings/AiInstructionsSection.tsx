@@ -2,6 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { type ReactNode, useEffect, useMemo } from "react";
 import { type FieldError, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useUpdateSettings } from "@/hooks/useSettings";
@@ -54,6 +55,7 @@ export function AiInstructionsSection({
         ...settings,
         filing_instructions: form.filing_instructions.trim() || null,
         extraction_instructions: form.extraction_instructions.trim() || null,
+        proposal_batch_size: Number(form.proposal_batch_size),
       },
       {
         onSuccess: (saved) => {
@@ -115,6 +117,27 @@ export function AiInstructionsSection({
             {...register("extraction_instructions")}
           />
         </InstructionsField>
+        <div className="space-y-1.5">
+          <Label htmlFor="proposal_batch_size">Documents per batch</Label>
+          <Input
+            id="proposal_batch_size"
+            type="number"
+            inputMode="numeric"
+            className="w-32"
+            aria-invalid={!!errors.proposal_batch_size}
+            aria-describedby="proposal_batch_size-help"
+            {...register("proposal_batch_size")}
+          />
+          {errors.proposal_batch_size ? (
+            <p className="text-sm text-destructive">{errors.proposal_batch_size.message}</p>
+          ) : (
+            <p id="proposal_batch_size-help" className="text-sm text-muted-foreground">
+              How many waiting documents are read before any of them is filed. When extraction and
+              filing run on one GPU, each batch loads each model once, so larger batches switch less
+              but take longer before the first proposal appears.
+            </p>
+          )}
+        </div>
       </SectionCard>
     </form>
   );
@@ -124,6 +147,7 @@ function toFormValues(settings: Settings): InstructionsFormValues {
   return {
     filing_instructions: settings.filing_instructions ?? "",
     extraction_instructions: settings.extraction_instructions ?? "",
+    proposal_batch_size: String(settings.proposal_batch_size),
   };
 }
 

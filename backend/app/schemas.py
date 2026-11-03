@@ -71,6 +71,10 @@ class DocumentRead(BaseModel):
     ocr_status: OcrStatus
     ocr_error: str | None
     analysis_usage: UsageSummaryRead | None = None
+    # What the extraction task read off the pages, so the person can see what filing saw.
+    extracted_markdown: str | None = None
+    extraction_model: str | None = None
+    extraction_error: str | None = None
 
     @field_serializer("scanned_at")
     def _serialize_scanned_at(self, value: datetime) -> str:
@@ -103,6 +107,9 @@ class DocumentRead(BaseModel):
             proposal_error=document.proposal_error,
             ocr_status=document.ocr_status,
             ocr_error=document.ocr_error,
+            extracted_markdown=document.extracted_markdown,
+            extraction_model=document.extraction_model,
+            extraction_error=document.extraction_error,
             analysis_usage=(
                 UsageSummaryRead.model_validate(document.analysis_usage)
                 if document.analysis_usage
@@ -179,6 +186,7 @@ class SettingsRead(BaseModel):
     store_ocr_text: bool
     filing_instructions: str | None
     extraction_instructions: str | None
+    proposal_batch_size: int
 
 
 class SettingsUpdate(BaseModel):
@@ -190,6 +198,7 @@ class SettingsUpdate(BaseModel):
     store_ocr_text: bool = True
     filing_instructions: str | None = None
     extraction_instructions: str | None = None
+    proposal_batch_size: int = 10
 
 
 class NextcloudRead(BaseModel):

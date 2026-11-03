@@ -159,6 +159,11 @@ const instructionsField = z
 export const instructionsFormSchema = z.object({
   filing_instructions: instructionsField,
   extraction_instructions: instructionsField,
+  // Mirrors MIN/MAX_BATCH_SIZE in services/settings.py.
+  proposal_batch_size: z.string().refine((value) => {
+    const size = Number(value);
+    return Number.isInteger(size) && size >= 1 && size <= 50;
+  }, "Between 1 and 50 documents."),
 });
 
 export type InstructionsFormValues = z.infer<typeof instructionsFormSchema>;

@@ -968,3 +968,7 @@ meaningful. One line of "why" each; not a full ADR log.
 - Extraction and filing run as two passes over each poll's batch rather than per document,
   so a GPU that holds one model at a time loads each model once per batch (5 documents),
   not once per document. The reading and its usage meter carry over to the filing pass.
+- The proposal batch size is per user (default 10, capped at 50 so one tick cannot hold the
+  scheduler for hours) and lives beside the AI instructions rather than in its own section.
+  The review page shows the stored extracted text, its model and any extraction error in a
+  collapsed panel next to "what was sent to the AI".

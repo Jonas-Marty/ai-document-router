@@ -49,6 +49,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     store_ocr_text: true,
     filing_instructions: null,
     extraction_instructions: null,
+    proposal_batch_size: 10,
     ...overrides,
   };
 }

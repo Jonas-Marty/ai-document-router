@@ -177,6 +177,10 @@ class AppSettings(SQLModel, table=True):
     # under /Versicherung", extraction needs "these are German, keep the umlauts".
     filing_instructions: str | None = None
     extraction_instructions: str | None = None
+    # Documents analysed per poll tick. Each tick reads its whole batch before filing any of
+    # it, so on a GPU that holds one model at a time this is how many documents share one
+    # model load; larger also means a single tick holds the queue longer.
+    proposal_batch_size: int = Field(default=10, sa_column_kwargs={"server_default": "10"})
 
 
 class AiEndpoint(SQLModel, table=True):
