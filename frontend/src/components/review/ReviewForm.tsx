@@ -124,9 +124,17 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
             {document.extension}" already exists in this folder. Choose a different name.
           </p>
         ) : patternMismatch ? (
-          <p className="text-sm text-amber-600 dark:text-amber-400">
-            {settings?.filename_pattern_hint ?? "This name doesn't match the usual pattern."}
-          </p>
+          // The hint is often the full naming guide the model is also given; a paragraph of
+          // amber under the field buries the form, so it stays one click away.
+          <details className="text-sm text-amber-600 dark:text-amber-400">
+            <summary className="cursor-pointer">
+              This name doesn't match your naming pattern.
+              {settings?.filename_pattern_hint && " Show the pattern"}
+            </summary>
+            {settings?.filename_pattern_hint && (
+              <p className="mt-1 whitespace-pre-wrap">{settings.filename_pattern_hint}</p>
+            )}
+          </details>
         ) : null}
       </div>
 

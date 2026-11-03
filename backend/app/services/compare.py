@@ -107,6 +107,8 @@ def compare(
             error = exc.reason
         except AppError as exc:
             error = exc.message
+        if proposal is not None:
+            proposal = ai.with_date_prefix(proposal, app_settings.filename_pattern)
 
         results.append(
             MethodResult(

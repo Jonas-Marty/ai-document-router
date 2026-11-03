@@ -972,3 +972,8 @@ meaningful. One line of "why" each; not a full ADR log.
   scheduler for hours) and lives beside the AI instructions rather than in its own section.
   The review page shows the stored extracted text, its model and any extraction error in a
   collapsed panel next to "what was sent to the AI".
+- When a proposed name fails `filename_pattern` but would match with the proposal's own
+  `document_date` as its leading date (in YYYY.MM.DD, YYYY-MM-DD, YYYYMMDD or DD.MM.YYYY,
+  whichever the pattern accepts), the backend rewrites the leading date and notes it in the
+  reasoning. Small models get the date field right and truncate it in the name; the user's
+  pattern is the only signal used, so without one nothing is rewritten.

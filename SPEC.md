@@ -860,7 +860,8 @@ likely to divide by are created at zero on startup.
 - No leading or trailing dot, space, or hyphen — trimmed silently on blur, rejected on submit.
 - Extension is never editable; it is carried over from the original file.
 - If `filename_pattern` is set and does not match: **warning only**, approve stays enabled.
-  Amber helper text under the field showing `filename_pattern_hint`.
+  A one-line amber note under the field; `filename_pattern_hint` is behind "Show the
+  pattern", since the hint is often a long naming guide.
 - Collision with an existing file in the target: **blocking**, approve disabled.
 
 ### 7.2 Folder

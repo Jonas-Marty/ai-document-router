@@ -578,6 +578,7 @@ def propose_for(
         _fail(session, document, exc.message, meter)
         return False
 
+    proposal = ai.with_date_prefix(proposal, app_settings.filename_pattern)
     _store(session, document, proposal, prompt, meter)
     return True
 

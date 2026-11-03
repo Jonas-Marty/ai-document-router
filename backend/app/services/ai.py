@@ -11,13 +11,13 @@ import logging
 import mimetypes
 import time
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
 from typing import TypeGuard
 
 import httpx
 
-from app.services import metrics
+from app.services import metrics, naming
 from app.services.errors import AppError
 from app.services.paths import is_within, normalize_path
 
@@ -830,3 +830,15 @@ def _validate_reasoning(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
+
+
+def with_date_prefix(proposal: Proposal, pattern: str | None) -> Proposal:
+    """See naming.align_date_prefix; says so in the reasoning when it changed the name."""
+    name = naming.align_date_prefix(proposal.suggested_name, proposal.document_date, pattern)
+    if name == proposal.suggested_name:
+        return proposal
+    return replace(
+        proposal,
+        suggested_name=name,
+        reasoning_text=f"{proposal.reasoning_text} (Name dated from the document date.)",
+    )

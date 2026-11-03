@@ -347,8 +347,12 @@ describe("ReviewForm", () => {
     await user.type(nameInput, "no date prefix");
 
     await waitFor(() => {
-      expect(screen.getByText("Expected YYYY.MM.DD prefix")).toBeInTheDocument();
+      expect(screen.getByText(/doesn't match your naming pattern/)).toBeInTheDocument();
     });
+    // The hint itself waits behind a click: it can be the whole naming guide.
+    expect(screen.getByText("Expected YYYY.MM.DD prefix")).not.toBeVisible();
+    await user.click(screen.getByText(/show the pattern/i));
+    expect(screen.getByText("Expected YYYY.MM.DD prefix")).toBeVisible();
     expect(nameInput).toBeEnabled();
   });
 
