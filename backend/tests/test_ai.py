@@ -232,6 +232,25 @@ class TestTransport:
             self._call(handler)
         assert len(calls) == 2
 
+    def test_does_not_retry_a_slow_5xx_from_a_proxy_that_already_gave_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # LiteLLM retries an unreachable Ollama itself before answering 500; a second request
+        # from here repeated all of that and doubled the wait before the next endpoint.
+        clock = iter([0.0, ai.SLOW_SERVER_ERROR_SECONDS + 30.0])
+        monkeypatch.setattr(ai.time, "monotonic", lambda: next(clock, 1000.0))
+        calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(
+                500, json={"error": {"message": "Cannot connect to host 100.64.0.1:11434"}}
+            )
+
+        with pytest.raises(AIUnavailable, match="Cannot connect to host"):
+            self._call(handler)
+        assert len(calls) == 1
+
     def test_does_not_retry_a_4xx(self) -> None:
         """A bad key or wrong model name fails identically twice; retrying only doubles
         the user's wait."""

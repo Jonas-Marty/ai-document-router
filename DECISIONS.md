@@ -985,3 +985,6 @@ meaningful. One line of "why" each; not a full ADR log.
   Otherwise each document of a batch waited out the same reply timeout before falling back.
 - Example filenames in the filing prompt are limited to those matching `filename_pattern`:
   the model imitates examples more than it follows the written pattern.
+- A 5xx that took more than 5 s to arrive is not retried. Behind LiteLLM, an unreachable
+  Ollama is retried by LiteLLM itself before it answers 500; retrying that here doubled
+  the wait before the next endpoint for nothing.

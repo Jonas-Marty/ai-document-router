@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 # The default reply timeout; each endpoint sets its own (AiEndpoint.timeout_seconds).
 REQUEST_TIMEOUT_SECONDS = 120.0
 CONNECT_TIMEOUT_SECONDS = 5.0
+# A server error that took longer than this to arrive is not retried (see _post_with_retry).
+SLOW_SERVER_ERROR_SECONDS = 5.0
 # Listing models backs a button someone is waiting on, so it fails fast rather than
 # holding the Settings form for the proposal timeout.
 MODELS_TIMEOUT_SECONDS = 10.0
@@ -643,6 +645,7 @@ def _post_with_retry(
     """
     last_error = ""
     for attempt in (1, 2):
+        started = time.monotonic()
         try:
             response = http.post(url, json=dict(payload), headers=dict(headers))
         except httpx.ReadTimeout as exc:
@@ -658,8 +661,16 @@ def _post_with_retry(
             continue
 
         if response.status_code >= 500:
-            last_error = f"the model server returned {response.status_code}"
+            detail = _provider_detail(response)
+            last_error = f"the model server returned {response.status_code}" + (
+                f": {detail}" if detail else ""
+            )
             logger.warning("AI request attempt %d got %d", attempt, response.status_code)
+            # A slow 5xx is a proxy (LiteLLM, say) that already tried its upstream, with its
+            # own retries, and gave up: asking again repeats that whole wait for the same
+            # answer. Only a quick one is worth a second try.
+            if time.monotonic() - started > SLOW_SERVER_ERROR_SECONDS:
+                break
             continue
 
         if response.status_code >= 400:

@@ -643,8 +643,10 @@ OpenAI-compatible. JSON output is asked for with `response_format` `json_object`
 `json_schema`, then none, each tried only after the previous one was refused with a 400; the
 one an endpoint and model accepted is remembered in memory and asked for first from then on.
 Connecting gives up after 5 seconds; the reply gets the endpoint's own `timeout_seconds`
-(default 120). One retry on 5xx or a failed connection; a reply that timed out is not
-retried, since the timeout is already the longest allowed.
+(default 120). One retry on a failed connection, or on a 5xx that arrived within 5 seconds;
+a reply that timed out is not retried, since the timeout is already the longest allowed,
+and neither is a slower 5xx: that is a proxy such as LiteLLM that has already retried its
+upstream and given up.
 The model must return exactly:
 
 ```json
