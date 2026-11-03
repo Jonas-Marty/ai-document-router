@@ -43,13 +43,15 @@ FORBIDDEN_NAME_CHARS = set('/\\:*?"<>|')
 SYSTEM_PROMPT = (
     "You file scanned documents. Given a document's text and the folders available, you "
     "choose a filename, a destination folder, and the document's date.\n"
-    "Reply with JSON only, with exactly these keys: suggested_name, target_folder_path, "
-    "document_date, confidence_score, reasoning_text.\n"
-    '- suggested_name: no file extension, and none of these characters: / \\ : * ? " < > |\n'
-    "- target_folder_path: an absolute path chosen from the folder list, nothing invented\n"
-    "- document_date: the date shown on the document as YYYY-MM-DD, or null if absent\n"
-    "- confidence_score: 0.0 to 1.0\n"
+    "Reply with JSON only, with exactly these keys, in this order: reasoning_text, "
+    "document_date, target_folder_path, suggested_name, confidence_score.\n"
     "- reasoning_text: one or two plain sentences citing what you saw. Not markdown.\n"
+    "- document_date: the date shown on the document as YYYY-MM-DD, or null if absent\n"
+    "- target_folder_path: an absolute path chosen from the folder list, nothing invented\n"
+    "- suggested_name: built from the fields above. Where the naming pattern has a date, "
+    "write the full document_date in the pattern's format, never just the year. No file "
+    'extension, and none of these characters: / \\ : * ? " < > |\n'
+    "- confidence_score: 0.0 to 1.0\n"
     "The message may include additional instructions from the person whose archive this is. "
     "Follow them, unless they conflict with the reply format above."
 )
@@ -468,19 +470,22 @@ _known_format: dict[tuple[str, str], str | None] = {}
 
 PROPOSAL_SCHEMA: dict[str, object] = {
     "type": "object",
+    # Order matters: a model writes its reply front to back, so the name comes after the
+    # date and folder it is built from, and after the reasoning that settles them. With the
+    # name first, models wrote "2026 ..." and then the correct full date below it.
     "properties": {
-        "suggested_name": {"type": "string"},
-        "target_folder_path": {"type": "string"},
-        "document_date": {"type": ["string", "null"]},
-        "confidence_score": {"type": "number"},
         "reasoning_text": {"type": "string"},
+        "document_date": {"type": ["string", "null"]},
+        "target_folder_path": {"type": "string"},
+        "suggested_name": {"type": "string"},
+        "confidence_score": {"type": "number"},
     },
     "required": [
-        "suggested_name",
-        "target_folder_path",
-        "document_date",
-        "confidence_score",
         "reasoning_text",
+        "document_date",
+        "target_folder_path",
+        "suggested_name",
+        "confidence_score",
     ],
 }
 

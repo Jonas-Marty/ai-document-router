@@ -612,6 +612,12 @@ Each poll runs extraction for its whole batch of pending documents first, then f
 all of them: on a single home GPU the two models rarely fit together, and alternating per
 document would reload both models for each one.
 
+The reply's keys are asked for in the order reasoning_text, document_date,
+target_folder_path, suggested_name, confidence_score (system prompt and json_schema alike):
+a model writes front to back, so the name is written after the date and folder it is built
+from. When the name still fails `filename_pattern` but would match with `document_date` as
+its leading date, the backend rewrites that date (DECISIONS.md).
+
 Input assembled by the backend:
 - The document's text, first 6000 characters. Preferred source is `extracted_markdown` from
   the extraction task, so the model sees headings, tables and line items rather than one

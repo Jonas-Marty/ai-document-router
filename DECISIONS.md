@@ -977,3 +977,6 @@ meaningful. One line of "why" each; not a full ADR log.
   whichever the pattern accepts), the backend rewrites the leading date and notes it in the
   reasoning. Small models get the date field right and truncate it in the name; the user's
   pattern is the only signal used, so without one nothing is rewritten.
+- The filing reply asks for reasoning, date and folder before the name. Asked name-first,
+  a capable hosted model still wrote "2026 ..." and the correct full date after it; the
+  order of the keys, not the model's size, was the cause.
