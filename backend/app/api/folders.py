@@ -17,6 +17,15 @@ def read_tree(
     return folders_service.tree(webdav, app_settings, path)
 
 
+@router.get("/folders/browse")
+def read_browse(
+    _user: CurrentUserDep,
+    webdav: WebDavDep,
+    path: str | None = Query(None),
+) -> list[FolderNode]:
+    return folders_service.browse(webdav, path)
+
+
 @router.post("/folders")
 def create_folder(
     payload: CreateFolderRequest,

@@ -1,4 +1,4 @@
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { FolderPlus, Search } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { queryKeys } from "@/hooks/queryKeys";
-import { useCreateFolder, useFolderTree } from "@/hooks/useFolders";
+import { useCreateFolder } from "@/hooks/useFolders";
 import { validateFolderName } from "@/lib/naming";
 import { apiClient } from "@/services/api/client";
 import { ApiError } from "@/services/api/errors";
@@ -27,6 +27,20 @@ export interface FolderPickerBodyProps {
   onCancel: () => void;
   /** SPEC 8.5: arrow-key navigation and Enter to select is a desktop-only affordance. */
   enableKeyboardNav: boolean;
+  /** "allowed" (review) confines the tree to the allowed roots; "all" (Settings) browses the
+   * whole WebDAV store, since that is where the roots themselves are chosen. */
+  scope?: FolderPickerScope;
+}
+
+export type FolderPickerScope = "allowed" | "all";
+
+function treeQuery(
+  scope: FolderPickerScope,
+  path?: string,
+): { queryKey: readonly unknown[]; queryFn: () => Promise<FolderNode[]> } {
+  return scope === "all"
+    ? { queryKey: queryKeys.folderBrowse(path), queryFn: () => apiClient.browseFolders(path) }
+    : { queryKey: queryKeys.folderTree(path), queryFn: () => apiClient.getFolderTree(path) };
 }
 
 interface VisibleEntry {
@@ -63,8 +77,9 @@ export function FolderPickerBody({
   onSelect,
   onCancel,
   enableKeyboardNav,
+  scope = "allowed",
 }: FolderPickerBodyProps) {
-  const rootsQuery = useFolderTree();
+  const rootsQuery = useQuery(treeQuery(scope));
   const createFolder = useCreateFolder();
 
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
@@ -100,10 +115,7 @@ export function FolderPickerBody({
 
   const expandedList = [...expandedPaths];
   const childrenResults = useQueries({
-    queries: expandedList.map((path) => ({
-      queryKey: queryKeys.folderTree(path),
-      queryFn: () => apiClient.getFolderTree(path),
-    })),
+    queries: expandedList.map((path) => treeQuery(scope, path)),
   });
   const childrenByPath = new Map<string, FolderChildrenState>();
   expandedList.forEach((path, i) => {
@@ -227,10 +239,14 @@ export function FolderPickerBody({
             className="h-8 pl-7 text-sm"
           />
         </div>
-        <Button variant="outline" size="sm" onClick={openNewFolder} disabled={!selectedPath}>
-          <FolderPlus className="size-4" aria-hidden="true" />
-          New folder
-        </Button>
+        {/* The server only creates folders under the allowed roots, so offering it while
+            choosing those roots would mostly fail. */}
+        {scope === "allowed" && (
+          <Button variant="outline" size="sm" onClick={openNewFolder} disabled={!selectedPath}>
+            <FolderPlus className="size-4" aria-hidden="true" />
+            New folder
+          </Button>
+        )}
       </div>
 
       {rootsQuery.isLoading ? (
@@ -250,10 +266,14 @@ export function FolderPickerBody({
           onRetry={() => rootsQuery.refetch()}
         />
       ) : rootsQuery.data && rootsQuery.data.length === 0 ? (
-        <EmptyState
-          title="No allowed folders configured."
-          description="Set at least one in Settings first."
-        />
+        scope === "all" ? (
+          <EmptyState title="No folders found." />
+        ) : (
+          <EmptyState
+            title="No allowed folders configured."
+            description="Set at least one in Settings first."
+          />
+        )
       ) : (
         <div
           ref={containerRef}

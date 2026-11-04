@@ -41,6 +41,20 @@ def tree(
     return [_node_for(webdav, entry.path) for entry in webdav.list_dirs_only(parent)]
 
 
+def browse(webdav: WebDavService, path: str | None = None) -> list[FolderNode]:
+    """One level of the user's whole WebDAV store, for choosing folders in Settings.
+
+    Unlike tree() this is not confined to the allowed roots: it is how those roots get
+    picked in the first place. It only ever reads the user's own server with their own
+    credentials, which can already reach any path typed into Settings.
+    """
+    try:
+        parent = normalize_path(path or "/")
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return [_node_for(webdav, entry.path) for entry in webdav.list_dirs_only(parent)]
+
+
 def create(
     webdav: WebDavService, app_settings: AppSettings, parent_path: str, name: str
 ) -> FolderNode:

@@ -9,6 +9,7 @@ export const queryKeys = {
   queue: ["queue", QUEUE_LIMIT] as const,
   document: (id: string) => ["document", id] as const,
   folderTree: (path?: string) => ["folders", "tree", path ?? null] as const,
+  folderBrowse: (path?: string) => ["folders", "browse", path ?? null] as const,
   folderContext: (path: string, filename?: string) =>
     ["folders", "context", path, filename ?? null] as const,
   history: () => ["history"] as const,

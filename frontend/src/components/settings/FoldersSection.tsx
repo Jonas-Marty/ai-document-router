@@ -1,8 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Plus, X } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { FolderOpen, Plus, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
+import { FolderPicker } from "@/components/folders/FolderPicker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +18,19 @@ import { type FoldersFormValues, foldersFormSchema } from "./settingsSchemas";
  * *other* sections' last-saved values along too -- `settings` (the live query data, always
  * the latest known-good server state) supplies those, spread first so this section's own
  * fields override them. */
+type PickerTarget =
+  | "watch_folder_path"
+  | "trash_folder_path"
+  | `allowed_root_folders.${number}.value`;
+
+function BrowseButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <Button type="button" variant="outline" size="icon" onClick={onClick} aria-label={label}>
+      <FolderOpen aria-hidden="true" />
+    </Button>
+  );
+}
+
 export function FoldersSection({
   settings,
   onDirtyChange,
@@ -55,8 +69,11 @@ export function FoldersSection({
   const {
     register,
     handleSubmit,
+    getValues,
+    setValue,
     formState: { errors, isDirty },
   } = methods;
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
 
   useEffect(() => {
     onDirtyChange(isDirty);
@@ -101,14 +118,20 @@ export function FoldersSection({
       >
         <div className="space-y-1.5">
           <Label htmlFor="watch_folder_path">Watch folder</Label>
-          <Input
-            id="watch_folder_path"
-            className="font-mono"
-            placeholder="/Scans/Inbox"
-            aria-invalid={!!errors.watch_folder_path}
-            aria-describedby="watch_folder_path_help"
-            {...register("watch_folder_path")}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="watch_folder_path"
+              className="font-mono"
+              placeholder="/Scans/Inbox"
+              aria-invalid={!!errors.watch_folder_path}
+              aria-describedby="watch_folder_path_help"
+              {...register("watch_folder_path")}
+            />
+            <BrowseButton
+              label="Browse for watch folder"
+              onClick={() => setPickerTarget("watch_folder_path")}
+            />
+          </div>
           {errors.watch_folder_path ? (
             <p className="text-sm text-destructive">{errors.watch_folder_path.message}</p>
           ) : (
@@ -130,6 +153,10 @@ export function FoldersSection({
                     aria-label={`Allowed root folder ${index + 1}`}
                     aria-invalid={!!errors.allowed_root_folders?.[index]?.value}
                     {...register(`allowed_root_folders.${index}.value`)}
+                  />
+                  <BrowseButton
+                    label={`Browse for allowed root folder ${index + 1}`}
+                    onClick={() => setPickerTarget(`allowed_root_folders.${index}.value`)}
                   />
                   <Button
                     type="button"
@@ -159,17 +186,35 @@ export function FoldersSection({
 
         <div className="space-y-1.5">
           <Label htmlFor="trash_folder_path">Trash folder</Label>
-          <Input
-            id="trash_folder_path"
-            className="font-mono"
-            aria-invalid={!!errors.trash_folder_path}
-            {...register("trash_folder_path")}
-          />
+          <div className="flex items-center gap-2">
+            <Input
+              id="trash_folder_path"
+              className="font-mono"
+              aria-invalid={!!errors.trash_folder_path}
+              {...register("trash_folder_path")}
+            />
+            <BrowseButton
+              label="Browse for trash folder"
+              onClick={() => setPickerTarget("trash_folder_path")}
+            />
+          </div>
           {errors.trash_folder_path && (
             <p className="text-sm text-destructive">{errors.trash_folder_path.message}</p>
           )}
         </div>
       </SectionCard>
+      <FolderPicker
+        scope="all"
+        open={pickerTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setPickerTarget(null);
+        }}
+        value={pickerTarget ? getValues(pickerTarget) : ""}
+        onSelect={(path) => {
+          if (pickerTarget)
+            setValue(pickerTarget, path, { shouldDirty: true, shouldValidate: true });
+        }}
+      />
     </form>
   );
 }

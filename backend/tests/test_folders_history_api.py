@@ -117,6 +117,24 @@ def make_document(name: str = "scan.pdf") -> str:
         return document.id
 
 
+class TestFolderBrowse:
+    def test_lists_the_server_root_without_allowed_roots(
+        self, client: TestClient, fake: FakeWebDav
+    ) -> None:
+        """Settings needs to browse before any root is configured."""
+        fake.listings["/"] = [folder("/Docs"), file_entry("/a.pdf")]
+        fake.listings["/Docs"] = []
+
+        body = client.get("/api/v1/folders/browse").json()
+
+        assert [node["path"] for node in body] == ["/Docs"]
+
+    def test_rejects_traversal(self, client: TestClient, fake: FakeWebDav) -> None:
+        response = client.get("/api/v1/folders/browse?path=/Docs/../..")
+
+        assert response.status_code == 422
+
+
 class TestFolderTree:
     def test_top_level_is_the_allowed_roots_only(
         self, configured: TestClient, fake: FakeWebDav

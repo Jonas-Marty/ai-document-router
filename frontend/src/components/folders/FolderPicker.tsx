@@ -1,20 +1,21 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useIsDesktop } from "@/hooks/useBreakpoint";
-import { FolderPickerBody } from "./FolderPickerBody";
+import { FolderPickerBody, type FolderPickerScope } from "./FolderPickerBody";
 
 export interface FolderPickerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   value: string;
   onSelect: (path: string) => void;
+  scope?: FolderPickerScope;
 }
 
 /** SPEC 8.5: "Desktop: dialog with arrow-key navigation and Enter to select. Mobile:
  * full-screen sheet, tap to select." Both breakpoints share `FolderPickerBody` for the
  * actual tree/filter/create-folder/footer -- only the surrounding chrome, and whether
  * keyboard navigation is wired up, differs here. */
-export function FolderPicker({ open, onOpenChange, value, onSelect }: FolderPickerProps) {
+export function FolderPicker({ open, onOpenChange, value, onSelect, scope }: FolderPickerProps) {
   const isDesktop = useIsDesktop();
 
   function commit(path: string) {
@@ -33,7 +34,13 @@ export function FolderPicker({ open, onOpenChange, value, onSelect }: FolderPick
           <DialogHeader className="p-4 pb-3">
             <DialogTitle>Choose folder</DialogTitle>
           </DialogHeader>
-          <FolderPickerBody value={value} onSelect={commit} onCancel={cancel} enableKeyboardNav />
+          <FolderPickerBody
+            value={value}
+            onSelect={commit}
+            onCancel={cancel}
+            enableKeyboardNav
+            scope={scope}
+          />
         </DialogContent>
       </Dialog>
     );
@@ -53,6 +60,7 @@ export function FolderPicker({ open, onOpenChange, value, onSelect }: FolderPick
           onSelect={commit}
           onCancel={cancel}
           enableKeyboardNav={false}
+          scope={scope}
         />
       </SheetContent>
     </Sheet>

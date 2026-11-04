@@ -6,7 +6,7 @@ import type { FolderNode } from "@/services/api/types";
 import { FolderPickerBody } from "./FolderPickerBody";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getFolderTree: vi.fn(), createFolder: vi.fn() },
+  apiClient: { getFolderTree: vi.fn(), browseFolders: vi.fn(), createFolder: vi.fn() },
 }));
 
 import { apiClient } from "@/services/api/client";
@@ -230,5 +230,18 @@ describe("FolderPickerBody", () => {
     await user.keyboard("{ArrowDown}");
 
     expect(screen.getByTitle("/Documents")).toBeInTheDocument();
+  });
+});
+
+describe("FolderPickerBody scope='all'", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("browses the whole store, not the allowed roots, and offers no folder creation", async () => {
+    vi.mocked(apiClient.browseFolders).mockResolvedValue([node("/Archive")]);
+    renderBody({ scope: "all", value: "" });
+
+    expect(await screen.findByText("Archive")).toBeInTheDocument();
+    expect(apiClient.getFolderTree).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
   });
 });

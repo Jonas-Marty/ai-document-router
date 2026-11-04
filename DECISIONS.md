@@ -988,3 +988,7 @@ meaningful. One line of "why" each; not a full ADR log.
 - A 5xx that took more than 5 s to arrive is not retried. Behind LiteLLM, an unreachable
   Ollama is retried by LiteLLM itself before it answers 500; retrying that here doubled
   the wait before the next endpoint for nothing.
+- Settings picks folders through `GET /folders/browse`, which lists any folder on the
+  user's own WebDAV (not just the allowed roots), since that is where the roots are chosen.
+  The review picker keeps using `/folders/tree`, still confined to the roots. Browse mode
+  offers no "New folder": creation stays limited to the allowed roots.

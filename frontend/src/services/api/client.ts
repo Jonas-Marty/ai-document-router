@@ -53,6 +53,7 @@ export interface ApiClient {
   compareDocument(id: string): Promise<CompareResponse>;
 
   getFolderTree(path?: string): Promise<FolderNode[]>;
+  browseFolders(path?: string): Promise<FolderNode[]>;
   createFolder(body: CreateFolderRequest): Promise<FolderNode>;
   getFolderContext(path: string, filename?: string): Promise<FolderContext>;
 
@@ -141,6 +142,10 @@ export class HttpApiClient implements ApiClient {
 
   getFolderTree(path?: string): Promise<FolderNode[]> {
     return this.request<FolderNode[]>("GET", `/folders/tree${query({ path })}`);
+  }
+
+  browseFolders(path?: string): Promise<FolderNode[]> {
+    return this.request<FolderNode[]>("GET", `/folders/browse${query({ path })}`);
   }
 
   createFolder(body: CreateFolderRequest): Promise<FolderNode> {
