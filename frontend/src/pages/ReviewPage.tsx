@@ -58,7 +58,7 @@ export default function ReviewPage() {
   }
 
   return (
-    <div className="mx-auto flex h-full max-w-6xl flex-col">
+    <div className="mx-auto flex h-full max-w-6xl flex-col lg:max-w-none">
       <div className="flex items-center justify-between gap-2 p-4 pb-0">
         <h1 className="text-lg font-semibold">Review</h1>
         {/* The count is the whole point of the control, so it is in the label rather than

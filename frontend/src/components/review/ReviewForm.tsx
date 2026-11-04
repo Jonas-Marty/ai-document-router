@@ -102,6 +102,8 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
           <Input
             id="review-name"
             className="min-w-0 flex-1 font-mono"
+            // Long names are clipped in the field; the native tooltip shows the whole name.
+            title={name}
             aria-invalid={!!errors.name || collision}
             {...nameField}
             onBlur={(e) => {
