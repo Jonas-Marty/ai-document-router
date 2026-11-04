@@ -207,6 +207,11 @@ class WebDavService:
         self._permitted_roots = [normalize_path(root) for root in permitted_roots]
         self._clock = clock
 
+    @classmethod
+    def whole_store(cls, client: Client, cache_namespace: str = "") -> "WebDavService":
+        """A service permitted everywhere on the server, for the Settings folder browser."""
+        return cls(client, ["/"], cache_namespace=cache_namespace)
+
     # -- reads ----------------------------------------------------------------------
 
     def list_dir(self, path: str) -> list[WebDavEntry]:

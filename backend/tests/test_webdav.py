@@ -596,3 +596,13 @@ class TestNoDeletePath:
         surface = {name for name in dir(WebDavService) if not name.startswith("_")}
 
         assert not surface & {"remove", "delete", "rm", "unlink", "rmdir"}
+
+
+def test_whole_store_service_lists_the_server_root() -> None:
+    """The Settings folder browser starts at '/', outside any allowed root."""
+    client = FakeClient()
+    client.listings[""] = [_entry("Docs", "directory")]
+
+    service = WebDavService.whole_store(client)  # type: ignore[arg-type]
+
+    assert [entry.path for entry in service.list_dirs_only("/")] == ["/Docs"]

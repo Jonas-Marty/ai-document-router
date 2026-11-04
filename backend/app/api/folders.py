@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 
-from app.deps import AppSettingsDep, CurrentUserDep, WebDavDep
+from app.deps import AppSettingsDep, BrowseWebDavDep, CurrentUserDep, WebDavDep
 from app.schemas import CreateFolderRequest, FolderContext, FolderNode
 from app.services import folders as folders_service
 
@@ -20,7 +20,7 @@ def read_tree(
 @router.get("/folders/browse")
 def read_browse(
     _user: CurrentUserDep,
-    webdav: WebDavDep,
+    webdav: BrowseWebDavDep,
     path: str | None = Query(None),
 ) -> list[FolderNode]:
     return folders_service.browse(webdav, path)

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from app import db
-from app.deps import get_webdav
+from app.deps import get_browse_webdav, get_webdav
 from app.main import app
 from app.models import (
     AppSettings,
@@ -81,8 +81,10 @@ def file_entry(path: str, *, size: int = 100, modified: datetime | None = None) 
 def fake() -> Iterator[FakeWebDav]:
     stub = FakeWebDav()
     app.dependency_overrides[get_webdav] = lambda: stub
+    app.dependency_overrides[get_browse_webdav] = lambda: stub
     yield stub
     app.dependency_overrides.pop(get_webdav, None)
+    app.dependency_overrides.pop(get_browse_webdav, None)
 
 
 @pytest.fixture

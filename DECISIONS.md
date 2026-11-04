@@ -992,3 +992,5 @@ meaningful. One line of "why" each; not a full ADR log.
   user's own WebDAV (not just the allowed roots), since that is where the roots are chosen.
   The review picker keeps using `/folders/tree`, still confined to the roots. Browse mode
   offers no "New folder": creation stays limited to the allowed roots.
+  It uses its own read-only WebDAV handle permitted at `/`; every other route keeps the
+  handle limited to the allowed, trash and watch folders.

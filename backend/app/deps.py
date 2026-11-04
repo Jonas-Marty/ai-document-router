@@ -61,3 +61,16 @@ def get_webdav(session: SessionDep, app_settings: AppSettingsDep) -> WebDavServi
 
 
 WebDavDep = Annotated[WebDavService, Depends(get_webdav)]
+
+
+def get_browse_webdav(app_settings: AppSettingsDep) -> WebDavService:
+    """A WebDAV service on the user's own Nextcloud that may read anywhere on it.
+
+    Only the Settings folder browser uses this: it is how the allowed roots get chosen, so
+    it cannot be confined by them. Nothing that moves, uploads or creates goes through it.
+    """
+    connection = settings_service.require_connection(app_settings)
+    return WebDavService.whole_store(build_client(connection), connection.cache_namespace)
+
+
+BrowseWebDavDep = Annotated[WebDavService, Depends(get_browse_webdav)]
