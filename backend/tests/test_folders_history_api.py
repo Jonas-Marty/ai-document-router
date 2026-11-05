@@ -1,7 +1,7 @@
 """Endpoint tests for /folders, /history, and the routing actions."""
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -117,6 +117,23 @@ def make_document(name: str = "scan.pdf") -> str:
         session.add(document)
         session.commit()
         return document.id
+
+
+class TestFolderNodeFiles:
+    def test_lists_newest_files_first_capped(
+        self, configured: TestClient, fake: FakeWebDav
+    ) -> None:
+        fake.listings[ROOT] = [folder(f"{ROOT}/sub")] + [
+            file_entry(f"{ROOT}/f{day:02}.pdf", modified=datetime(2026, 1, day, tzinfo=UTC))
+            for day in range(1, 26)
+        ]
+        fake.listings[f"{ROOT}/sub"] = []
+
+        body = configured.get("/api/v1/folders/tree").json()
+
+        assert body[0]["file_count"] == 25
+        assert len(body[0]["recent_files"]) == 20
+        assert body[0]["recent_files"][:2] == ["f25.pdf", "f24.pdf"]
 
 
 class TestFolderBrowse:

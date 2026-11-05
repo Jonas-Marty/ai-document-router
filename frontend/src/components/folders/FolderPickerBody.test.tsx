@@ -18,6 +18,7 @@ function node(path: string, overrides: Partial<FolderNode> = {}): FolderNode {
     has_children: false,
     children: null,
     file_count: 0,
+    recent_files: [],
     ...overrides,
   };
 }
@@ -243,5 +244,36 @@ describe("FolderPickerBody scope='all'", () => {
     expect(await screen.findByText("Archive")).toBeInTheDocument();
     expect(apiClient.getFolderTree).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("FolderPickerBody files panel", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("lists the highlighted folder's files, not selectable, with the remainder counted", async () => {
+    mockTree({
+      ROOT: [node("/Scans", { file_count: 22, recent_files: ["new.pdf", "old.pdf"] })],
+    });
+    renderBody({ value: "/Scans" });
+
+    const panel = await screen.findByRole("region", { name: "Files in folder" });
+    expect(panel).toHaveTextContent("Files in /Scans · 22");
+    expect(panel).toHaveTextContent("new.pdf");
+    expect(panel).toHaveTextContent("+ 20 more");
+    expect(screen.queryByRole("treeitem", { name: /new\.pdf/ })).not.toBeInTheDocument();
+  });
+
+  it("says when the folder is empty", async () => {
+    mockTree({ ROOT: [node("/Scans")] });
+    renderBody({ value: "/Scans" });
+
+    expect(await screen.findByText("No files in this folder.")).toBeInTheDocument();
+  });
+
+  it("asks for a folder when nothing is highlighted", async () => {
+    mockTree();
+    renderBody({ value: "" });
+
+    expect(await screen.findByText("Select a folder to see its files.")).toBeInTheDocument();
   });
 });

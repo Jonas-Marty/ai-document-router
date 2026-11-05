@@ -427,6 +427,8 @@ class FolderNode(BaseModel):
     has_children: bool
     children: list["FolderNode"] | None
     file_count: int
+    # Newest first, capped; the picker shows them for the highlighted folder.
+    recent_files: list[str]
 
 
 class CreateFolderRequest(BaseModel):

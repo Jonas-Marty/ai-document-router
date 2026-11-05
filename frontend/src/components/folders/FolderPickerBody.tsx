@@ -13,6 +13,7 @@ import { validateFolderName } from "@/lib/naming";
 import { apiClient } from "@/services/api/client";
 import { ApiError } from "@/services/api/errors";
 import type { FolderNode } from "@/services/api/types";
+import { FolderFilesPanel } from "./FolderFilesPanel";
 import type { FolderChildrenState } from "./FolderTreeNode";
 import { FolderTreeNode } from "./FolderTreeNode";
 import { ancestorPaths, findRootFor, nodeMatchesFilter } from "./folderTreePaths";
@@ -131,6 +132,12 @@ export function FolderPickerBody({
       },
     });
   });
+
+  // Nodes carry their own file list, so the panel just looks up the highlighted one among
+  // the levels already loaded.
+  const selectedNode =
+    rootsQuery.data?.find((n) => n.path === selectedPath) ??
+    [...childrenByPath.values()].flatMap((c) => c.data ?? []).find((n) => n.path === selectedPath);
 
   function handleToggle(path: string) {
     setExpandedPaths((prev) => {
@@ -298,6 +305,10 @@ export function FolderPickerBody({
             />
           ))}
         </div>
+      )}
+
+      {rootsQuery.data && rootsQuery.data.length > 0 && (
+        <FolderFilesPanel selectedPath={selectedPath} node={selectedNode} />
       )}
 
       {creatingUnder && (

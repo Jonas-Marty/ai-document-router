@@ -20,6 +20,8 @@ from app.services.webdav import WebDavEntry, WebDavService
 logger = logging.getLogger(__name__)
 
 MAX_SIBLINGS = 5
+# The picker's file panel shows this many of a folder's newest files, then "+N more".
+MAX_RECENT_FILES = 20
 
 
 def tree(
@@ -129,7 +131,7 @@ def _sort_key(entry: WebDavEntry) -> float:
 
 
 def _node_for(webdav: WebDavService, path: str) -> FolderNode:
-    """Build a node, peeking inside for its child and file counts.
+    """Build a node, peeking inside for its child count and newest files.
 
     This costs one listing per node, so rendering a level with N subfolders is N+1
     requests. The 30-second listing cache absorbs repeat views, and the picker is lazy, so
@@ -139,16 +141,18 @@ def _node_for(webdav: WebDavService, path: str) -> FolderNode:
     try:
         entries = webdav.list_dir(normalized)
         has_children = any(entry.is_dir for entry in entries)
-        file_count = sum(1 for entry in entries if not entry.is_dir)
+        files = [entry for entry in entries if not entry.is_dir]
     except NotFoundError:
-        has_children, file_count = False, 0
+        has_children, files = False, []
+    newest = sorted(files, key=_sort_key, reverse=True)[:MAX_RECENT_FILES]
 
     return FolderNode(
         path=normalized,
         name=normalized.rsplit("/", 1)[-1] or "/",
         has_children=has_children,
         children=None,
-        file_count=file_count,
+        file_count=len(files),
+        recent_files=[entry.name for entry in newest],
     )
 
 

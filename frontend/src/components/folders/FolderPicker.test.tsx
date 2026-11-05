@@ -11,7 +11,14 @@ vi.mock("@/services/api/client", () => ({
 import { apiClient } from "@/services/api/client";
 
 function node(path: string): FolderNode {
-  return { path, name: path.slice(1), has_children: false, children: null, file_count: 0 };
+  return {
+    path,
+    name: path.slice(1),
+    has_children: false,
+    children: null,
+    file_count: 0,
+    recent_files: [],
+  };
 }
 
 function renderPicker() {

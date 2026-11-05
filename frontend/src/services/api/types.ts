@@ -127,6 +127,7 @@ export interface FolderNode {
   has_children: boolean;
   children: FolderNode[] | null; // null = not loaded (lazy)
   file_count: number;
+  recent_files: string[]; // newest first, capped by the backend
 }
 
 export interface CreateFolderRequest {

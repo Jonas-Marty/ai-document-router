@@ -9,6 +9,7 @@ function node(path: string, overrides: Partial<FolderNode> = {}): FolderNode {
     has_children: false,
     children: null,
     file_count: 0,
+    recent_files: [],
     ...overrides,
   };
 }
