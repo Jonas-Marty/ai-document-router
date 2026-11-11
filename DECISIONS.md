@@ -994,3 +994,11 @@ meaningful. One line of "why" each; not a full ADR log.
   offers no "New folder": creation stays limited to the allowed roots.
   It uses its own read-only WebDAV handle permitted at `/`; every other route keeps the
   handle limited to the allowed, trash and watch folders.
+
+- **Re-run analysis lets you pick the connection and model.** SPEC is silent on it. The pick
+  applies to the filing task only (extraction markdown is kept, so pages are not re-read) and
+  runs on exactly that pair with no fallback, since a silent substitute would answer a
+  different question. It is stored on the document (`rerun_endpoint_id`, `rerun_model_name`)
+  because the re-run is asynchronous via the poller; the poller clears it when it is used. A
+  plain re-run and "Retry failed" clear any earlier pick. "Try again" on a failed proposal
+  stays one click and uses the configured chain.

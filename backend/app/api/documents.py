@@ -15,6 +15,7 @@ from app.schemas import (
     HistoryEntryRead,
     MethodResultRead,
     QueueResponse,
+    RegenerateRequest,
     RetriedResponse,
     RoutedResponse,
     UsageSummaryRead,
@@ -89,7 +90,10 @@ def read_document_content(
 
 @router.post("/documents/{document_id}/regenerate")
 def regenerate_proposal(
-    document_id: str, session: SessionDep, user: CurrentUserDep
+    document_id: str,
+    session: SessionDep,
+    user: CurrentUserDep,
+    payload: RegenerateRequest | None = None,
 ) -> DocumentResponse:
     """Queue a fresh proposal.
 
@@ -97,8 +101,14 @@ def regenerate_proposal(
     it up. SPEC 8.8 already specifies a "Waiting for the AI proposal" skeleton, so the UI is
     built to wait, and this keeps the request off a call that can take 60s with its retry.
     """
+    chosen = payload or RegenerateRequest()
     document = documents_service.request_regenerate(
-        session, user.id, document_id, actor=Actor.from_user(user)
+        session,
+        user.id,
+        document_id,
+        actor=Actor.from_user(user),
+        endpoint_id=chosen.endpoint_id,
+        model_name=chosen.model_name,
     )
     # Someone is watching the screen for this one; do not make them wait out the interval.
     poller.kick()

@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, field_serializer, model_validator
 
 from app.models import (
     AiTask,
@@ -121,6 +121,24 @@ class DocumentRead(BaseModel):
 class QueueResponse(BaseModel):
     items: list[DocumentRead]
     total_pending: int
+
+
+class RegenerateRequest(BaseModel):
+    """Optional: run this one analysis on a chosen connection and model.
+
+    Both or neither -- a model name means nothing without the connection that serves it.
+    """
+
+    endpoint_id: str | None = None
+    model_name: str | None = None
+
+    @model_validator(mode="after")
+    def _both_or_neither(self) -> "RegenerateRequest":
+        if (self.endpoint_id is None) != (self.model_name is None):
+            raise ValueError("Choose a connection and a model together.")
+        if self.model_name is not None and not self.model_name.strip():
+            raise ValueError("Choose a model.")
+        return self
 
 
 class RetriedResponse(BaseModel):

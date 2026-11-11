@@ -277,6 +277,72 @@ class TestRegenerate:
     def test_unknown_id_is_a_404(self, client: TestClient) -> None:
         assert client.post("/api/v1/documents/nope/regenerate").status_code == 404
 
+    def test_a_chosen_connection_and_model_are_stored_for_the_poller(
+        self, client: TestClient
+    ) -> None:
+        endpoint_id = client.post(
+            "/api/v1/ai/endpoints", json={"name": "Hosted", "base_url": "https://h.test/v1"}
+        ).json()["id"]
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf")
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        response = client.post(
+            f"/api/v1/documents/{document_id}/regenerate",
+            json={"endpoint_id": endpoint_id, "model_name": " big "},
+        )
+
+        assert response.status_code == 200
+        with Session(db.engine) as session:
+            stored = session.get(Document, document_id)
+            assert stored is not None
+            assert (stored.rerun_endpoint_id, stored.rerun_model_name) == (endpoint_id, "big")
+
+    def test_a_plain_rerun_clears_an_earlier_choice(self, client: TestClient) -> None:
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf")
+            document.rerun_endpoint_id = "e"
+            document.rerun_model_name = "m"
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        client.post(f"/api/v1/documents/{document_id}/regenerate")
+
+        with Session(db.engine) as session:
+            stored = session.get(Document, document_id)
+            assert stored is not None
+            assert stored.rerun_endpoint_id is None and stored.rerun_model_name is None
+
+    def test_a_connection_without_a_model_is_rejected(self, client: TestClient) -> None:
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf")
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        response = client.post(
+            f"/api/v1/documents/{document_id}/regenerate", json={"endpoint_id": "x"}
+        )
+
+        assert response.status_code == 422
+
+    def test_an_unknown_connection_is_a_404(self, client: TestClient) -> None:
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf")
+            session.add(document)
+            session.commit()
+            document_id = document.id
+
+        response = client.post(
+            f"/api/v1/documents/{document_id}/regenerate",
+            json={"endpoint_id": "nope", "model_name": "m"},
+        )
+
+        assert response.status_code == 404
+
     def test_starts_the_poller_now_rather_than_at_the_next_interval(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:

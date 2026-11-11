@@ -28,6 +28,7 @@ import type {
   NextcloudConnection,
   NextcloudWrite,
   QueueResponse,
+  RegenerateChoice,
   RetriedResponse,
   RevertResponse,
   RoutedResponse,
@@ -48,7 +49,7 @@ export interface ApiClient {
   approveDocument(id: string, body: ApproveRequest): Promise<RoutedResponse>;
   skipDocument(id: string): Promise<Document>;
   trashDocument(id: string): Promise<RoutedResponse>;
-  regenerateDocument(id: string): Promise<Document>;
+  regenerateDocument(id: string, choice?: RegenerateChoice): Promise<Document>;
   retryFailedProposals(): Promise<RetriedResponse>;
   compareDocument(id: string): Promise<CompareResponse>;
 
@@ -124,10 +125,11 @@ export class HttpApiClient implements ApiClient {
     return this.request<RoutedResponse>("POST", `/documents/${encodeURIComponent(id)}/trash`);
   }
 
-  async regenerateDocument(id: string): Promise<Document> {
+  async regenerateDocument(id: string, choice?: RegenerateChoice): Promise<Document> {
     const response = await this.request<{ document: Document }>(
       "POST",
       `/documents/${encodeURIComponent(id)}/regenerate`,
+      choice,
     );
     return response.document;
   }

@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.models import AuditAction, Document, DocumentStatus, Proposal, ProposalStatus
 from app.schemas import AIProposalRead, DocumentRead
-from app.services import audit, progress
+from app.services import ai_tasks, audit, progress
 from app.services.audit import Actor
 from app.services.errors import NotFoundError
 
@@ -51,10 +51,30 @@ def to_read_schema(session: Session, document: Document) -> DocumentRead:
 
 
 def request_regenerate(
-    session: Session, user_id: str, document_id: str, *, actor: Actor
+    session: Session,
+    user_id: str,
+    document_id: str,
+    *,
+    actor: Actor,
+    endpoint_id: str | None = None,
+    model_name: str | None = None,
 ) -> Document:
-    """Queue a fresh proposal. The poller does the work; this only resets the status."""
+    """Queue a fresh proposal. The poller does the work; this only resets the status.
+
+    With `endpoint_id` and `model_name` the filing step runs on exactly that pair instead of
+    the configured chain. The endpoint is checked against the user here, so the poller never
+    sees an id that is not theirs.
+    """
     document = get_document(session, user_id, document_id)
+    label = ""
+    if endpoint_id is not None and model_name is not None:
+        endpoint = ai_tasks.get_endpoint(session, user_id, endpoint_id)
+        label = f" with {endpoint.name} · {model_name.strip()}"
+        document.rerun_endpoint_id = endpoint.id
+        document.rerun_model_name = model_name.strip()
+    else:
+        document.rerun_endpoint_id = None
+        document.rerun_model_name = None
     document.proposal_status = ProposalStatus.pending
     document.proposal_error = None
     session.add(document)
@@ -63,7 +83,7 @@ def request_regenerate(
         AuditAction.document_regenerate_requested,
         actor=actor,
         document_id=document.id,
-        summary=f"Asked for a new proposal for {document.original_filename}",
+        summary=f"Asked for a new proposal for {document.original_filename}{label}",
     )
     session.commit()
     session.refresh(document)
@@ -95,6 +115,8 @@ def retry_failed_proposals(session: Session, user_id: str, *, actor: Actor) -> i
     for document in failed:
         document.proposal_status = ProposalStatus.pending
         document.proposal_error = None
+        document.rerun_endpoint_id = None
+        document.rerun_model_name = None
         session.add(document)
     audit.record(
         session,

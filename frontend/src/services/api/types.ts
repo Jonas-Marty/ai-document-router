@@ -196,6 +196,12 @@ export interface AiTaskChain {
   steps: AiTaskStep[];
 }
 
+/** One connection and model for a single analysis, instead of the configured chain. */
+export interface RegenerateChoice {
+  endpoint_id: string;
+  model_name: string;
+}
+
 export interface AiTaskChainUpdate {
   steps: { endpoint_id: string; model_name: string }[];
 }

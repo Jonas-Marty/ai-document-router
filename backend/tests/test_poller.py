@@ -746,6 +746,71 @@ class TestProposals:
         assert proposals[0].suggested_name == "second"
 
 
+class TestChosenModel(TestProposals):
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+        calls: list[tuple[str, str]] = []
+
+        def fake(**kwargs: object) -> ai.Proposal:
+            calls.append((str(kwargs["endpoint_url"]), str(kwargs["model_name"])))
+            return ai.Proposal(
+                suggested_name="n",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.5,
+                reasoning_text="r",
+                model_name="m",
+            )
+
+        monkeypatch.setattr(poller.ai, "request_proposal", fake)
+        return calls
+
+    def test_a_chosen_connection_and_model_replace_the_chain_for_one_run(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session.add(
+            AiEndpoint(
+                user_id=OWNER,
+                id="other",
+                name="Hosted",
+                base_url="https://hosted.test/v1",
+                created_at=utc_now(),
+            )
+        )
+        document = self._document(session)
+        document.rerun_endpoint_id = "other"
+        document.rerun_model_name = "big-model"
+        session.add(document)
+        session.commit()
+        self._stub_text(monkeypatch)
+        calls = self._capture(monkeypatch)
+
+        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
+        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
+
+        assert calls == [("https://hosted.test/v1", "big-model"), ("http://ai.test/v1", "m")]
+        session.refresh(document)
+        assert document.rerun_endpoint_id is None
+        assert document.rerun_model_name is None
+
+    def test_a_chosen_endpoint_that_no_longer_exists_fails_readably(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._document(session)
+        document.rerun_endpoint_id = "gone"
+        document.rerun_model_name = "x"
+        session.add(document)
+        session.commit()
+        self._stub_text(monkeypatch)
+        calls = self._capture(monkeypatch)
+
+        ok = poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
+
+        assert ok is False
+        assert calls == []
+        session.refresh(document)
+        assert document.proposal_status == ProposalStatus.failed
+
+
 class TestPartialWriteGuardTimezones:
     def test_compares_against_tz_aware_timestamps_without_raising(self) -> None:
         """webdav4 yields aware UTC. A naive value here raised TypeError before the

@@ -566,11 +566,7 @@ def propose_for(
         )
 
     try:
-        proposal = ai_tasks.run_chain(
-            ai_tasks.resolve_chain(session, document.user_id, AiTask.filing),
-            file_it,
-            AiTask.filing,
-        )
+        proposal = ai_tasks.run_chain(_filing_chain(session, document), file_it, AiTask.filing)
     except ai.ProposalRejected as exc:
         _fail(session, document, exc.reason, meter)
         return False
@@ -581,6 +577,22 @@ def propose_for(
     proposal = ai.with_date_prefix(proposal, app_settings.filename_pattern)
     _store(session, document, proposal, prompt, meter)
     return True
+
+
+def _filing_chain(session: Session, document: Document) -> list[ai_tasks.ResolvedStep]:
+    """The configured chain, or the one connection and model picked for this run.
+
+    The pick is spent here: cleared before the call so a failure does not replay it on every
+    later tick, and the next plain re-run goes back to the configured chain.
+    """
+    endpoint_id, model_name = document.rerun_endpoint_id, document.rerun_model_name
+    if endpoint_id is None or model_name is None:
+        return ai_tasks.resolve_chain(session, document.user_id, AiTask.filing)
+    document.rerun_endpoint_id = None
+    document.rerun_model_name = None
+    session.add(document)
+    session.commit()
+    return ai_tasks.resolve_single(session, document.user_id, endpoint_id, model_name)
 
 
 @dataclass(frozen=True)

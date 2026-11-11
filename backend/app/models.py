@@ -112,6 +112,10 @@ class Document(SQLModel, table=True):
     # Tokens spent by the most recent analysis (ai.UsageSummary.to_json). On the document
     # rather than the proposal, because a failed analysis spends tokens too and has no proposal.
     analysis_usage: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
+    # A connection and model picked for the next analysis only. The poller consumes and clears
+    # them; a plain re-run leaves them empty and uses the configured filing chain.
+    rerun_endpoint_id: str | None = None
+    rerun_model_name: str | None = None
 
 
 class Proposal(SQLModel, table=True):

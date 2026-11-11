@@ -1,6 +1,6 @@
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/services/api/client";
-import type { ApproveRequest, QueueResponse } from "@/services/api/types";
+import type { ApproveRequest, QueueResponse, RegenerateChoice } from "@/services/api/types";
 import { queryKeys } from "./queryKeys";
 
 export function useDocument(id: string | undefined) {
@@ -104,8 +104,9 @@ export function useCompareDocument() {
 export function useRegenerateDocument() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => apiClient.regenerateDocument(id),
-    onSuccess: (_document, id) => {
+    mutationFn: ({ id, choice }: { id: string; choice?: RegenerateChoice }) =>
+      apiClient.regenerateDocument(id, choice),
+    onSuccess: (_document, { id }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.document(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
     },

@@ -130,6 +130,25 @@ def resolve_chain(session: Session, user_id: str, task: AiTask) -> list[Resolved
     ]
 
 
+def resolve_single(
+    session: Session, user_id: str, endpoint_id: str, model_name: str
+) -> list[ResolvedStep]:
+    """One explicitly chosen (endpoint, model) as a chain of one: no fallback, because the
+    person picked this model on purpose and a silent substitute would answer a different
+    question than the one they asked."""
+    endpoint = get_endpoint(session, user_id, endpoint_id)
+    return [
+        ResolvedStep(
+            endpoint_name=endpoint.name,
+            endpoint_url=endpoint.base_url,
+            api_key=decrypt_key(endpoint),
+            model_name=model_name,
+            endpoint_id=endpoint.id,
+            timeout_seconds=endpoint.timeout_seconds,
+        )
+    ]
+
+
 def _rows(session: Session, user_id: str, task: AiTask) -> list[tuple[AiTaskStep, AiEndpoint]]:
     return list(
         session.exec(

@@ -10,6 +10,7 @@ import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
 import { DocumentViewer } from "@/components/review/DocumentViewer";
 import { MethodComparison } from "@/components/review/MethodComparison";
 import { QueuePanel } from "@/components/review/QueuePanel";
+import { RerunDialog } from "@/components/review/RerunDialog";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
 import { ReviewForm } from "@/components/review/ReviewForm";
 import { type ReviewFormValues, reviewFormSchema } from "@/components/review/reviewFormSchema";
@@ -188,6 +189,7 @@ function DocumentReview({
   const skipMutation = useSkipDocument();
   const trashMutation = useTrashDocument();
   const regenerateMutation = useRegenerateDocument();
+  const [rerunOpen, setRerunOpen] = useState(false);
   const compareMutation = useCompareDocument();
 
   function openComparison() {
@@ -273,15 +275,21 @@ function DocumentReview({
         <button
           type="button"
           className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-          onClick={() => regenerateMutation.mutate(document.id)}
+          onClick={() => setRerunOpen(true)}
           disabled={regenerateMutation.isPending}
         >
-          {regenerateMutation.isPending
-            ? "Re-running…"
-            : document.proposal_status === "failed"
-              ? "Try again"
-              : "Re-run analysis"}
+          {regenerateMutation.isPending ? "Re-running…" : "Re-run analysis"}
         </button>
+        {document.proposal_status === "failed" && (
+          <button
+            type="button"
+            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+            onClick={() => regenerateMutation.mutate({ id: document.id })}
+            disabled={regenerateMutation.isPending}
+          >
+            Try again
+          </button>
+        )}
         {/* Offered whatever the proposal status: the interesting question is often "could
             something else have read this better", which a *successful* proposal raises just
             as much as a failed one. */}
@@ -328,6 +336,17 @@ function DocumentReview({
         value={folderPath}
         onSelect={(path) =>
           methods.setValue("folderPath", path, { shouldValidate: true, shouldDirty: true })
+        }
+      />
+      <RerunDialog
+        open={rerunOpen}
+        onOpenChange={setRerunOpen}
+        isPending={regenerateMutation.isPending}
+        onRun={(choice) =>
+          regenerateMutation.mutate(
+            { id: document.id, choice },
+            { onSuccess: () => setRerunOpen(false) },
+          )
         }
       />
       <ShortcutCheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +15,9 @@ vi.mock("@/services/api/client", () => ({
     retryFailedProposals: vi.fn(),
     compareDocument: vi.fn(),
     regenerateDocument: vi.fn(),
+    listAiEndpoints: vi.fn(),
+    listAiTasks: vi.fn(),
+    listAiModels: vi.fn(),
   },
 }));
 
@@ -216,16 +219,60 @@ describe("ReviewPage queue overview", () => {
     ).toBeInTheDocument();
   });
 
-  it("re-runs the analysis of a document whose proposal is already ready", async () => {
+  it("re-runs on the connection and model picked in the dialog", async () => {
     // After a model or instruction change in Settings, a ready proposal is stale.
     renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
+      {
+        id: "ep1",
+        name: "Workshop PC",
+        base_url: "http://a/v1",
+        api_key_set: false,
+        timeout_seconds: 60,
+        used_by: ["filing"],
+      },
+      {
+        id: "ep2",
+        name: "Infomaniak",
+        base_url: "https://b/v1",
+        api_key_set: true,
+        timeout_seconds: 60,
+        used_by: [],
+      },
+    ]);
+    vi.mocked(apiClient.listAiTasks).mockResolvedValue([
+      {
+        task: "filing",
+        steps: [{ endpoint_id: "ep1", endpoint_name: "Workshop PC", model_name: "qwen3" }],
+      },
+      { task: "extraction", steps: [] },
+    ]);
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["gpt-4o", "gpt-4o-mini"] });
     vi.mocked(apiClient.regenerateDocument).mockResolvedValue(
       doc("1", "2026.05.18 Swisscom Rechnung", { proposal_status: "pending", proposal: null }),
     );
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("button", { name: /re-run analysis/i }));
+    const dialog = await screen.findByRole("dialog");
 
-    await waitFor(() => expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1"));
+    // Starts on the configured filing step, so confirming alone repeats the default.
+    await waitFor(() =>
+      expect(within(dialog).getByRole("combobox", { name: /connection/i })).toHaveTextContent(
+        "Workshop PC",
+      ),
+    );
+    await user.click(within(dialog).getByRole("combobox", { name: /connection/i }));
+    await user.click(await screen.findByRole("option", { name: "Infomaniak" }));
+    await user.click(within(dialog).getByRole("combobox", { name: /model/i }));
+    await user.click(await screen.findByRole("option", { name: "gpt-4o-mini" }));
+    await user.click(within(dialog).getByRole("button", { name: /run analysis/i }));
+
+    await waitFor(() =>
+      expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1", {
+        endpoint_id: "ep2",
+        model_name: "gpt-4o-mini",
+      }),
+    );
   });
 });
