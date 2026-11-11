@@ -554,8 +554,11 @@ def propose_for(
     )
     allowed_roots = list(app_settings.allowed_root_folders)
 
+    chosen_by_user = document.rerun_endpoint_id is not None
+    answered: list[ai_tasks.ResolvedStep] = []
+
     def file_it(step: ai_tasks.ResolvedStep) -> ai.Proposal:
-        return ai.request_proposal(
+        reply = ai.request_proposal(
             endpoint_url=step.endpoint_url,
             model_name=step.model_name,
             api_key=step.api_key,
@@ -564,9 +567,12 @@ def propose_for(
             usage=step.usage(meter, AiTask.filing),
             timeout=step.timeout_seconds,
         )
+        answered[:] = [step]
+        return reply
 
     try:
-        proposal = ai_tasks.run_chain(_filing_chain(session, document), file_it, AiTask.filing)
+        chain = _filing_chain(session, document)
+        proposal = ai_tasks.run_chain(chain, file_it, AiTask.filing)
     except ai.ProposalRejected as exc:
         _fail(session, document, exc.reason, meter)
         return False
@@ -575,7 +581,18 @@ def propose_for(
         return False
 
     proposal = ai.with_date_prefix(proposal, app_settings.filename_pattern)
-    _store(session, document, proposal, prompt, meter)
+    winner = answered[0]
+    skipped = [step.label for step in chain if step.position < winner.position]
+    _store(
+        session,
+        document,
+        proposal,
+        prompt,
+        meter,
+        connection=winner.endpoint_name,
+        chosen_by_user=chosen_by_user,
+        fallback_from=", ".join(skipped) or None,
+    )
     return True
 
 
@@ -707,6 +724,9 @@ def _store(
     proposal: ai.Proposal,
     prompt: str,
     meter: ai.UsageMeter,
+    connection: str | None = None,
+    chosen_by_user: bool = False,
+    fallback_from: str | None = None,
 ) -> None:
     """Replace any existing proposal wholesale (SPEC 4.1) inside one transaction."""
     existing = session.exec(select(Proposal).where(Proposal.document_id == document.id)).first()
@@ -729,6 +749,9 @@ def _store(
             model_name=proposal.model_name,
             created_at=to_storage(utc_now()),
             prompt_text=prompt,
+            endpoint_name=connection,
+            chosen_by_user=chosen_by_user,
+            fallback_from=fallback_from,
         )
     )
     usage = meter.summary()

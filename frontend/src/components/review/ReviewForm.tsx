@@ -9,6 +9,7 @@ import { relativeTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { ConfidenceBadge, isLowConfidence } from "./ConfidenceBadge";
 import { ExtractedText } from "./ExtractedText";
+import { ModelChip, ModelHint } from "./ModelChip";
 import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
 import type { ReviewFormValues } from "./reviewFormSchema";
@@ -59,7 +60,10 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         {document.proposal ? (
-          <ConfidenceBadge score={document.proposal.confidence_score} />
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <ConfidenceBadge score={document.proposal.confidence_score} />
+            <ModelChip proposal={document.proposal} />
+          </div>
         ) : document.proposal_error ? (
           <p className="text-sm text-destructive">{document.proposal_error}</p>
         ) : (
@@ -156,6 +160,7 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
       </div>
 
       {document.proposal && <ReasoningBlock text={document.proposal.reasoning_text} />}
+      {document.proposal && <ModelHint proposal={document.proposal} />}
       {document.proposal && <PromptDetails proposal={document.proposal} />}
       <ExtractedText document={document} />
       {/* Outside the proposal check: a failed analysis spent tokens too. */}

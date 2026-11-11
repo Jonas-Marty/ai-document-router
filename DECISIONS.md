@@ -1002,3 +1002,7 @@ meaningful. One line of "why" each; not a full ADR log.
   because the re-run is asynchronous via the poller; the poller clears it when it is used. A
   plain re-run and "Retry failed" clear any earlier pick. "Try again" on a failed proposal
   stays one click and uses the configured chain.
+- Proposal provenance (chip beside the confidence badge): the proposal row stores a copy of the
+  answering connection's name, whether the person hand-picked it, and the labels of earlier
+  chain steps that didn't answer. A copy rather than a foreign key so renaming or removing a
+  connection later doesn't rewrite history. Older proposals show the model name alone.

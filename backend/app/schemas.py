@@ -24,6 +24,9 @@ class AIProposalRead(BaseModel):
     confidence_score: float
     reasoning_text: str
     model_name: str
+    connection_name: str | None = None
+    chosen_by_user: bool = False
+    fallback_from: str | None = None
     # SPEC 8.3.5a: what was actually sent for this proposal, so the review screen can show it.
     # prompt_text is None for proposals stored before this field existed, and for the
     # /compare endpoint's in-memory results, which are never persisted. system_prompt has a

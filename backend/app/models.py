@@ -134,6 +134,13 @@ class Proposal(SQLModel, table=True):
     # hint, document text) -- SPEC 8.3.5a. Nullable because proposals stored before this field
     # existed have nothing to backfill it with.
     prompt_text: str | None = None
+    # Who answered, for the chip on the review screen. endpoint_name is a copy, not a foreign
+    # key: the connection may be renamed or removed later and the chip should keep saying what
+    # produced this text. Nullable for proposals stored before these existed.
+    endpoint_name: str | None = None
+    chosen_by_user: bool = False
+    # Labels of the steps ahead of the answering one that did not answer, comma-joined.
+    fallback_from: str | None = None
 
 
 class HistoryEntry(SQLModel, table=True):

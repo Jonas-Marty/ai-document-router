@@ -1143,3 +1143,81 @@ class TestEveryUser:
             (document,) = check.exec(select(Document)).all()
             # Filed under the account whose inbox it came from, not the first one polled.
             assert document.user_id == "works"
+
+
+class TestProvenance(TestChosenModel):
+    def _stored(self, session: Session, document: Document) -> Proposal:
+        found = session.exec(select(Proposal).where(Proposal.document_id == document.id)).first()
+        assert found is not None
+        return found
+
+    def test_a_default_run_records_the_answering_connection(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._document(session)
+        self._stub_text(monkeypatch)
+        self._capture(monkeypatch)
+
+        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
+
+        stored = self._stored(session, document)
+        assert stored.endpoint_name == "Local"
+        assert stored.chosen_by_user is False
+        assert stored.fallback_from is None
+
+    def test_a_hand_picked_run_is_flagged(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        document = self._document(session)
+        document.rerun_endpoint_id = "ep"
+        document.rerun_model_name = "big-model"
+        session.add(document)
+        session.commit()
+        self._stub_text(monkeypatch)
+        self._capture(monkeypatch)
+
+        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
+
+        stored = self._stored(session, document)
+        assert stored.chosen_by_user is True
+        assert stored.fallback_from is None
+
+    def test_a_fallback_answer_names_the_step_that_did_not_answer(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session.add(
+            AiEndpoint(
+                user_id=OWNER,
+                id="backup",
+                name="Hosted",
+                base_url="https://hosted.test/v1",
+                created_at=utc_now(),
+            )
+        )
+        session.add(
+            AiTaskStep(
+                user_id=OWNER, task=AiTask.filing, position=1, endpoint_id="backup", model_name="h"
+            )
+        )
+        document = self._document(session)
+        self._stub_text(monkeypatch)
+
+        def fake(**kwargs: Any) -> ai.Proposal:
+            if "ai.test" in str(kwargs["endpoint_url"]):
+                raise ai.AIUnavailable("down")
+            return ai.Proposal(
+                suggested_name="n",
+                target_folder_path="/Documents",
+                document_date=None,
+                confidence_score=0.5,
+                reasoning_text="r",
+                model_name="h",
+            )
+
+        monkeypatch.setattr(poller.ai, "request_proposal", fake)
+
+        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
+
+        stored = self._stored(session, document)
+        assert stored.endpoint_name == "Hosted"
+        assert stored.fallback_from == "Local · m"

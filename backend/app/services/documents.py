@@ -40,6 +40,9 @@ def read_proposal(session: Session, document_id: str) -> AIProposalRead | None:
         confidence_score=proposal.confidence_score,
         reasoning_text=proposal.reasoning_text,
         model_name=proposal.model_name,
+        connection_name=proposal.endpoint_name,
+        chosen_by_user=proposal.chosen_by_user,
+        fallback_from=proposal.fallback_from,
         prompt_text=proposal.prompt_text,
     )
 

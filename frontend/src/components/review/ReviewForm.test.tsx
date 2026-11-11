@@ -34,6 +34,9 @@ const baseDocument: Document = {
     confidence_score: 0.92,
     reasoning_text: "Looks like an invoice.",
     model_name: "test-model",
+    connection_name: null,
+    chosen_by_user: false,
+    fallback_from: null,
     prompt_text: "Folders available (choose exactly one):\n/Documents/Finance",
     system_prompt: "You file scanned documents.",
   },
@@ -128,6 +131,35 @@ describe("ReviewForm", () => {
     expect(screen.getByText("/Documents/Finance")).toBeInTheDocument();
   });
 
+  it("names the connection and model beside the badge, and says when you chose them", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const proposal = {
+      ...baseDocument.proposal,
+      connection_name: "Infomaniak",
+      chosen_by_user: true,
+    };
+    render(<Harness document={{ ...baseDocument, proposal } as Document} />);
+
+    expect(screen.getByText("Infomaniak · test-model")).toBeInTheDocument();
+    expect(screen.getByText(/chosen by you for this run/i)).toBeInTheDocument();
+    expect(screen.queryByText("fallback")).not.toBeInTheDocument();
+  });
+
+  it("tags a fallback answer and says which step didn't answer", async () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    const proposal = {
+      ...baseDocument.proposal,
+      connection_name: "Infomaniak",
+      fallback_from: "Workshop PC · qwen3",
+    };
+    render(<Harness document={{ ...baseDocument, proposal } as Document} />);
+
+    expect(screen.getByText("fallback")).toBeInTheDocument();
+    expect(screen.getByText("Workshop PC · qwen3 didn't answer.")).toBeInTheDocument();
+  });
+
   it("reveals what was sent to the AI only once asked, and hides it again on request", async () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
@@ -187,6 +219,9 @@ describe("ReviewForm", () => {
             confidence_score: 0.92,
             reasoning_text: "Looks like an invoice.",
             model_name: "test-model",
+            connection_name: null,
+            chosen_by_user: false,
+            fallback_from: null,
             prompt_text: null,
             system_prompt: "You file scanned documents.",
           },
@@ -211,6 +246,9 @@ describe("ReviewForm", () => {
         confidence_score: 0.4,
         reasoning_text: "Looks like an invoice.",
         model_name: "test-model",
+        connection_name: null,
+        chosen_by_user: false,
+        fallback_from: null,
         prompt_text: "Folders available (choose exactly one):\n/Documents/Finance",
         system_prompt: "You file scanned documents.",
       },
