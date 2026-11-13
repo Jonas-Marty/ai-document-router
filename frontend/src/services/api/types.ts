@@ -114,7 +114,15 @@ export interface CompareResponse {
 export type ApproveRequest = {
   final_folder_path: string;
   document_date: string | null;
-} & ({ name_fields: NameFields } | { final_name: string });
+} & (
+  | {
+      name_fields: NameFields;
+      // SPEC 6.4: learn the sender / the account with the approval (6.3c).
+      remember_sender?: boolean;
+      remember_account?: boolean;
+    }
+  | { final_name: string }
+);
 
 export interface HistoryEntry {
   id: string;
@@ -206,6 +214,32 @@ export interface AiEndpointWrite {
   context_limit: number | null;
   json_mode: AiJsonMode;
   model_prices: AiModelPrice[]; // replaces the stored list whole
+}
+
+/** SPEC 6.3c. The parts a name is assembled from, in the order a template may give. */
+export type TemplateField = "date" | "sender" | "account" | "title" | "period" | "number";
+
+export interface ArchiveKnowledge {
+  name_template: TemplateField[]; // date, sender and title are always in
+  filing_rules: string | null;
+}
+
+/** Learned from approvals, never entered beforehand (SPEC 6.3c). */
+export interface KnownSender {
+  id: string;
+  short_name: string;
+  aliases: string[]; // how it is written in documents
+  accounts: KnownAccount[];
+}
+
+export interface KnownAccount {
+  id: string;
+  value: string;
+}
+
+export interface KnownSenderWrite {
+  short_name: string;
+  aliases: string[];
 }
 
 /** What one model on a connection costs per million tokens, in the provider's currency. */

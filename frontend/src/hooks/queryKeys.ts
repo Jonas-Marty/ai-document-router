@@ -24,6 +24,8 @@ export const queryKeys = {
   // Prefix of every configuration preview, for invalidating them all at once.
   configurationPreviews: ["configurations", "preview"] as const,
   configurationPreview: (id: string) => ["configurations", "preview", id] as const,
+  knowledge: ["knowledge"] as const,
+  knownSenders: ["knowledge", "senders"] as const,
   authConfig: ["auth", "config"] as const,
   currentUser: ["auth", "me"] as const,
 };

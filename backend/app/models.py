@@ -111,6 +111,8 @@ class AuditAction(enum.StrEnum):
     configuration_updated = "configuration.updated"
     configuration_deleted = "configuration.deleted"
     configuration_defaulted = "configuration.defaulted"
+    knowledge_updated = "knowledge.updated"
+    knowledge_learned = "knowledge.learned"
     auth_registered = "auth.registered"
     auth_login = "auth.login"
     auth_login_failed = "auth.login_failed"
@@ -235,6 +237,39 @@ class AppSettings(SQLModel, table=True):
     # it, so on a GPU that holds one model at a time this is how many documents share one
     # model load; larger also means a single tick holds the queue longer.
     proposal_batch_size: int = Field(default=10, sa_column_kwargs={"server_default": "10"})
+    # Archive knowledge (SPEC 6.3c): the order of the name's fields, and the owner's rules for
+    # naming and filing that every configuration is given.
+    name_template: list[str] = Field(
+        default_factory=lambda: ["date", "sender", "account", "title", "period", "number"],
+        sa_column=Column(JSON, nullable=False),
+    )
+    filing_rules: str | None = None
+
+
+class KnownSender(SQLModel, table=True):
+    """A sender short name the owner confirmed on approving (SPEC 6.3c). Never entered
+    beforehand: learning only from approvals keeps the list to senders that really occur."""
+
+    __tablename__ = "known_sender"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    short_name: str
+    # How the sender is written in documents, e.g. its legal name; matched against the text.
+    aliases: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    created_at: datetime
+
+
+class KnownAccount(SQLModel, table=True):
+    """An account the owner holds with a known sender, as it goes into the name."""
+
+    __tablename__ = "known_account"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    sender_id: str = Field(foreign_key="known_sender.id", index=True)
+    value: str
+    created_at: datetime
 
 
 class AiEndpoint(SQLModel, table=True):

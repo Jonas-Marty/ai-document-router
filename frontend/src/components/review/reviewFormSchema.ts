@@ -1,6 +1,14 @@
 import { z } from "zod";
-import { assembleName, NAME_FIELDS, validateField, validateStem } from "@/lib/naming";
-import type { AIProposal, ApproveRequest } from "@/services/api/types";
+import {
+  assembleName,
+  DEFAULT_TEMPLATE,
+  NAME_FIELDS,
+  normaliseForMatching,
+  type TemplateField,
+  validateField,
+  validateStem,
+} from "@/lib/naming";
+import type { AIProposal, ApproveRequest, KnownSender } from "@/services/api/types";
 
 // SPEC 8.3's field order 2-4: document date, the name's fields (or the name itself when
 // hand-written), target folder path. The extension is a fixed chip, never editable (7.1).
@@ -12,52 +20,63 @@ import type { AIProposal, ApproveRequest } from "@/services/api/types";
 // Approve enabled on an invalid form until the user tries it and fails. Confirmed against a
 // real browser: with the default mode, typing a forbidden character showed no error at all
 // until submit.
-export const reviewFormSchema = z
-  .object({
-    documentDate: z.string(), // "" means null; ReviewForm converts on submit.
-    sender: z.string(),
-    account: z.string(),
-    title: z.string(),
-    period: z.string(),
-    number: z.string(),
-    // SPEC 7.1a: a hand-written name replaces the fields; `name` is only read then.
-    handWritten: z.boolean(),
-    name: z.string(),
-    folderPath: z.string().min(1, "Choose a target folder."),
-  })
-  .superRefine((values, ctx) => {
-    if (values.handWritten) {
-      const error = validateStem(values.name);
-      if (error) ctx.addIssue({ code: "custom", path: ["name"], message: error });
-      return;
-    }
-    if (!values.documentDate) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["documentDate"],
-        message: "Document date is required.",
-      });
-    }
-    let fieldsValid = true;
-    for (const key of NAME_FIELDS) {
-      const error = validateField(key, values[key]);
-      if (error) {
-        fieldsValid = false;
-        ctx.addIssue({ code: "custom", path: [key], message: error });
+export function makeReviewFormSchema(template: readonly TemplateField[] = DEFAULT_TEMPLATE) {
+  return z
+    .object({
+      documentDate: z.string(), // "" means null; ReviewForm converts on submit.
+      sender: z.string(),
+      account: z.string(),
+      title: z.string(),
+      period: z.string(),
+      number: z.string(),
+      // SPEC 7.1a: a hand-written name replaces the fields; `name` is only read then.
+      handWritten: z.boolean(),
+      name: z.string(),
+      folderPath: z.string().min(1, "Choose a target folder."),
+      // SPEC 8.3 3a: learn the sender / the account with this approval. Only with fields.
+      rememberSender: z.boolean(),
+      rememberAccount: z.boolean(),
+    })
+    .superRefine((values, ctx) => {
+      if (values.handWritten) {
+        const error = validateStem(values.name);
+        if (error) ctx.addIssue({ code: "custom", path: ["name"], message: error });
+        return;
       }
-    }
-    // Only once every field is fine, so one mistake is not reported twice.
-    if (fieldsValid) {
-      const error = validateStem(effectiveName(values));
-      if (error) ctx.addIssue({ code: "custom", path: ["name"], message: error });
-    }
-  });
+      if (!values.documentDate) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["documentDate"],
+          message: "Document date is required.",
+        });
+      }
+      let fieldsValid = true;
+      for (const key of NAME_FIELDS) {
+        const error = validateField(key, values[key]);
+        if (error) {
+          fieldsValid = false;
+          ctx.addIssue({ code: "custom", path: [key], message: error });
+        }
+      }
+      // Only once every field is fine, so one mistake is not reported twice.
+      if (fieldsValid) {
+        const error = validateStem(effectiveName(values, template));
+        if (error) ctx.addIssue({ code: "custom", path: ["name"], message: error });
+      }
+    });
+}
+
+export const reviewFormSchema = makeReviewFormSchema();
 
 export type ReviewFormValues = z.infer<typeof reviewFormSchema>;
 
-/** The name that will be filed: the hand-written one, or the one the fields assemble. */
-export function effectiveName(values: ReviewFormValues): string {
-  return values.handWritten ? values.name : assembleName(values.documentDate, values);
+/** The name that will be filed: the hand-written one, or the one the fields assemble in the
+ * owner's template order. */
+export function effectiveName(
+  values: ReviewFormValues,
+  template: readonly TemplateField[] = DEFAULT_TEMPLATE,
+): string {
+  return values.handWritten ? values.name : assembleName(values.documentDate, values, template);
 }
 
 /** The form as a proposal fills it. A proposal from before name fields existed opens
@@ -74,11 +93,37 @@ export function formValuesFor(proposal: AIProposal | null): ReviewFormValues {
     handWritten: proposal !== null && fields === null,
     name: proposal?.suggested_name ?? "",
     folderPath: proposal?.target_folder_path ?? "",
+    rememberSender: false,
+    rememberAccount: false,
   };
 }
 
-/** What approve sends: the fields for the backend to assemble, or the hand-written name. */
-export function approveRequestFor(values: ReviewFormValues): ApproveRequest {
+/** Which "Remember …" questions the form asks (SPEC 8.3 3a): a sender that is not a known
+ * short name, and an account not yet known for that sender. Compared the way the backend
+ * compares (knowledge.remember), so neither side learns what the other thinks it knows.
+ * `senders` undefined (still loading) asks nothing rather than something wrong. */
+export function rememberPrompts(
+  values: ReviewFormValues,
+  senders: KnownSender[] | undefined,
+): { sender: boolean; account: boolean } {
+  const sender = values.sender.trim();
+  if (values.handWritten || !sender || senders === undefined) {
+    return { sender: false, account: false };
+  }
+  const known = senders.find((s) => s.short_name.toLowerCase() === sender.toLowerCase());
+  const account = normaliseForMatching(values.account);
+  const accountKnown =
+    known?.accounts.some((a) => normaliseForMatching(a.value) === account) ?? false;
+  return { sender: known === undefined, account: account !== "" && !accountKnown };
+}
+
+/** What approve sends: the fields for the backend to assemble, or the hand-written name.
+ * A remember flag goes only with the question it answers, so a box ticked for one sender
+ * and then left hidden by an edit cannot teach something else. */
+export function approveRequestFor(
+  values: ReviewFormValues,
+  asked: { sender: boolean; account: boolean } = { sender: false, account: false },
+): ApproveRequest {
   const base = {
     final_folder_path: values.folderPath,
     document_date: values.documentDate || null,
@@ -94,6 +139,8 @@ export function approveRequestFor(values: ReviewFormValues): ApproveRequest {
       period: optional(values.period),
       number: optional(values.number),
     },
+    remember_sender: asked.sender && values.rememberSender,
+    remember_account: asked.account && values.rememberAccount,
   };
 }
 

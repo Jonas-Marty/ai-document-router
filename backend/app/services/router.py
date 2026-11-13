@@ -22,7 +22,7 @@ from app.models import (
     OcrStatus,
     Proposal,
 )
-from app.services import audit, metrics, naming, searchable
+from app.services import audit, knowledge, metrics, naming, searchable
 from app.services.audit import Actor
 from app.services.documents import get_document, proposal_fields
 from app.services.errors import (
@@ -50,12 +50,16 @@ def approve(
     document_date: date | None,
     *,
     name_fields: Mapping[str, object] | None = None,
+    remember_sender: bool = False,
+    remember_account: bool = False,
     actor: Actor,
 ) -> tuple[Document, HistoryEntry]:
     """File a document under a new name. Synchronous -- the user is waiting.
 
     The name is either `name_fields`, assembled here (SPEC 7.1a) so the client's preview is
-    never what gets filed, or a hand-written `final_name`. Exactly one of the two.
+    never what gets filed, or a hand-written `final_name`. Exactly one of the two. With
+    fields, the remember flags learn the sender and account (SPEC 6.3c) in the same
+    transaction as the approval, so a failed move learns nothing.
     """
     document = _require_queued(session, app_settings.user_id, document_id)
 
@@ -66,7 +70,7 @@ def approve(
         fields = naming.clean_fields(name_fields)
         if document_date is None:
             raise ValidationError("Document date is required for a name built from fields.")
-        stem = naming.assemble_name(document_date, fields)
+        stem = naming.assemble_name(document_date, fields, knowledge.template_of(app_settings))
     else:
         assert final_name is not None
         stem = naming.validate_stem(final_name)
@@ -119,6 +123,15 @@ def approve(
     document.webdav_path = destination
     document.status = DocumentStatus.moved
     session.add(document)
+    if fields is not None:
+        knowledge.remember(
+            session,
+            app_settings.user_id,
+            fields,
+            sender=remember_sender,
+            account=remember_account,
+            actor=actor,
+        )
     audit.record(
         session,
         AuditAction.document_approved,

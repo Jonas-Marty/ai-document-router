@@ -1,11 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { describe, expect, it } from "vitest";
-import type { AIProposal } from "@/services/api/types";
+import type { AIProposal, KnownSender } from "@/services/api/types";
 import {
   approveRequestFor,
   effectiveName,
   formValuesFor,
+  makeReviewFormSchema,
   type ReviewFormValues,
+  rememberPrompts,
   reviewFormSchema,
 } from "./reviewFormSchema";
 
@@ -25,6 +27,8 @@ function values(overrides: Partial<ReviewFormValues> = {}): ReviewFormValues {
     handWritten: false,
     name: "",
     folderPath: "/Documents/Bank",
+    rememberSender: false,
+    rememberAccount: false,
     ...overrides,
   };
 }
@@ -116,6 +120,21 @@ describe("approveRequestFor", () => {
         period: null,
         number: null,
       },
+      remember_sender: false,
+      remember_account: false,
+    });
+  });
+
+  it("sends a remember flag only with the question it answers", () => {
+    const ticked = values({ rememberSender: true, rememberAccount: true });
+
+    expect(approveRequestFor(ticked, { sender: false, account: true })).toMatchObject({
+      remember_sender: false,
+      remember_account: true,
+    });
+    expect(approveRequestFor(values(), { sender: true, account: true })).toMatchObject({
+      remember_sender: false,
+      remember_account: false,
     });
   });
 
@@ -126,5 +145,66 @@ describe("approveRequestFor", () => {
       document_date: "2026-05-13",
       final_name: "My name",
     });
+  });
+});
+
+describe("the owner's template", () => {
+  it("orders the name and leaves out what it omits", () => {
+    const name = effectiveName(values({ number: "77" }), ["sender", "title", "date"]);
+
+    expect(name).toBe("WIR Bank Kontoeröffnungsbestätigung 2026.05.13");
+  });
+
+  it("validates the name the template makes", async () => {
+    const long = "x".repeat(150);
+    const withAll = zodResolver(reviewFormSchema);
+    const withoutPeriod = zodResolver(makeReviewFormSchema(["date", "sender", "title"]));
+
+    const both = values({ title: long.slice(0, 100), period: long.slice(0, 120) });
+    expect(Object.keys((await withAll(both, undefined, options)).errors)).toEqual(["name"]);
+    expect((await withoutPeriod(both, undefined, options)).errors).toEqual({});
+  });
+});
+
+describe("rememberPrompts", () => {
+  const known: KnownSender[] = [
+    {
+      id: "s1",
+      short_name: "WIR Bank",
+      aliases: [],
+      accounts: [{ id: "a1", value: "738.953-48.5800" }],
+    },
+  ];
+
+  it("asks about a new sender and its account", () => {
+    expect(rememberPrompts(values({ sender: "ZKB", account: "CH33" }), known)).toEqual({
+      sender: true,
+      account: true,
+    });
+  });
+
+  it("asks nothing about what is known, compared as the backend compares", () => {
+    const same = values({ sender: "wir bank", account: "738 953 48 5800" });
+
+    expect(rememberPrompts(same, known)).toEqual({ sender: false, account: false });
+  });
+
+  it("asks only about a new account of a known sender", () => {
+    expect(rememberPrompts(values({ account: "999.1" }), known)).toEqual({
+      sender: false,
+      account: true,
+    });
+  });
+
+  it("asks nothing for a hand-written name, a blank sender, or before the list has loaded", () => {
+    expect(rememberPrompts(values({ handWritten: true }), [])).toEqual({
+      sender: false,
+      account: false,
+    });
+    expect(rememberPrompts(values({ sender: " " }), [])).toEqual({
+      sender: false,
+      account: false,
+    });
+    expect(rememberPrompts(values(), undefined)).toEqual({ sender: false, account: false });
   });
 });

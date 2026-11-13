@@ -63,6 +63,7 @@ export const FIELD_LABELS: Record<NameFieldKey, string> = {
   number: "Number",
 };
 export const REQUIRED_FIELDS: ReadonlySet<NameFieldKey> = new Set(["sender", "title"]);
+export type TemplateField = "date" | NameFieldKey;
 
 /** Checks one name field, as backend naming.clean_fields does. Error message or null. */
 export function validateField(key: NameFieldKey, value: string): string | null {
@@ -75,14 +76,35 @@ export function validateField(key: NameFieldKey, value: string): string | null {
   return null;
 }
 
-/** `date sender [account] title [period] [number]`, empty parts skipped. `isoDate` is the
- * form's YYYY-MM-DD and is written YYYY.MM.DD. Not validated: see validateStem. */
-export function assembleName(isoDate: string, fields: Record<NameFieldKey, string>): string {
-  const date = isoDate.replaceAll("-", ".");
-  return [date, ...NAME_FIELDS.map((key) => fields[key])]
-    .map((part) => part.trim())
+// SPEC 6.3c: the owner orders the parts and may leave the optional ones out. Mirrors
+// TEMPLATE_FIELDS / ALWAYS_IN_TEMPLATE in backend/app/services/naming.py.
+export const DEFAULT_TEMPLATE: readonly TemplateField[] = ["date", ...NAME_FIELDS];
+export const ALWAYS_IN_TEMPLATE: ReadonlySet<TemplateField> = new Set(["date", "sender", "title"]);
+
+/** The fields in the template's order, empty parts skipped. `isoDate` is the form's
+ * YYYY-MM-DD and is written YYYY.MM.DD. Not validated: see validateStem. */
+export function assembleName(
+  isoDate: string,
+  fields: Record<NameFieldKey, string>,
+  template: readonly TemplateField[] = DEFAULT_TEMPLATE,
+): string {
+  const parts: Record<TemplateField, string> = { ...fields, date: isoDate.replaceAll("-", ".") };
+  return template
+    .map((key) => parts[key].trim())
     .filter(Boolean)
     .join(" ");
+}
+
+const UMLAUTS: Record<string, string> = { ü: "ue", ö: "oe", ä: "ae", ß: "ss" };
+
+/** Letters and digits only, case folded, umlauts spelled out. Mirrors knowledge.normalise:
+ * it decides whether a sender or account is already known, so the remember prompt and the
+ * backend agree on what "new" means. */
+export function normaliseForMatching(value: string): string {
+  return [...value.normalize("NFC").toLowerCase()]
+    .map((char) => UMLAUTS[char] ?? char)
+    .join("")
+    .replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 export function validateStem(value: string): string | null {

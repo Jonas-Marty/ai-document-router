@@ -10,7 +10,12 @@ import { ReviewForm } from "./ReviewForm";
 import { formValuesFor, type ReviewFormValues, reviewFormSchema } from "./reviewFormSchema";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getFolderContext: vi.fn(), getSettings: vi.fn() },
+  apiClient: {
+    getFolderContext: vi.fn(),
+    getSettings: vi.fn(),
+    getKnowledge: vi.fn(),
+    listKnownSenders: vi.fn(),
+  },
 }));
 
 import { apiClient } from "@/services/api/client";
@@ -392,6 +397,44 @@ describe("ReviewForm", () => {
 
       await user.click(screen.getByLabelText("Write the name by hand"));
       expect(screen.getByLabelText("Sender")).toHaveValue("Swisscom");
+    });
+
+    it("asks to remember a new sender and account, unticked, and not what is known", async () => {
+      vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+      vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+      vi.mocked(apiClient.listKnownSenders).mockResolvedValue([
+        { id: "s1", short_name: "Swisscom", aliases: [], accounts: [] },
+      ]);
+      const user = userEvent.setup();
+      render(<Harness document={fieldDocument} />);
+
+      // A known sender with no account: nothing to ask yet.
+      await waitFor(() => expect(apiClient.listKnownSenders).toHaveBeenCalled());
+      expect(screen.queryByText("Remember for next time")).not.toBeInTheDocument();
+
+      await user.type(screen.getByLabelText(/Account/), "CH33 0070");
+      const account = await screen.findByLabelText("Remember CH33 0070 for Swisscom");
+      expect(account).not.toBeChecked();
+      expect(screen.queryByLabelText(/as a sender/)).not.toBeInTheDocument();
+
+      await user.clear(screen.getByLabelText("Sender"));
+      await user.type(screen.getByLabelText("Sender"), "Salt");
+      expect(screen.getByLabelText("Remember “Salt” as a sender")).not.toBeChecked();
+    });
+
+    it("orders the fields and the name as the owner's template says", async () => {
+      vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+      vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+      vi.mocked(apiClient.getKnowledge).mockResolvedValue({
+        name_template: ["sender", "title", "date"],
+        filing_rules: null,
+      });
+      render(<Harness document={fieldDocument} />);
+
+      const preview = screen.getByLabelText("Assembled file name");
+      await waitFor(() => expect(preview).toHaveTextContent("Swisscom Rechnung 2026.05.18"));
+      const labels = screen.getAllByRole("textbox").map((input) => input.id);
+      expect(labels).toEqual(["review-sender", "review-title"]);
     });
   });
 

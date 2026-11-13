@@ -119,7 +119,7 @@ describe("configurationFormSchema", () => {
   it.each([
     ["max_text_chars", "999", "Document text must be between 1,000 and 30,000."],
     ["max_folders", "5", "Folders listed must be between 10 and 1,000."],
-    ["max_examples", "2.5", "Example filenames must be between 0 and 20."],
+    ["max_examples", "2.5", "Examples must be between 0 and 20."],
   ] as const)("rejects %s = %s", (field, value, message) => {
     const result = configurationFormSchema.safeParse({ ...valid(), [field]: value });
 

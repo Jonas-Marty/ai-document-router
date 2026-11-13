@@ -133,7 +133,7 @@ class TestCreate:
             ({"reading_method": "vision"}, "Reading: choose a connection"),
             ({"max_text_chars": 500}, "Document text"),
             ({"max_folders": 5}, "Folders listed"),
-            ({"max_examples": 21}, "Example filenames"),
+            ({"max_examples": 21}, "Examples"),
         ],
     )
     def test_rejects_an_incomplete_or_out_of_range_configuration(

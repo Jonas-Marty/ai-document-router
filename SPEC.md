@@ -192,6 +192,28 @@ ai-document-router/
 | `filename_pattern_hint` | str \| null |
 | `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
 | `proposal_batch_size` | int, default 10 — documents read then filed per poll tick, 1–50 (6.2) |
+| `name_template` | JSON list[str], default `["date","sender","account","title","period","number"]` — the order of the name's fields (7.1a); archive knowledge (6.3c) |
+| `filing_rules` | str \| null, ≤ 4000 — the owner's rules for naming and filing, sent to every configuration (6.3c) |
+
+**`known_sender`** — a sender short name the owner confirmed (6.3c).
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id, indexed |
+| `short_name` | str — unique per user, compared case-insensitively |
+| `aliases` | JSON list[str] — how the sender is written in documents, e.g. `Zürcher Kantonalbank` |
+| `created_at` | datetime |
+
+**`known_account`** — an account the owner holds with a known sender (6.3c).
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id, indexed |
+| `sender_id` | FK known_sender.id — removed with its sender |
+| `value` | str — as it goes into the name, e.g. `738.953-48.5800`; unique per sender after normalising (6.3c) |
+| `created_at` | datetime |
 
 **`ai_endpoint`** — one place a model request can be sent. Any number of them (6.3a).
 
@@ -435,6 +457,31 @@ export interface Settings {
 
 export type SettingsUpdate = Settings;
 
+/** 6.3c. What is true of the archive whatever the model. */
+export type NameFieldKey = "date" | "sender" | "account" | "title" | "period" | "number";
+
+export interface ArchiveKnowledge {
+  name_template: NameFieldKey[]; // order of the name's parts; date, sender and title always in
+  filing_rules: string | null;
+}
+
+export interface KnownSender {
+  id: string;
+  short_name: string;
+  aliases: string[];
+  accounts: KnownAccount[];
+}
+
+export interface KnownAccount {
+  id: string;
+  value: string;
+}
+
+export interface KnownSenderWrite {
+  short_name: string;
+  aliases: string[];
+}
+
 export interface AiEndpoint {
   id: string;
   name: string;
@@ -595,7 +642,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | GET | `/queue?limit=20` | — | `{ items: Document[], total_pending: number }` |
 | GET | `/documents/{id}` | — | `Document` |
 | GET | `/documents/{id}/content` | — | file bytes, streamed, `Content-Type` per mime |
-| POST | `/documents/{id}/approve` | `{ final_folder_path, document_date, name_fields }` or `{ final_folder_path, document_date, final_name }` — exactly one of the two; with fields the backend assembles the name and `document_date` is required | `{ document, history_entry }` |
+| POST | `/documents/{id}/approve` | `{ final_folder_path, document_date, name_fields, remember_sender?, remember_account? }` or `{ final_folder_path, document_date, final_name }` — exactly one of the two; with fields the backend assembles the name and `document_date` is required; the remember flags (default false) apply only with fields (6.4) | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
 | POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document three ways and files each with its configuration's filing step; stores nothing |
@@ -626,6 +673,12 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/configurations/{id}/default` | — | `AiConfiguration` — makes it the default |
 | GET | `/configurations/{id}/preview` | — | `ConfigurationPreview[]` — what each call is sent; walks WebDAV for the folder tree |
 | GET | `/configurations/prompts` | — | `BuiltinPrompts` |
+| GET | `/knowledge` | — | `ArchiveKnowledge` |
+| PUT | `/knowledge` | `ArchiveKnowledge` | `ArchiveKnowledge` |
+| GET | `/knowledge/senders` | — | `KnownSender[]`, by short name, each with its accounts |
+| PUT | `/knowledge/senders/{id}` | `KnownSenderWrite` | `KnownSender` — rename, or change how it is written |
+| DELETE | `/knowledge/senders/{id}` | — | 204 — its accounts go with it |
+| DELETE | `/knowledge/accounts/{id}` | — | 204 |
 | POST | `/ai/models` | `AiModelsRequest` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
 | GET | `/health` | — | `{ status, webdav_configured, webdav_reachable, queue_depth }` — unauthenticated; with a session cookie, about that user's Nextcloud and queue, otherwise `false, null, 0` |
 | GET | `/metrics` | — | Prometheus text format; `Authorization: Bearer <METRICS_TOKEN>`, 404 while unset |
@@ -729,10 +782,13 @@ Input assembled by the backend, with the limits of the document's configuration:
   stays fully approvable by hand either way.
 - The folder tree under the allowed roots, as an indented path list, depth-capped at 4 and
   capped at `max_folders` (default 250), shallower folders kept first.
-- Up to `max_examples` (default 8) example filenames sampled from across those folders, so the
-  model can see the naming convention. With a `filename_pattern` set, only names that match
-  it (without their extension) are sent.
+- Up to `max_examples` (default 8) approved examples (6.3c). Before anything has been
+  approved, as many example filenames sampled from across those folders instead, so the model
+  can still see the convention; with a `filename_pattern` set, only names that match it
+  (without their extension).
 - `filename_pattern_hint` if set.
+- The known senders and accounts (6.3c), and the owner's filing rules under "Filing rules
+  for this archive:".
 - The configuration's `filing_instructions` if set, under "Additional instructions from the
   person whose archive this is:", before the document text. In the user message rather than
   the system prompt, so they are part of `prompt_text`. The built-in system prompt says to
@@ -858,6 +914,38 @@ configuration waits with "Waiting for a configuration — create one in the Lab"
 Every proposal records the configuration that produced it (id and name), how the document
 was read (`reading_label`), and the filing connection and model.
 
+### 6.3c Archive knowledge (`services/knowledge.py`)
+
+What is true of the owner's archive whatever the model, shared by every configuration: the
+name template (7.1a), filing rules, sender short names, accounts and approved examples.
+Every row is the user's own (6.5a).
+
+**Normalising.** Two values are the same after trimming, case folding, treating ü/ue, ö/oe,
+ä/ae as equal and ignoring everything but letters and digits — for senders, accounts and the
+text they are looked for in alike. An account's **key** is the longest run of digits in its
+normalised value when that run has at least 5 digits (`frankly 3a CH33 0070 0114 8034 4224 8`
+→ `3300700114803442248`), else its whole normalised value.
+
+**Learned, never entered.** Senders and accounts are added only by approving a document with
+`remember_sender` / `remember_account` (6.4), never beforehand and never silently. The
+Archive knowledge page can rename a sender, edit how it is written, and remove senders and
+accounts; it cannot add them.
+
+**What the filing call is given.**
+- *Senders:* those whose short name or an alias appears in the normalised text, each as
+  `ZKB (written as: Zürcher Kantonalbank)`, under "Known senders — use the short name
+  exactly:". When none appears, every short name, up to 100, under "Senders seen before —
+  use one of these short names if it is the sender:". Nothing when there are none.
+- *Accounts:* only those whose key appears in the normalised text, as `WIR Bank:
+  738.953-48.5800`, under "Known accounts in this document — copy the value exactly:".
+- *Examples:* approved, not reverted documents filed from fields and whose reading still
+  exists, newest first, those whose sender or account appears in the text ahead of the rest,
+  up to the configuration's `max_examples`. Each shows the first 400 characters of its text
+  with whitespace collapsed, its fields and its folder.
+- *Filing rules* as written.
+
+The fields call, the one-call request and the folder call all get the same sections.
+
 ### 6.3b Call parameters and context limit (`services/ai.py`)
 
 Every model call sends `temperature` and `max_tokens` from its configuration step (defaults:
@@ -891,7 +979,9 @@ request cannot set it, so it is whatever the server was started with.
    `filename_collision`. Do not overwrite, ever.
 4. `MOVE` to `{folder}/{name}{extension}`.
 5. In one transaction: set `status=moved`, write the `history_entry` with the suggestion
-   snapshot and `was_overridden`.
+   snapshot and `was_overridden`, and, when asked, remember the sender (`remember_sender`)
+   and the account for that sender (`remember_account`, which remembers the sender too).
+   Remembering what is already known does nothing.
 6. If the move fails, nothing is written and the document stays `pending` — the user's edits
    are still in their browser and they can retry.
 
@@ -1047,7 +1137,8 @@ likely to divide by are created at zero on startup.
 
 ### 7.1a Name fields
 
-A name is assembled from fields, in this order, joined by single spaces, empty ones skipped:
+A name is assembled from fields, in the order of the owner's name template (6.3c), joined
+by single spaces, empty ones skipped. The default order:
 
 ```
 date sender [account] title [period] [number]
@@ -1063,8 +1154,8 @@ date sender [account] title [period] [number]
 | `number` | no | `9291491` — invoice or document number |
 
 Each field is trimmed, and a field may not contain a character 7.1 forbids or a control
-character. The assembled name must pass 7.1. The template is fixed until Archive knowledge
-makes it editable. Assembly lives in `services/naming.py` and is mirrored in
+character. The assembled name must pass 7.1. A template lists each field at most once, always
+includes `date`, `sender` and `title`, and may leave the optional ones out. Assembly lives in `services/naming.py` and is mirrored in
 `lib/naming.ts` for the live preview; on approve the backend assembles again from the fields
 it was sent, so the client's preview is never what gets filed.
 
@@ -1095,6 +1186,9 @@ A **hand-written name** replaces the fields: approve sends `final_name` instead 
   limits 256–32,768, `max_examples` 0–20, `max_folders` 10–1000, `max_text_chars`
   1000–30,000, system prompts ≤ 20,000 characters and not blank (blank means built-in, saved
   as null), instructions ≤ 2000. Every field error names the step.
+- Filing rules ≤ 4000 characters, blank saved as null. A sender's short name is 1–80
+  characters with no character 7.1 forbids, unique per user ignoring case; up to 10 aliases
+  of 1–200 characters each.
 - API key is write-only: sent only when non-empty, never returned, never logged, never put
   in the query cache or localStorage.
 
@@ -1108,7 +1202,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Review · `/history` History · `/lab` Lab (configurations; `/lab/configurations/new`, `/lab/configurations/:id`) · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
+`/` Review · `/history` History · `/lab` Lab (configurations; `/lab/configurations/new`, `/lab/configurations/:id`) · `/knowledge` Archive knowledge · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -1145,7 +1239,12 @@ filename and size shown above, muted.
    checkbox. Ticking it hides the fields and shows the name as an editable input, prefilled
    with the assembled name; unticking returns to the fields as they were. A proposal from
    before fields existed opens with the checkbox ticked. Field errors show under the field;
-   7.1 errors on the assembled name show under the preview.
+   7.1 errors on the assembled name show under the preview. The fields are assembled in the
+   owner's template order.
+3a. **Remember.** With fields, when the sender is not a known short name a checkbox
+   "Remember “WIR Bank” as a sender", and when the account is not known for that sender
+   "Remember 738.953-48.5800 for WIR Bank". Both start unticked and are sent with the
+   approve; nothing is learned without them. Hidden for a hand-written name.
 4. Target folder — breadcrumb display + "Choose folder" button.
 5. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
    "Show more".
@@ -1342,7 +1441,7 @@ unsaved-changes guard, in sections:
   (Model default, Off, Low, Medium, High) with helper text that `Off` asks Ollama to skip
   thinking where the model allows it. With two calls, filing shows both the fields prompt and
   the folder prompt.
-- **Context.** Example filenames, folders listed, document text (characters), each with its
+- **Context.** Examples, folders listed, document text (characters), each with its
   default named in the helper text.
 - **What the models are given.** For a saved configuration, collapsed and fetched only once
   opened (it walks WebDAV): each call's system prompt and message with the document as a
@@ -1351,6 +1450,20 @@ unsaved-changes guard, in sections:
 
 Saving returns to the list. Validation per 7.3 shows under each field; the backend's message
 shows above the actions when it refuses.
+
+### 8.14 Archive knowledge
+
+`/knowledge`, in the main navigation after Lab. Three cards, each saving on its own:
+
+- **Name template.** The six fields in order, each row with up and down buttons; `Account`,
+  `Period` and `Number` have an "Include" checkbox, the others are always in. A live example
+  name below, from sample values. Save and Discard; the unsaved-changes guard covers it.
+- **Filing rules.** A textarea with a `n / 4000` counter and helper text that every
+  configuration is given it.
+- **Senders and accounts.** Learned from approvals; says so when empty. One row per sender:
+  short name, "written as" aliases, its accounts each with a remove button; `Edit` opens an
+  inline form for the short name and the aliases (one per line); `Remove` confirms and says
+  the accounts go too.
 
 ---
 

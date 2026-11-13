@@ -299,6 +299,31 @@ class TestOneCall:
         assert [p.suggested_name for p in session.exec(select(Proposal)).all()] == ["second"]
 
 
+class TestArchiveKnowledge:
+    def test_every_call_is_given_the_archive_knowledge_and_the_owners_template(
+        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.models import KnownSender
+
+        app_settings.filing_rules = "Telecom bills go to /Documents/Telecom."
+        app_settings.name_template = ["sender", "date", "title"]
+        session.add(app_settings)
+        session.add(
+            KnownSender(user_id=OWNER, short_name="Swisscom", aliases=[], created_at=utc_now())
+        )
+        session.commit()
+        add_document(session)
+        calls = file_with(monkeypatch)
+
+        run(session, app_settings)
+
+        (call,) = calls
+        assert "Known senders — use the short name exactly:\n  Swisscom" in call["prompt"]
+        assert "Telecom bills go to /Documents/Telecom." in call["prompt"]
+        assert call["name_template"] == ["sender", "date", "title"]
+        assert "Filing rules for this archive:" in (stored(session).prompt_text or "")
+
+
 class TestTwoCalls:
     def test_names_then_files_and_keeps_both_messages(
         self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
@@ -330,6 +355,7 @@ class TestTwoCalls:
         assert run(session, app_settings) == (1, 0)
 
         assert seen["fields"]["system_prompt"] == ai.FIELDS_SYSTEM_PROMPT
+        assert "name_template" in seen["fields"]
         assert seen["folder"]["system_prompt"] == ai.FOLDER_SYSTEM_PROMPT
         assert "Swisscom" in seen["folder"]["prompt"]
         found = stored(session)

@@ -2,12 +2,14 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import ActivityPage from "@/pages/ActivityPage";
 import ConfigurationEditorPage from "@/pages/ConfigurationEditorPage";
 import HistoryPage from "@/pages/HistoryPage";
+import KnowledgePage from "@/pages/KnowledgePage";
 import LabPage from "@/pages/LabPage";
 import ReviewPage from "@/pages/ReviewPage";
 import SettingsPage from "@/pages/SettingsPage";
 import UsagePage from "@/pages/UsagePage";
 
-// SPEC 8.1: "/" Review, "/history" History, "/lab" Lab, "/settings" Settings, "/activity" Activity,
+// SPEC 8.1: "/" Review, "/history" History, "/lab" Lab, "/knowledge" Archive knowledge,
+// "/settings" Settings, "/activity" Activity,
 // "/activity/usage" AI usage.
 export function AppRoutes() {
   return (
@@ -17,6 +19,7 @@ export function AppRoutes() {
       <Route path="/lab" element={<LabPage />} />
       <Route path="/lab/configurations/new" element={<ConfigurationEditorPage />} />
       <Route path="/lab/configurations/:id" element={<ConfigurationEditorPage />} />
+      <Route path="/knowledge" element={<KnowledgePage />} />
       <Route path="/settings" element={<SettingsPage />} />
       <Route path="/activity" element={<ActivityPage />} />
       <Route path="/activity/usage" element={<UsagePage />} />

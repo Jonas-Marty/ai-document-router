@@ -11,7 +11,7 @@ import logging
 import math
 import mimetypes
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import TypeGuard
@@ -449,6 +449,7 @@ def build_prompt(
     max_folders: int = MAX_TREE_FOLDERS,
     max_examples: int = MAX_SAMPLE_FILENAMES,
     with_folders: bool = True,
+    knowledge: str = "",
 ) -> str:
     """Assemble the user message per SPEC 6.3.
 
@@ -456,6 +457,9 @@ def build_prompt(
     what gets stored as `Proposal.prompt_text`, so the review screen shows the instructions
     that were in force for *that* proposal. `with_folders=False` is the fields call of the
     two-call strategy, which leaves the folder to the second call.
+
+    `knowledge` is the archive-knowledge block (SPEC 6.3c). Pass no sample filenames when it
+    holds approved examples: those show the convention better than bare names do.
     """
     sections: list[str] = []
     if with_folders:
@@ -463,6 +467,9 @@ def build_prompt(
             "Folders available (choose exactly one):",
             "\n".join(_render_tree(folder_tree, max_folders)) or "(none)",
         ]
+
+    if knowledge:
+        sections += ["", knowledge]
 
     if sample_filenames and max_examples > 0:
         sections += [
@@ -489,6 +496,7 @@ def build_folder_prompt(
     instructions: str | None = None,
     *,
     max_folders: int = MAX_TREE_FOLDERS,
+    knowledge: str = "",
 ) -> str:
     """The second call of the two-call strategy: the folder, with the fields already known."""
     described = [f"Date: {document_date.isoformat() if document_date else 'unknown'}"] + [
@@ -503,6 +511,8 @@ def build_folder_prompt(
         "What the document is:",
         "\n".join(described),
     ]
+    if knowledge:
+        sections += ["", knowledge]
     if instructions:
         sections += ["", INSTRUCTIONS_HEADING, instructions]
     sections += ["", "Document text:", text or "(no text could be extracted)"]
@@ -551,6 +561,7 @@ def request_proposal(
     json_mode: AiJsonMode = AiJsonMode.auto,
     folder_choices: list[str] | None = None,
     system_prompt: str = SYSTEM_PROMPT,
+    name_template: Sequence[str] = naming.DEFAULT_TEMPLATE,
 ) -> Proposal:
     """Ask for the fields and the folder in one reply, and validate it.
 
@@ -576,7 +587,7 @@ def request_proposal(
     document_date = _validate_date(parsed.get("document_date"))
     fields = _validate_fields(parsed)
     return Proposal(
-        suggested_name=_validate_name(_assemble(document_date, fields)),
+        suggested_name=_validate_name(_assemble(document_date, fields, name_template)),
         target_folder_path=_validate_folder(parsed.get("target_folder_path"), allowed_roots),
         document_date=document_date,
         confidence_score=_validate_confidence(parsed.get("confidence_score")),
@@ -610,6 +621,7 @@ def request_fields(
     context_limit: int | None = None,
     json_mode: AiJsonMode = AiJsonMode.auto,
     system_prompt: str = FIELDS_SYSTEM_PROMPT,
+    name_template: Sequence[str] = naming.DEFAULT_TEMPLATE,
 ) -> FieldsReply:
     """Ask for the name fields alone. Raises as request_proposal does."""
     parsed = _request_json(
@@ -627,7 +639,7 @@ def request_fields(
     return FieldsReply(
         document_date=document_date,
         fields=fields,
-        suggested_name=_validate_name(_assemble(document_date, fields)),
+        suggested_name=_validate_name(_assemble(document_date, fields, name_template)),
         confidence_score=_validate_confidence(parsed.get("confidence_score")),
         reasoning_text=_validate_reasoning(parsed.get("reasoning_text")),
     )
@@ -1292,9 +1304,11 @@ def _validate_fields(parsed: dict[str, object]) -> naming.NameFields:
         raise ProposalRejected(f"The model's fields were unusable: {exc.message}") from exc
 
 
-def _assemble(document_date: date | None, fields: naming.NameFields) -> str:
+def _assemble(
+    document_date: date | None, fields: naming.NameFields, template: Sequence[str]
+) -> str:
     try:
-        return naming.assemble_name(document_date, fields)
+        return naming.assemble_name(document_date, fields, template)
     except AppError as exc:
         raise ProposalRejected(f"The name built from the model's fields: {exc.message}") from exc
 

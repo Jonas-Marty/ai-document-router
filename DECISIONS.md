@@ -1131,3 +1131,34 @@ meaningful. One line of "why" each; not a full ADR log.
 - A price row with neither price is refused rather than dropped silently: it is almost
   certainly an unfinished row.
 - Costs already stored on past calls are left as they were computed.
+
+## Redesign milestone 4 — archive knowledge (2026-11-13)
+
+- The name template and filing rules are columns on `app_settings` rather than a table of
+  their own: one row per user already exists for exactly this kind of per-archive setting.
+- A template is a list of field keys; date, sender and title are always in, and a field the
+  template leaves out is left out of the name even when the model filled it.
+- Senders and accounts are separate tables, an account belonging to a sender, so renaming a
+  sender keeps its accounts and forgetting it forgets them.
+- "Known" is decided by normalising (letters and digits, case folded, ü/ue ö/oe ä/ae) — the
+  same rule the Lab's scoring uses — on both sides, so the remember prompt and the backend
+  agree. An account is found in a text by its longest run of at least 5 digits, so a label
+  like "frankly 3a" in the account's value does not stop it matching.
+- Senders whose short name or alias appears in the text are given to the model. When none
+  does, every short name (up to 100) is listed instead: without aliases a document often
+  never prints the short name ("Zürcher Kantonalbank", not "ZKB"), and an empty list would
+  then teach the model nothing. Accounts are given only when found in the text.
+- Aliases ("written as") can only be added on the Archive knowledge page; the remember
+  prompt stays two checkboxes, unticked, so approving stays quick.
+- Remembering an account remembers its sender too: an account without a sender has nowhere
+  to belong.
+- Examples are approved documents filed from fields whose reading still exists, newest
+  first, those from a sender or account found in the text ahead of the rest. Each shows the
+  first 400 characters of its text, the fields and the folder; the date is left out, since
+  history does not keep the approved date separately and its format is in the system prompt.
+  The configuration's `max_examples` is the budget. Until anything has been approved, the
+  sampled filenames from the archive are shown as before.
+- The same knowledge goes into every filing call, the folder call included: the rules and
+  the examples' folders matter as much there.
+- The folder patterns needed for "unusual folder" (milestone 5) are derived from history
+  then rather than stored now: approved history already holds sender, account and folder.

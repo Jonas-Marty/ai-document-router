@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ListChecks } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { FolderPicker } from "@/components/folders/FolderPicker";
@@ -17,8 +17,9 @@ import {
   approveRequestFor,
   effectiveName,
   formValuesFor,
+  makeReviewFormSchema,
   type ReviewFormValues,
-  reviewFormSchema,
+  rememberPrompts,
 } from "@/components/review/reviewFormSchema";
 import { ShortcutCheatSheet } from "@/components/review/ShortcutCheatSheet";
 import { EmptyState } from "@/components/shared/EmptyState";
@@ -37,6 +38,7 @@ import {
   useTrashDocument,
 } from "@/hooks/useDocument";
 import { useFolderContext } from "@/hooks/useFolders";
+import { useKnowledge, useKnownSenders } from "@/hooks/useKnowledge";
 import { useReviewQueue } from "@/hooks/useReviewQueue";
 import { useReviewShortcuts } from "@/hooks/useReviewShortcuts";
 import { ApiError } from "@/services/api/errors";
@@ -154,8 +156,16 @@ function DocumentReview({
   const [approveError, setApproveError] = useState<string | null>(null);
   const viewerRef = useRef<DesktopDocumentPaneHandle>(null);
 
+  const template = useKnowledge().data?.name_template;
+  const knownSenders = useKnownSenders().data;
+  const schema = useMemo(() => makeReviewFormSchema(template), [template]);
+  // useForm keeps the resolver it was first given; the template arrives after the first
+  // render, so the resolver reads the current schema through a ref.
+  const schemaRef = useRef(schema);
+  schemaRef.current = schema;
   const methods = useForm<ReviewFormValues>({
-    resolver: zodResolver(reviewFormSchema),
+    resolver: (values, context, options) =>
+      zodResolver(schemaRef.current)(values, context, options),
     // ActionBar disables Approve on formState.isValid with no separate submit step -- see
     // reviewFormSchema.ts for why this must be "onChange".
     mode: "onChange",
@@ -171,7 +181,7 @@ function DocumentReview({
 
   const values = methods.watch();
   const folderPath = values.folderPath;
-  const name = effectiveName(values);
+  const name = effectiveName(values, template);
   const debouncedFolderPath = useDebouncedValue(folderPath, 300);
   const debouncedFilename = useDebouncedValue(`${name}${document.extension}`, 300);
   const folderContext = useFolderContext(debouncedFolderPath, debouncedFilename);
@@ -205,7 +215,7 @@ function DocumentReview({
     approveMutation.mutate(
       {
         id: document.id,
-        body: approveRequestFor(values),
+        body: approveRequestFor(values, rememberPrompts(values, knownSenders)),
       },
       {
         onSuccess: (response) => {

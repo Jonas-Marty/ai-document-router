@@ -186,6 +186,8 @@ def approve_document(
         final_folder_path=payload.final_folder_path,
         document_date=payload.document_date,
         name_fields=payload.name_fields.model_dump() if payload.name_fields else None,
+        remember_sender=payload.remember_sender,
+        remember_account=payload.remember_account,
         actor=Actor.from_user(user),
     )
     return RoutedResponse(

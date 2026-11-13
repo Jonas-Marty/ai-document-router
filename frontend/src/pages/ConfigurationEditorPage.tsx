@@ -301,9 +301,9 @@ function ConfigurationForm({
           <CardContent className="grid gap-4 sm:grid-cols-3">
             <Field
               id="max-examples"
-              label="Example filenames"
+              label="Examples"
               error={errors.max_examples}
-              help={`Recent names shown as examples. Default 8; ${RANGES.max_examples.join("–")}.`}
+              help={`Documents filed before, shown with their approved fields and folder. Default 8; ${RANGES.max_examples.join("–")}.`}
             >
               <Input
                 id="max-examples"

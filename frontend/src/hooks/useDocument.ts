@@ -44,6 +44,8 @@ export function useApproveDocument() {
       removeFromQueueCache(queryClient, id);
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
       queryClient.invalidateQueries({ queryKey: queryKeys.history() });
+      // The approval may have taught a sender or an account (SPEC 6.3c).
+      queryClient.invalidateQueries({ queryKey: queryKeys.knownSenders });
     },
   });
 }

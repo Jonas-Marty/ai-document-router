@@ -355,6 +355,36 @@ class ApproveRequest(BaseModel):
     final_name: str | None = None
     final_folder_path: str
     document_date: date | None = None
+    # SPEC 6.4: learn the sender / the account with the approval. Only with name_fields.
+    remember_sender: bool = False
+    remember_account: bool = False
+
+
+class ArchiveKnowledgeRead(BaseModel):
+    name_template: list[str]
+    filing_rules: str | None
+
+
+class ArchiveKnowledgeWrite(BaseModel):
+    name_template: list[str]
+    filing_rules: str | None = None
+
+
+class KnownAccountRead(BaseModel):
+    id: str
+    value: str
+
+
+class KnownSenderRead(BaseModel):
+    id: str
+    short_name: str
+    aliases: list[str]
+    accounts: list[KnownAccountRead]
+
+
+class KnownSenderWrite(BaseModel):
+    short_name: str
+    aliases: list[str] = []
 
 
 class HistoryEntryRead(BaseModel):

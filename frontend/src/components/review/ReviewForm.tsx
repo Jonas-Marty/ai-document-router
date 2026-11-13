@@ -3,6 +3,7 @@ import { useFormContext } from "react-hook-form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { useFolderContext } from "@/hooks/useFolders";
+import { useKnowledge, useKnownSenders } from "@/hooks/useKnowledge";
 import { useSettings } from "@/hooks/useSettings";
 import {
   FIELD_LABELS,
@@ -18,7 +19,7 @@ import { ExtractedText } from "./ExtractedText";
 import { ModelChip, ModelHint } from "./ModelChip";
 import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
-import { effectiveName, type ReviewFormValues } from "./reviewFormSchema";
+import { effectiveName, type ReviewFormValues, rememberPrompts } from "./reviewFormSchema";
 import { SiblingList } from "./SiblingList";
 import { TokenUsage } from "./TokenUsage";
 
@@ -76,6 +77,23 @@ function NameFieldInput({ field }: { field: NameFieldKey }) {
   );
 }
 
+/** SPEC 8.3 3a. Unticked to start: nothing is learned that the owner did not ask for. */
+function RememberCheckbox({
+  field,
+  children,
+}: {
+  field: "rememberSender" | "rememberAccount";
+  children: React.ReactNode;
+}) {
+  const { register } = useFormContext<ReviewFormValues>();
+  return (
+    <label className="flex min-h-11 items-center gap-2 text-sm break-all sm:min-h-0">
+      <input type="checkbox" className="size-4 shrink-0 accent-primary" {...register(field)} />
+      <span>{children}</span>
+    </label>
+  );
+}
+
 /** SPEC 8.3's field order 1-6 (order 7, the actions, lives in the sticky/inline action bar
  * that shares this form's react-hook-form instance via FormProvider -- see ReviewPage). */
 export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFormProps) {
@@ -86,11 +104,18 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
     formState: { errors },
   } = useFormContext<ReviewFormValues>();
   const { data: settings } = useSettings();
+  const template = useKnowledge().data?.name_template;
+  const knownSenders = useKnownSenders().data;
   const nameField = register("name");
   const values = watch();
   const folderPath = values.folderPath;
   const handWritten = values.handWritten;
-  const name = effectiveName(values);
+  const name = effectiveName(values, template);
+  // The fields in the order the name puts them; one the template leaves out is not asked for.
+  const fieldOrder = template
+    ? template.filter((key): key is NameFieldKey => key !== "date")
+    : NAME_FIELDS;
+  const asks = rememberPrompts(values, knownSenders);
 
   const patternRe = useMemo(
     () => compileFilenamePattern(settings?.filename_pattern ?? null),
@@ -153,7 +178,7 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
 
       {!handWritten && (
         <div className="grid gap-3 sm:grid-cols-2">
-          {NAME_FIELDS.map((key) => (
+          {fieldOrder.map((key) => (
             <NameFieldInput key={key} field={key} />
           ))}
         </div>
@@ -227,6 +252,22 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
           </details>
         ) : null}
       </div>
+
+      {(asks.sender || asks.account) && (
+        <fieldset className="space-y-1 rounded-md border border-border px-3 py-2">
+          <legend className="px-1 text-sm font-medium">Remember for next time</legend>
+          {asks.sender && (
+            <RememberCheckbox field="rememberSender">
+              Remember “{values.sender.trim()}” as a sender
+            </RememberCheckbox>
+          )}
+          {asks.account && (
+            <RememberCheckbox field="rememberAccount">
+              Remember {values.account.trim()} for {values.sender.trim()}
+            </RememberCheckbox>
+          )}
+        </fieldset>
+      )}
 
       <div className="space-y-1.5">
         <Label>Target folder</Label>

@@ -5,7 +5,7 @@ anything (CLAUDE.md rule 6).
 """
 
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -63,8 +63,7 @@ def _validate(value: str, max_length: int, label: str) -> str:
     return name
 
 
-# SPEC 7.1a. The name's parts after the date, in template order, with how they are named in
-# error messages. Fixed until Archive knowledge makes the template editable.
+# SPEC 7.1a. The name's parts besides the date, with how they are named in error messages.
 FIELD_LABELS: dict[str, str] = {
     "sender": "Sender",
     "account": "Account",
@@ -73,6 +72,10 @@ FIELD_LABELS: dict[str, str] = {
     "number": "Number",
 }
 REQUIRED_FIELDS = frozenset({"sender", "title"})
+# SPEC 6.3c: the owner orders these, and may leave the optional ones out.
+TEMPLATE_FIELDS = ("date", *FIELD_LABELS)
+DEFAULT_TEMPLATE = TEMPLATE_FIELDS
+ALWAYS_IN_TEMPLATE = ("date", "sender", "title")
 DATE_FORMAT = "%Y.%m.%d"
 
 
@@ -120,12 +123,17 @@ def clean_fields(values: Mapping[str, object]) -> NameFields:
     )
 
 
-def assemble_name(document_date: date | None, fields: NameFields) -> str:
-    """`date sender [account] title [period] [number]`, empty parts skipped, checked by 7.1.
+def assemble_name(
+    document_date: date | None,
+    fields: NameFields,
+    template: Sequence[str] = DEFAULT_TEMPLATE,
+) -> str:
+    """The fields in the template's order, empty parts skipped, checked by 7.1.
 
     A missing date leaves it out rather than failing: a model may find none, and the
-    review form asks for one before the name can be approved.
+    review form asks for one before the name can be approved. A field the template leaves
+    out is left out of the name even when it has a value.
     """
-    parts = [document_date.strftime(DATE_FORMAT) if document_date else None]
-    parts += [getattr(fields, key) for key in FIELD_LABELS]
-    return validate_stem(" ".join(part for part in parts if part))
+    values = {"date": document_date.strftime(DATE_FORMAT) if document_date else None}
+    values |= fields.to_json()
+    return validate_stem(" ".join(part for key in template if (part := values.get(key))))

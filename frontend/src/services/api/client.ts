@@ -8,6 +8,7 @@ import type {
   AiUsageReport,
   ApiErrorBody,
   ApproveRequest,
+  ArchiveKnowledge,
   AuditCategory,
   AuditPage,
   AuditUsage,
@@ -25,6 +26,8 @@ import type {
   FolderNode,
   HealthResponse,
   HistoryPage,
+  KnownSender,
+  KnownSenderWrite,
   NextcloudConnection,
   NextcloudWrite,
   QueueResponse,
@@ -82,6 +85,12 @@ export interface ApiClient {
   duplicateConfiguration(id: string): Promise<Configuration>;
   makeDefaultConfiguration(id: string): Promise<Configuration>;
   previewConfiguration(id: string): Promise<ConfigurationPreviewCall[]>;
+  getKnowledge(): Promise<ArchiveKnowledge>;
+  updateKnowledge(body: ArchiveKnowledge): Promise<ArchiveKnowledge>;
+  listKnownSenders(): Promise<KnownSender[]>;
+  updateKnownSender(id: string, body: KnownSenderWrite): Promise<KnownSender>;
+  deleteKnownSender(id: string): Promise<void>;
+  deleteKnownAccount(id: string): Promise<void>;
   getAuthConfig(): Promise<AuthConfig>;
   getCurrentUser(): Promise<AuthUser>;
   login(body: Credentials): Promise<AuthUser>;
@@ -259,6 +268,30 @@ export class HttpApiClient implements ApiClient {
       "GET",
       `/configurations/${encodeURIComponent(id)}/preview`,
     );
+  }
+
+  getKnowledge(): Promise<ArchiveKnowledge> {
+    return this.request<ArchiveKnowledge>("GET", "/knowledge");
+  }
+
+  updateKnowledge(body: ArchiveKnowledge): Promise<ArchiveKnowledge> {
+    return this.request<ArchiveKnowledge>("PUT", "/knowledge", body);
+  }
+
+  listKnownSenders(): Promise<KnownSender[]> {
+    return this.request<KnownSender[]>("GET", "/knowledge/senders");
+  }
+
+  updateKnownSender(id: string, body: KnownSenderWrite): Promise<KnownSender> {
+    return this.request<KnownSender>("PUT", `/knowledge/senders/${encodeURIComponent(id)}`, body);
+  }
+
+  deleteKnownSender(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/knowledge/senders/${encodeURIComponent(id)}`);
+  }
+
+  deleteKnownAccount(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/knowledge/accounts/${encodeURIComponent(id)}`);
   }
 
   getAuthConfig(): Promise<AuthConfig> {

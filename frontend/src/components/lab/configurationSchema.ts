@@ -102,7 +102,7 @@ export const configurationFormSchema = z
     filing_strategy: z.enum(["one_call", "two_calls"]),
     filing: stepSchema,
     folder_system_prompt: prompt,
-    max_examples: inRange("Example filenames", RANGES.max_examples, true),
+    max_examples: inRange("Examples", RANGES.max_examples, true),
     max_folders: inRange("Folders listed", RANGES.max_folders, true),
     max_text_chars: inRange("Document text", RANGES.max_text_chars, true),
   })

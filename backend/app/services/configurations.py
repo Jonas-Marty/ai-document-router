@@ -21,7 +21,16 @@ from app.models import (
     FilingStrategy,
     ReadingMethod,
 )
-from app.services import ai, audit, connections, extraction, folders, naming, transcribe
+from app.services import (
+    ai,
+    audit,
+    connections,
+    extraction,
+    folders,
+    knowledge,
+    naming,
+    transcribe,
+)
 from app.services.audit import Actor
 from app.services.connections import ResolvedStep
 from app.services.errors import NotFoundError, ValidationError
@@ -353,7 +362,7 @@ def _validated(
         filing_strategy=data.filing_strategy,
         filing=filing,
         folder_system_prompt=_prompt(data.folder_system_prompt, "Filing: the folder prompt"),
-        max_examples=_in_range(data.max_examples, MAX_EXAMPLES_RANGE, "Example filenames"),
+        max_examples=_in_range(data.max_examples, MAX_EXAMPLES_RANGE, "Examples"),
         max_folders=_in_range(data.max_folders, MAX_FOLDERS_RANGE, "Folders listed"),
         max_text_chars=_in_range(data.max_text_chars, MAX_TEXT_CHARS_RANGE, "Document text"),
     )
@@ -544,10 +553,12 @@ def preview(
     calls = [_reading_preview(resolved)]
     filing_label = resolved.filing_step.label if resolved.filing_step else None
     folder_note = (
-        "The folder tree and example filenames are read from WebDAV when each document is "
-        "filed, so they follow your folders as they change."
+        "The folder tree is read from WebDAV when each document is filed, so it follows your "
+        "folders as they change. Example filenames are listed only until a document has been "
+        "approved; from then on, approved documents are the examples."
     )
     hint = app_settings.filename_pattern_hint
+    known = knowledge.preview_text(app_settings)
     if resolved.filing_strategy == FilingStrategy.one_call:
         calls.append(
             PreviewCall(
@@ -562,6 +573,7 @@ def preview(
                     resolved.filing_instructions,
                     max_folders=resolved.max_folders,
                     max_examples=resolved.max_examples,
+                    knowledge=known,
                 ),
                 note=folder_note,
             )
@@ -584,6 +596,7 @@ def preview(
                 with_folders=False,
                 max_folders=resolved.max_folders,
                 max_examples=resolved.max_examples,
+                knowledge=known,
             ),
             note="The first of two calls: the name's fields, without the folder.",
         ),
@@ -598,6 +611,7 @@ def preview(
                 placeholder_fields,
                 resolved.filing_instructions,
                 max_folders=resolved.max_folders,
+                knowledge=known,
             ),
             note="The second call, given what the first one found. " + folder_note,
         ),

@@ -37,6 +37,7 @@ from app.services import (
     connections,
     extraction,
     folders,
+    knowledge,
     metrics,
     ocr,
     progress,
@@ -348,8 +349,14 @@ def _file_all(
             if context is None:
                 # Once per batch: it walks the folder tree, and every document shares it.
                 context = folders.prompt_context(service, app_settings)
+            archive = knowledge.for_prompt(
+                session,
+                app_settings,
+                reading.text[: job.plan.max_text_chars],
+                job.plan.max_examples,
+            )
             try:
-                filed = file_text(job.plan, reading.text, context, app_settings, job.meter)
+                filed = file_text(job.plan, reading.text, context, app_settings, job.meter, archive)
             except Unreachable as exc:
                 reachability.lost(step)
                 _wait(
@@ -387,8 +394,12 @@ def file_text(
     context: tuple[list[str], list[str]],
     app_settings: AppSettings,
     meter: ai.UsageMeter,
+    archive: knowledge.PromptKnowledge | None = None,
 ) -> Filed:
     """Run the configuration's filing step over a reading (SPEC 6.3).
+
+    `archive` is what the archive knowledge says about this text (SPEC 6.3c); None gives the
+    model none, as a comparison does.
 
     Raises what the calls raise: Unreachable, other AIUnavailable, ProposalRejected.
     """
@@ -399,6 +410,10 @@ def file_text(
         )
     text = text[: plan.max_text_chars]
     tree, samples = context
+    known = archive.text if archive else ""
+    if archive and archive.has_examples:
+        samples = []
+    template = knowledge.template_of(app_settings)
     roots = list(app_settings.allowed_root_folders)
     folder_choices = ai.prompt_folders(tree, plan.max_folders)
     hint = app_settings.filename_pattern_hint
@@ -415,6 +430,9 @@ def file_text(
             "json_mode": called.json_mode,
         }
 
+    # The same knowledge in every call: the folder call needs the rules and examples as
+    # much as the fields call does.
+
     if plan.filing_strategy == FilingStrategy.one_call:
         prompt = ai.build_prompt(
             text,
@@ -424,6 +442,7 @@ def file_text(
             plan.filing_instructions,
             max_folders=plan.max_folders,
             max_examples=plan.max_examples,
+            knowledge=known,
         )
         proposal = connections.call_step(
             step,
@@ -433,6 +452,7 @@ def file_text(
                 allowed_roots=roots,
                 folder_choices=folder_choices,
                 system_prompt=plan.filing_system_prompt,
+                name_template=template,
             ),
             AiTask.filing,
         )
@@ -447,6 +467,7 @@ def file_text(
         with_folders=False,
         max_folders=plan.max_folders,
         max_examples=plan.max_examples,
+        knowledge=known,
     )
     fields = connections.call_step(
         step,
@@ -454,6 +475,7 @@ def file_text(
             **common(called),  # type: ignore[arg-type]
             prompt=fields_prompt,
             system_prompt=plan.filing_system_prompt,
+            name_template=template,
         ),
         AiTask.filing,
     )
@@ -464,6 +486,7 @@ def file_text(
         fields.fields,
         plan.filing_instructions,
         max_folders=plan.max_folders,
+        knowledge=known,
     )
     proposal = connections.call_step(
         step,
