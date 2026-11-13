@@ -17,6 +17,7 @@ from app.api import documents as documents_api
 from app.api import folders as folders_api
 from app.api import health
 from app.api import history as history_api
+from app.api import inbox as inbox_api
 from app.api import knowledge as knowledge_api
 from app.api import metrics as metrics_api
 from app.api import settings as settings_api
@@ -118,6 +119,7 @@ app.include_router(settings_api.router, prefix="/api/v1")
 app.include_router(ai_api.router, prefix="/api/v1")
 app.include_router(configurations_api.router, prefix="/api/v1")
 app.include_router(knowledge_api.router, prefix="/api/v1")
+app.include_router(inbox_api.router, prefix="/api/v1")
 app.include_router(documents_api.router, prefix="/api/v1")
 app.include_router(folders_api.router, prefix="/api/v1")
 app.include_router(history_api.router, prefix="/api/v1")

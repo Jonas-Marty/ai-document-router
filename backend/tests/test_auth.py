@@ -178,7 +178,12 @@ def test_an_expired_session_is_rejected_and_cleaned_up(client: TestClient) -> No
     [
         ("get", "/api/v1/settings"),
         ("get", "/api/v1/queue"),
-        ("get", "/api/v1/history"),
+        ("get", "/api/v1/inbox"),
+        ("get", "/api/v1/documents/x/thumbnail"),
+        ("post", "/api/v1/documents/analyse"),
+        ("post", "/api/v1/documents/trash"),
+        ("post", "/api/v1/documents/estimate"),
+        ("get", "/api/v1/ai/endpoints/status"),
         ("get", "/api/v1/folders/tree"),
         ("post", "/api/v1/ai/models"),
         ("get", "/api/v1/ai/endpoints"),

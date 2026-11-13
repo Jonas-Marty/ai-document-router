@@ -21,6 +21,7 @@ services:
       # it and approve filing it. The `./data/ocr` default is relative to WORKDIR /app,
       # which the non-root user cannot write and which does not survive the container.
       OCR_CACHE_DIR: /data/ocr
+      THUMBNAIL_CACHE_DIR: /data/thumbnails
     volumes:
       # This is what makes the database outlive the container. `docker compose down` and a
       # subsequent `up` recreate the container against the same volume; only an explicit

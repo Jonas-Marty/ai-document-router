@@ -2,6 +2,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ListChecks } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
+import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { FolderPicker } from "@/components/folders/FolderPicker";
 import { ActionBar } from "@/components/review/ActionBar";
@@ -45,7 +46,18 @@ import { ApiError } from "@/services/api/errors";
 import type { Document } from "@/services/api/types";
 
 export default function ReviewPage() {
-  const queue = useReviewQueue();
+  const { id: requestedId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const queue = useReviewQueue(requestedId);
+  const currentId = queue.currentDocument?.id;
+
+  // SPEC 8.8: the URL follows the current document, so a reload or a shared link lands on
+  // it. Keyed on the document alone: the URL changing is the hook's input, not this one's.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: follows the document only
+  useEffect(() => {
+    if (queue.isLoading || !currentId || currentId === requestedId) return;
+    navigate(`/review/${currentId}`, { replace: true });
+  }, [currentId, queue.isLoading]);
   const [queueOpen, setQueueOpen] = useState(false);
   const retryFailed = useRetryFailedProposals();
 
@@ -97,8 +109,8 @@ export default function ReviewPage() {
         <div className="p-4">
           <EmptyState
             title="Queue's clear."
-            description="New scans appear here automatically."
-            action={{ label: "Check for new documents", onClick: () => queue.refetch() }}
+            description="New scans appear in the Inbox automatically."
+            action={{ label: "Back to the Inbox", onClick: () => navigate("/") }}
           />
         </div>
       ) : (

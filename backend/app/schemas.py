@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from app.models import (
     AiJsonMode,
@@ -162,6 +162,93 @@ class RegenerateRequest(BaseModel):
 
 class RetriedResponse(BaseModel):
     retried: int
+
+
+# --- Inbox (SPEC 6.4b) ---
+
+
+class InboxCardRead(BaseModel):
+    id: str
+    original_filename: str
+    name: str | None
+    folder: str | None
+    sender: str | None
+    document_date: date | None
+    scanned_at: datetime
+    configuration_name: str | None
+    proposal_status: ProposalStatus
+    later: bool
+    flags: list[str]
+    analysis_stage: str | None
+    waiting_reason: str | None
+    error: str | None
+    history_entry_id: str | None
+    revertible: bool
+    processed_at: datetime | None
+
+    @field_serializer("scanned_at")
+    def _serialize_scanned_at(self, value: datetime) -> str:
+        return from_storage(value).isoformat()
+
+    @field_serializer("processed_at")
+    def _serialize_processed_at(self, value: datetime | None) -> str | None:
+        return from_storage(value).isoformat() if value else None
+
+
+class InboxCounts(BaseModel):
+    analyse: int
+    ready: int
+    done: int
+    trashed: int
+
+
+class InboxPageRead(BaseModel):
+    items: list[InboxCardRead]
+    total: int
+    counts: InboxCounts
+    senders: list[str]
+    folders: list[str]
+
+
+class DocumentIdsRequest(BaseModel):
+    document_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class AnalyseRequest(DocumentIdsRequest):
+    configuration_id: str | None = None
+
+
+class EstimateRequest(DocumentIdsRequest):
+    configuration_id: str
+
+
+class AnalysedResponse(BaseModel):
+    queued: int
+
+
+class TrashFailureRead(BaseModel):
+    id: str
+    message: str
+
+
+class BulkTrashResponse(BaseModel):
+    trashed: int
+    failed: list[TrashFailureRead]
+
+
+class AnalysisEstimateRead(BaseModel):
+    documents: int
+    readings_needed: int
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    cost: float | None
+    connections: list[str]
+
+
+class EndpointStatusRead(BaseModel):
+    id: str
+    name: str
+    reachable: bool
 
 
 class MethodResultRead(BaseModel):
@@ -420,11 +507,6 @@ class HistoryEntryRead(BaseModel):
 class RoutedResponse(BaseModel):
     document: DocumentRead
     history_entry: HistoryEntryRead
-
-
-class HistoryPage(BaseModel):
-    items: list[HistoryEntryRead]
-    next_cursor: str | None
 
 
 class AuditEventRead(BaseModel):

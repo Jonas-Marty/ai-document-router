@@ -91,6 +91,82 @@ export interface RetriedResponse {
   retried: number;
 }
 
+/** SPEC 6.4b. The Inbox's four groups. */
+export type InboxGroup = "analyse" | "ready" | "done" | "trashed";
+export type InboxSort = "newest" | "document_date" | "sender" | "needs_check";
+export type CheckFlag =
+  | "new_sender"
+  | "new_account"
+  | "near_match_account"
+  | "missing_sender"
+  | "missing_title"
+  | "missing_date"
+  | "unusual_folder"
+  | "name_taken";
+
+export interface InboxCard {
+  id: string;
+  original_filename: string;
+  name: string | null;
+  folder: string | null;
+  sender: string | null;
+  document_date: string | null;
+  scanned_at: string;
+  configuration_name: string | null;
+  proposal_status: ProposalStatus;
+  later: boolean;
+  flags: CheckFlag[];
+  analysis_stage: string | null;
+  waiting_reason: string | null;
+  error: string | null;
+  history_entry_id: string | null;
+  revertible: boolean;
+  processed_at: string | null;
+}
+
+export interface InboxQuery {
+  group: InboxGroup;
+  q?: string;
+  sender?: string;
+  folder?: string;
+  sort?: InboxSort;
+  offset?: number;
+  limit?: number;
+}
+
+export interface InboxPage {
+  items: InboxCard[];
+  total: number;
+  counts: Record<InboxGroup, number>;
+  senders: string[];
+  folders: string[];
+}
+
+export interface AnalyseRequest {
+  document_ids: string[];
+  configuration_id?: string | null;
+}
+
+export interface AnalysisEstimate {
+  documents: number;
+  readings_needed: number;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  cost: number | null;
+  connections: string[];
+}
+
+export interface BulkTrashResponse {
+  trashed: number;
+  failed: { id: string; message: string }[];
+}
+
+export interface EndpointStatus {
+  id: string;
+  name: string;
+  reachable: boolean;
+}
+
 export type CompareMethod = "text_layer" | "ocr" | "markdown";
 
 /** One way of reading a document, and what it proposed. `proposal` and `error` are
@@ -134,11 +210,6 @@ export interface HistoryEntry {
   was_overridden: boolean;
   processed_at: string; // ISO 8601 with UTC offset
   revertible: boolean;
-}
-
-export interface HistoryPage {
-  items: HistoryEntry[];
-  next_cursor: string | null;
 }
 
 export interface RoutedResponse {

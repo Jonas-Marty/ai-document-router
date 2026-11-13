@@ -446,6 +446,50 @@ export interface HistoryEntry {
   revertible: boolean;
 }
 
+export type InboxGroup = "analyse" | "ready" | "done" | "trashed";
+export type InboxSort = "newest" | "document_date" | "sender" | "needs_check";
+export type CheckFlag =
+  | "new_sender" | "new_account" | "near_match_account"
+  | "missing_sender" | "missing_title" | "missing_date"
+  | "unusual_folder" | "name_taken";
+
+export interface InboxCard {
+  id: string;
+  original_filename: string;
+  name: string | null;          // proposed name, or the filed name in Done/Trashed; with extension
+  folder: string | null;        // proposed folder, or where it was filed
+  sender: string | null;
+  document_date: string | null;
+  scanned_at: string;
+  configuration_name: string | null; // what produced the proposal, else the picked one
+  proposal_status: ProposalStatus;
+  later: boolean;               // skipped: Ready with a mark
+  flags: CheckFlag[];           // Ready only (6.4b)
+  analysis_stage: string | null;
+  waiting_reason: string | null;
+  error: string | null;
+  history_entry_id: string | null; // Done/Trashed: the entry revert acts on
+  revertible: boolean;
+  processed_at: string | null;
+}
+
+export interface InboxPage {
+  items: InboxCard[];
+  total: number;                // in this group after search and filters
+  counts: Record<InboxGroup, number>; // unfiltered
+  senders: string[];            // filter options in this group
+  folders: string[];
+}
+
+export interface AnalysisEstimate {
+  documents: number;            // open documents among those asked about
+  readings_needed: number;      // vision readings not stored yet
+  prompt_tokens: number | null; // null: no past calls with these models to go by
+  completion_tokens: number | null;
+  cost: number | null;          // null: a model without a price, or no tokens to go by
+  connections: string[];        // names, so the dialog can say what it waits on
+}
+
 export interface Settings {
   allowed_root_folders: string[];
   trash_folder_path: string;
@@ -640,7 +684,12 @@ Base path `/api/v1`. JSON in, JSON out.
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET | `/queue?limit=20` | — | `{ items: Document[], total_pending: number }` |
+| GET | `/inbox?group=&q=&sender=&folder=&sort=&offset=0&limit=48` | — | `InboxPage` (6.4b) — one group's cards with every group's count |
 | GET | `/documents/{id}` | — | `Document` |
+| GET | `/documents/{id}/thumbnail` | — | JPEG of the first page, at most 320 px wide, `Cache-Control: private, max-age=86400` |
+| POST | `/documents/analyse` | `{ document_ids, configuration_id? }` | `{ queued: number }` — open documents only, others are left alone; same contract as `/regenerate` |
+| POST | `/documents/trash` | `{ document_ids }` | `{ trashed: number, failed: [{ id, message }] }` — one at a time, a failure does not stop the rest |
+| POST | `/documents/estimate` | `{ document_ids, configuration_id }` | `AnalysisEstimate` (6.4b) |
 | GET | `/documents/{id}/content` | — | file bytes, streamed, `Content-Type` per mime |
 | POST | `/documents/{id}/approve` | `{ final_folder_path, document_date, name_fields, remember_sender?, remember_account? }` or `{ final_folder_path, document_date, final_name }` — exactly one of the two; with fields the backend assembles the name and `document_date` is required; the remember flags (default false) apply only with fields (6.4) | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
@@ -651,7 +700,6 @@ Base path `/api/v1`. JSON in, JSON out.
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
 | POST | `/folders` | `{ parent_path, name }` | `FolderNode` |
 | GET | `/folders/context?path=..&filename=..` | — | `FolderContext` |
-| GET | `/history?limit=50&cursor=..` | — | `{ items: HistoryEntry[], next_cursor }` |
 | POST | `/history/{id}/revert` | — | `{ history_entry, document }` |
 | GET | `/audit?limit=50&cursor=..&category=..` | — | `AuditPage`, newest first — the caller's own events; `category` is `documents` \| `ai` \| `settings` \| `auth` |
 | GET | `/audit/usage?days=30` | — | `AuditUsage` — tokens spent in the window, the caller's own |
@@ -661,6 +709,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | PUT | `/settings/nextcloud` | `{ base_url, username, password? }` | same; blank password keeps the stored one |
 | POST | `/settings/nextcloud/test` | same | 204, or the reason sign-in failed |
 | GET | `/ai/endpoints` | — | `AiEndpoint[]`, by name |
+| GET | `/ai/endpoints/status` | — | `[{ id, name, reachable }]`, by name — each probed at most once a minute |
 | POST | `/ai/endpoints` | `AiEndpointWrite` | `AiEndpoint` |
 | PUT | `/ai/endpoints/{id}` | `AiEndpointWrite` | `AiEndpoint` |
 | DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a configuration uses it |
@@ -994,6 +1043,45 @@ trash, suffix with a timestamp rather than failing. Files are never deleted.
 file is no longer where the history says it is, return 409 `not_revertible` and flip
 `revertible` to false so the UI stops offering it.
 
+### 6.4b Inbox (`services/inbox.py`)
+
+**Groups.** Open means `pending` or `skipped`.
+- `analyse`: open with `proposal_status` `pending` or `failed` (waiting, running, failed).
+- `ready`: open with a `ready` proposal. A skipped one is "Later": still here, with a mark.
+- `done`: `moved`. `trashed`: `trashed`. Each card carries the latest history entry.
+
+**Search** (`q`, case-insensitive for ASCII as SQLite's `LIKE` is): original filename,
+proposed name, filed name, and the text of the document's current reading. **Filters**:
+exact sender, exact folder. **Sort**: `newest` (upload, default), `document_date` (newest
+first, undated last), `sender` (A–Z, none last), `needs_check` (most flags first, then
+newest). Paged by `offset`/`limit` (≤ 100).
+
+**Needs a check** — flags on Ready cards, from the proposal's fields; a free-name proposal
+gets only `missing_date`:
+- `missing_sender`, `missing_title`, `missing_date`: the field is empty. A reply without a
+  sender or title is refused when it arrives (6.3), so in practice only the date is missing.
+- `new_sender`: no known sender (6.3c) has that short name or alias, normalised.
+- `new_account`: the sender is known and the account's key matches none of its accounts;
+  `near_match_account` instead when one is within two edits — likely a misread digit.
+- `unusual_folder`: folder patterns come from approved, not reverted documents with fields:
+  the folder with every year segment (1900–2099) replaced by `{year}`. Compared against the
+  patterns of the same sender and account when that pair has any, else of the sender. A
+  sender with no approved documents gets no flag; one occurrence makes a pattern usual.
+- `name_taken`: a file of that name is in the proposed folder (cached listing). Only for the
+  cards on the page, and silently left out when the Nextcloud cannot be reached; sorting by
+  `needs_check` does not count it.
+
+**Thumbnail.** First page rendered to JPEG, cached on the data volume by content hash
+(`THUMBNAIL_CACHE_DIR`), so a file is downloaded and rendered once. Images are scaled
+directly; anything else answers 404 and the card shows an icon.
+
+**Estimate.** For an "Analyse with…" choice: which of the open documents still need a vision
+reading for that configuration's reading setup, and the average tokens per document of past
+calls with the same feature and model (any model of that feature when the model has none),
+times the documents. Cost uses the model's price; unknown when either is missing.
+
+**Connection status.** Every connection probed (6.3a) in parallel, result kept a minute.
+
 ### 6.4a Method comparison (`services/compare.py`)
 
 Reading a document is not one thing, and there is no way to know from the outside which way
@@ -1202,7 +1290,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Review · `/history` History · `/lab` Lab (configurations; `/lab/configurations/new`, `/lab/configurations/:id`) · `/knowledge` Archive knowledge · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
+`/` Inbox (`?tab=analyse|ready|done|trashed`) · `/review/:id?` Review · `/history` redirects to `/?tab=done` · `/lab` Lab (configurations; `/lab/configurations/new`, `/lab/configurations/:id`) · `/knowledge` Archive knowledge · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -1286,17 +1374,37 @@ Type-to-filter over loaded nodes. `New folder` creates under the selected node. 
 the selected path with Cancel / Select. Desktop: dialog with arrow-key navigation and Enter
 to select. Mobile: full-screen sheet, tap to select.
 
-### 8.6 History
+### 8.6 Inbox
 
-Newest first, `Load more` via cursor. Desktop: table — processed time (relative, absolute on
-hover), original filename, final filename, destination, "edited" marker, Revert button.
-Mobile: stacked cards, revert in an overflow menu.
+The landing page. Header: tabs **To analyse · Ready for review · Done · Trashed**, each with
+its count; a select replaces them below 640 px. While another tab is open, a banner says
+what is waiting ("3 ready for review · 2 analysing") with a link to that tab.
 
-Revert opens a confirmation naming the file and its destination. On success: toast
-"Reverted — back in the queue", invalidate history and queue. Non-revertible rows show a
-disabled button with tooltip "Already reverted, or the file has moved."
+Controls: search box (debounced 300 ms), sender and folder selects from the group's options,
+sort select. A card grid: one column on phones, up to four on wide screens, 48 per page with
+`Load more`. Each card: first-page thumbnail (lazy, an icon when there is none), the name
+(proposed, filed, or the original while there is none), folder, the configuration and the
+upload time; flags as small badges with a readable label; "Later" marked; in To analyse the
+stage, waiting reason or error. Clicking a card in To analyse or Ready opens `/review/:id`.
 
-Empty: "Nothing filed yet. Approved and trashed documents show up here."
+**Multi-select** in To analyse and Ready: a checkbox per card and "Select all on page".
+The action bar (sticky at the bottom on phones) offers `Analyse` (To analyse) or
+`Re-analyse` (Ready), `Analyse with…` and `Trash`. Never approve. `Analyse with…` opens a
+dialog: configuration select (default preselected) and the estimate — documents, readings
+needed, tokens, cost or "no price", and the connections it uses with their reachability.
+Trash confirms with the count. Results come back as a toast; the selection clears.
+
+**Done and Trashed** cards show where the file went and a `Revert` button (confirm naming
+the file and its destination); not revertible shows it disabled with "Already reverted, or
+the file has moved."
+
+Empty states: To analyse "Nothing waiting for analysis." Ready "Nothing to review. New scans
+appear here automatically." with `Check for new documents`. Done "Nothing filed yet."
+Trashed "Nothing in the trash." With a search or filter: "No documents match." and a
+`Clear filters` button.
+
+**Connection status** in the app header: a dot per connection (green reachable, grey not)
+with the name beside it from 1024 px, a single summary dot on phones; polled every 60 s.
 
 ### 8.7 Settings
 
@@ -1334,14 +1442,17 @@ fetch. An endpoint that answers but lists nothing is not an error.
 ### 8.8 Queue behaviour
 
 - Fetch `/queue` on load; current document is the first item.
+- `/review/:id` makes that document current, fetched on its own when it is not among the
+  queue's first page; the URL follows the current document. With nothing left it says so
+  and links back to the Inbox.
 - Prefetch the next document's content in the background.
 - Approve → mutation → on success: toast naming the destination, drop from the cached queue,
   advance, reset the form. On failure: stay put, keep the user's edits, show an inline error
   above the actions plus a toast. **Never advance on failure.**
 - Skip → to the back of the queue, advance immediately.
 - Trash → confirm → advance.
-- Empty queue: "Queue's clear. New scans appear here automatically." plus a
-  `Check for new documents` button.
+- Empty queue: "Queue's clear. New scans appear in the Inbox automatically." plus a
+  `Back to the Inbox` button.
 - **Queue overview.** The Review header carries a `Queue` control labelled with the number of
   documents still open, hidden when that is zero. It opens a panel — dialog on desktop,
   full-height sheet on mobile — listing everything queued in the order the screen will reach
@@ -1518,7 +1629,7 @@ the connection the instance used to have.
 - Roles beyond the single `is_admin` flag, and any user-management UI (accounts are created
   by registering; there is no invite, reset-password, or delete-user flow yet)
 - More than one OIDC provider at a time
-- Bulk selection or batch approval
+- Batch approval (bulk analyse and trash are in scope, 8.6)
 - Splitting a multi-page PDF into several documents — every page in a file is one document
 - Editing or moving files after filing, other than revert
 - Notifications, email, scheduling, product analytics (the audit log and operational

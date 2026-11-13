@@ -60,6 +60,22 @@ def isolated_ocr_cache(
 
 
 @pytest.fixture(autouse=True)
+def isolated_thumbnail_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    monkeypatch.setattr(
+        config, "thumbnail_cache_dir", str(tmp_path_factory.mktemp("thumbnail-cache"))
+    )
+
+
+@pytest.fixture(autouse=True)
+def fresh_connection_status() -> Iterator[None]:
+    connections.clear_status_cache()
+    yield
+    connections.clear_status_cache()
+
+
+@pytest.fixture(autouse=True)
 def clean_webdav_cache() -> Iterator[None]:
     """The listing cache is module-level, so it would otherwise leak between tests."""
     webdav.clear_cache()

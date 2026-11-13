@@ -1,25 +1,17 @@
-import {
-  Activity,
-  BookOpen,
-  FileStack,
-  FlaskConical,
-  History,
-  LogOut,
-  Settings,
-} from "lucide-react";
+import { Activity, BookOpen, FlaskConical, Inbox, LogOut, Settings } from "lucide-react";
 import type { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCurrentUser, useLogout } from "@/hooks/useAuth";
 import { useConfirmNavigation } from "@/hooks/useNavigationGuard";
 import { cn } from "@/lib/utils";
+import { ConnectionStatus } from "./ConnectionStatus";
 import { OutageBanner } from "./OutageBanner";
 import { ThemeToggle } from "./ThemeToggle";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Review", icon: FileStack, end: true },
-  { to: "/history", label: "History", icon: History, end: false },
+  { to: "/", label: "Inbox", icon: Inbox, end: true },
   { to: "/lab", label: "Lab", icon: FlaskConical, end: false },
   { to: "/knowledge", label: "Knowledge", icon: BookOpen, end: false },
   { to: "/activity", label: "Activity", icon: Activity, end: false },
@@ -32,6 +24,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const confirmNavigation = useConfirmNavigation();
   const { data: user } = useCurrentUser();
   const logout = useLogout();
+  // Review is reached from the Inbox and has no tab of its own.
+  const inReview = useLocation().pathname.startsWith("/review");
 
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
@@ -54,7 +48,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   cn(
                     "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    isActive
+                    isActive || (to === "/" && inReview)
                       ? "bg-accent text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                   )
@@ -65,6 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </NavLink>
             ))}
           </nav>
+          <ConnectionStatus />
           <ThemeToggle />
           {user && (
             <Tooltip>

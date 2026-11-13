@@ -6,3 +6,11 @@ export function formatTokens(count: number): string {
   if (count < 1_000_000) return `${Math.round(count / 1000)}K`;
   return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 }
+
+/** A cost in the connection's own currency: four decimals below one, two above. */
+export function formatCost(value: number): string {
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: value < 1 ? 4 : 2,
+    maximumFractionDigits: value < 1 ? 4 : 2,
+  });
+}

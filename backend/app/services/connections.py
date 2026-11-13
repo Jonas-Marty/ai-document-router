@@ -6,8 +6,10 @@ this module only knows how to reach one, and never tries another on its own.
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from sqlmodel import Session, select
@@ -153,6 +155,55 @@ def list_endpoints(session: Session, user_id: str) -> list[AiEndpoint]:
     )
 
 
+# endpoint id -> (checked at, reachable). The header polls every minute from every open tab;
+# probing on each would knock on a switched-off computer far more often than it can change.
+STATUS_MAX_AGE_SECONDS = 60.0
+_status_cache: dict[str, tuple[float, bool]] = {}
+_status_lock = threading.Lock()
+
+
+@dataclass(frozen=True)
+class EndpointStatus:
+    id: str
+    name: str
+    reachable: bool
+
+
+def statuses(session: Session, user_id: str) -> list[EndpointStatus]:
+    """Whether each of the user's connections answers, probed in parallel (SPEC 6.4b)."""
+    endpoints = list_endpoints(session, user_id)
+    now = time.monotonic()
+    with _status_lock:
+        fresh = {
+            endpoint.id: hit[1]
+            for endpoint in endpoints
+            if (hit := _status_cache.get(endpoint.id)) and now - hit[0] < STATUS_MAX_AGE_SECONDS
+        }
+    stale = [endpoint for endpoint in endpoints if endpoint.id not in fresh]
+    if stale:
+        with ThreadPoolExecutor(max_workers=min(len(stale), 8)) as pool:
+            answers = pool.map(
+                lambda endpoint: ai.probe(
+                    endpoint_url=endpoint.base_url, api_key=decrypt_key(endpoint)
+                ),
+                stale,
+            )
+            probed = dict(zip((endpoint.id for endpoint in stale), answers, strict=True))
+        with _status_lock:
+            for endpoint_id, reachable in probed.items():
+                _status_cache[endpoint_id] = (time.monotonic(), reachable)
+        fresh.update(probed)
+    return [
+        EndpointStatus(endpoint.id, endpoint.name, fresh[endpoint.id]) for endpoint in endpoints
+    ]
+
+
+def clear_status_cache() -> None:
+    """Forget every probe. Used by tests, and after a connection is changed."""
+    with _status_lock:
+        _status_cache.clear()
+
+
 def endpoint_in_use(session: Session, endpoint_id: str) -> list[str]:
     """Names of the configurations that use this endpoint for either step."""
     rows = session.exec(
@@ -234,6 +285,9 @@ def update_endpoint(
     if api_key:
         endpoint.api_key_encrypted = crypto.encrypt(config.secret_key, api_key)
     caps.apply(endpoint)
+    # A new address or key answers differently; the header should not show the old one's state.
+    with _status_lock:
+        _status_cache.pop(endpoint.id, None)
 
     session.add(endpoint)
     after: dict[str, object] = {

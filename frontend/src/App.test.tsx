@@ -61,8 +61,16 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
     if (url.includes("/queue")) {
       return Promise.resolve(healthResponse({ items: [], total_pending: 0 }));
     }
-    if (url.includes("/history")) {
-      return Promise.resolve(healthResponse({ items: [], next_cursor: null }));
+    if (url.includes("/inbox")) {
+      return Promise.resolve(
+        healthResponse({
+          items: [],
+          total: 0,
+          counts: { analyse: 0, ready: 0, done: 0, trashed: 0 },
+          senders: [],
+          folders: [],
+        }),
+      );
     }
     if (url.includes("/audit/usage")) {
       return Promise.resolve(
@@ -112,14 +120,22 @@ describe("routing", () => {
   beforeEach(() => mockApi(healthy));
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders the Review page at /", async () => {
+  it("renders the Inbox at /", async () => {
     renderApp("/");
+    expect(await screen.findByRole("heading", { name: "Inbox" })).toBeInTheDocument();
+  });
+
+  it("renders the Review page at /review", async () => {
+    renderApp("/review");
     expect(await screen.findByRole("heading", { name: "Review" })).toBeInTheDocument();
   });
 
-  it("renders the History page at /history", async () => {
+  it("sends an old /history bookmark to the Inbox's Done tab", async () => {
     renderApp("/history");
-    expect(await screen.findByRole("heading", { name: "History" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /done/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("renders the Settings page at /settings", async () => {
@@ -130,10 +146,7 @@ describe("routing", () => {
   it("navigates between routes via the top bar links", async () => {
     const user = userEvent.setup();
     renderApp("/");
-    await screen.findByRole("heading", { name: "Review" });
-
-    await user.click(screen.getByRole("link", { name: /history/i }));
-    expect(await screen.findByRole("heading", { name: "History" })).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Inbox" });
 
     await user.click(screen.getByRole("link", { name: /settings/i }));
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
@@ -146,9 +159,9 @@ describe("routing", () => {
     vi.restoreAllMocks();
     mockApi(healthy, { ...SIGNED_IN, is_admin: false });
     renderApp("/");
-    await screen.findByRole("heading", { name: "Review" });
+    await screen.findByRole("heading", { name: "Inbox" });
 
-    expect(screen.getByRole("link", { name: /history/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /inbox/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /activity/i })).toBeInTheDocument();
   });
 });
@@ -164,7 +177,7 @@ describe("dark mode", () => {
   it("toggles the dark class on <html> and persists the choice", async () => {
     const user = userEvent.setup();
     renderApp("/");
-    await screen.findByRole("heading", { name: "Review" });
+    await screen.findByRole("heading", { name: "Inbox" });
 
     await user.click(screen.getByRole("button", { name: /change theme/i }));
     await user.click(await screen.findByText("Dark"));
@@ -187,7 +200,7 @@ describe("dark mode", () => {
     localStorage.setItem("theme", "dark");
     const user = userEvent.setup();
     renderApp("/");
-    await screen.findByRole("heading", { name: "Review" });
+    await screen.findByRole("heading", { name: "Inbox" });
 
     await user.click(screen.getByRole("button", { name: /change theme/i }));
     await user.click(await screen.findByText("System"));
@@ -212,7 +225,7 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
     );
     renderApp("/");
 
-    await screen.findByRole("heading", { name: "Review" });
+    await screen.findByRole("heading", { name: "Inbox" });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -229,7 +242,7 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/nextcloud is unreachable/i);
     // The page itself still rendered -- not a broken page.
-    expect(screen.getByRole("heading", { name: "Review" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeInTheDocument();
   });
 
   it("asks an account that has not connected a Nextcloud yet to do so", async () => {
@@ -253,7 +266,7 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
     renderApp("/");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/can't reach the server/i);
-    expect(screen.getByRole("heading", { name: "Review" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeInTheDocument();
   });
 
   it("treats an empty-bodied 502 (Vite/nginx proxying to a stopped backend) as unreachable, not an API error", async () => {
@@ -261,7 +274,7 @@ describe("outage banner (M6 acceptance: stopping the backend produces a banner, 
     renderApp("/");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/can't reach the server/i);
-    expect(screen.getByRole("heading", { name: "Review" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeInTheDocument();
   });
 });
 
@@ -275,7 +288,7 @@ describe("authentication gate", () => {
     expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
     // The protected screen must not render behind it, not even briefly.
     expect(screen.queryByRole("heading", { name: "Settings" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /history/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /inbox/i })).not.toBeInTheDocument();
   });
 
   it("offers first-account setup on an instance nobody has claimed", async () => {
@@ -313,7 +326,7 @@ describe("authentication gate", () => {
     mockApi(healthy);
     const user = userEvent.setup();
     renderApp("/");
-    await screen.findByRole("heading", { name: "Review" });
+    await screen.findByRole("heading", { name: "Inbox" });
 
     await user.click(screen.getByRole("button", { name: /sign out owner@example.com/i }));
 

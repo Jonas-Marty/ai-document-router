@@ -6,6 +6,8 @@ import type {
   AiModelsRequest,
   AiModelsResponse,
   AiUsageReport,
+  AnalyseRequest,
+  AnalysisEstimate,
   ApiErrorBody,
   ApproveRequest,
   ArchiveKnowledge,
@@ -15,6 +17,7 @@ import type {
   AuthConfig,
   AuthUser,
   BuiltinPrompts,
+  BulkTrashResponse,
   CompareResponse,
   Configuration,
   ConfigurationPreviewCall,
@@ -22,10 +25,12 @@ import type {
   CreateFolderRequest,
   Credentials,
   Document,
+  EndpointStatus,
   FolderContext,
   FolderNode,
   HealthResponse,
-  HistoryPage,
+  InboxPage,
+  InboxQuery,
   KnownSender,
   KnownSenderWrite,
   NextcloudConnection,
@@ -56,12 +61,18 @@ export interface ApiClient {
   retryFailedProposals(): Promise<RetriedResponse>;
   compareDocument(id: string): Promise<CompareResponse>;
 
+  getInbox(params: InboxQuery): Promise<InboxPage>;
+  /** Not a fetch: a URL for an <img>, like getDocumentContentUrl. */
+  getThumbnailUrl(id: string): string;
+  analyseDocuments(body: AnalyseRequest): Promise<{ queued: number }>;
+  trashDocuments(ids: string[]): Promise<BulkTrashResponse>;
+  estimateAnalysis(ids: string[], configurationId: string): Promise<AnalysisEstimate>;
+
   getFolderTree(path?: string): Promise<FolderNode[]>;
   browseFolders(path?: string): Promise<FolderNode[]>;
   createFolder(body: CreateFolderRequest): Promise<FolderNode>;
   getFolderContext(path: string, filename?: string): Promise<FolderContext>;
 
-  getHistory(limit?: number, cursor?: string): Promise<HistoryPage>;
   getAudit(limit?: number, cursor?: string, category?: AuditCategory): Promise<AuditPage>;
   getAuditUsage(days?: number): Promise<AuditUsage>;
   revertHistoryEntry(id: string): Promise<RevertResponse>;
@@ -74,6 +85,7 @@ export interface ApiClient {
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
   getAiUsage(start: string, end: string): Promise<AiUsageReport>;
   listAiEndpoints(): Promise<AiEndpoint[]>;
+  getEndpointStatuses(): Promise<EndpointStatus[]>;
   createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint>;
   updateAiEndpoint(id: string, body: AiEndpointWrite): Promise<AiEndpoint>;
   deleteAiEndpoint(id: string): Promise<void>;
@@ -172,8 +184,27 @@ export class HttpApiClient implements ApiClient {
     return this.request<FolderContext>("GET", `/folders/context${query({ path, filename })}`);
   }
 
-  getHistory(limit?: number, cursor?: string): Promise<HistoryPage> {
-    return this.request<HistoryPage>("GET", `/history${query({ limit, cursor })}`);
+  getInbox(params: InboxQuery): Promise<InboxPage> {
+    return this.request<InboxPage>("GET", `/inbox${query({ ...params })}`);
+  }
+
+  getThumbnailUrl(id: string): string {
+    return `${API_BASE}/documents/${encodeURIComponent(id)}/thumbnail`;
+  }
+
+  analyseDocuments(body: AnalyseRequest): Promise<{ queued: number }> {
+    return this.request<{ queued: number }>("POST", "/documents/analyse", body);
+  }
+
+  trashDocuments(ids: string[]): Promise<BulkTrashResponse> {
+    return this.request<BulkTrashResponse>("POST", "/documents/trash", { document_ids: ids });
+  }
+
+  estimateAnalysis(ids: string[], configurationId: string): Promise<AnalysisEstimate> {
+    return this.request<AnalysisEstimate>("POST", "/documents/estimate", {
+      document_ids: ids,
+      configuration_id: configurationId,
+    });
   }
 
   getAudit(limit?: number, cursor?: string, category?: AuditCategory): Promise<AuditPage> {
@@ -218,6 +249,10 @@ export class HttpApiClient implements ApiClient {
 
   listAiEndpoints(): Promise<AiEndpoint[]> {
     return this.request<AiEndpoint[]>("GET", "/ai/endpoints");
+  }
+
+  getEndpointStatuses(): Promise<EndpointStatus[]> {
+    return this.request<EndpointStatus[]>("GET", "/ai/endpoints/status");
   }
 
   createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint> {

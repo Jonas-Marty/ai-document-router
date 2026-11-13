@@ -1162,3 +1162,36 @@ meaningful. One line of "why" each; not a full ADR log.
   the examples' folders matter as much there.
 - The folder patterns needed for "unusual folder" (milestone 5) are derived from history
   then rather than stored now: approved history already holds sender, account and folder.
+
+## Redesign milestone 5 — Inbox
+
+- One list endpoint, `/inbox`, rather than parameters on `/queue`: the queue keeps its review
+  order for the review screen, and the Inbox needs counts, facets and four groups the queue
+  never had. Search runs in SQL (it reaches reading text); filters, flags and sorting run in
+  Python on the group's cards, because sender, folder and date come from the proposal or the
+  history entry depending on the group.
+- "Later" is a skipped document: it stays in Ready with a mark, as the owner asked.
+- `missing_sender` and `missing_title` exist as flags but cannot occur today: a reply
+  without them is refused on arrival, so it never reaches Ready. They cost nothing and
+  keep the list honest if that rule is ever relaxed.
+- `name_taken` is checked only for the cards on the page, from the cached folder listing,
+  and left out when the Nextcloud is down: a whole-group check would list every folder of
+  every Ready document on each refetch. Sorting by "needs a check" therefore ignores it.
+- Unusual folder compares against the sender and account's patterns when that pair has
+  approved history, otherwise the sender's. Reverted approvals teach nothing.
+- Thumbnails are cached as JPEG files on the data volume by content hash
+  (`THUMBNAIL_CACHE_DIR`), not in a database column: no migration, nothing to back up that
+  cannot be re-rendered, and the same file shared by two accounts renders once. Images are
+  scaled; other files get an icon.
+- The estimate averages past calls per analysis run for the same feature and model, falling
+  back to any model of that feature. Rough by design; the dialog says when there is nothing
+  to go by or no price.
+- Connection status probes each connection at most once a minute per server process, in
+  parallel; editing a connection forgets its last result.
+- Bulk trash runs one document at a time and reports each failure; one bad move does not
+  roll back the others, since each is its own WebDAV MOVE.
+- `/review/:id` fetches a document beyond the queue's first 20 on its own and keeps it
+  current until it is filed, trashed or skipped past. Done and Trashed cards do not open the
+  review screen; they offer revert instead.
+- The History page and `GET /history` are gone; `/history` redirects to the Done tab, and
+  revert keeps its route.

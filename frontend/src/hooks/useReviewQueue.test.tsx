@@ -7,7 +7,7 @@ import { queryKeys } from "./queryKeys";
 import { useReviewQueue } from "./useReviewQueue";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getQueue: vi.fn() },
+  apiClient: { getQueue: vi.fn(), getDocument: vi.fn() },
 }));
 
 import { apiClient } from "@/services/api/client";
@@ -57,6 +57,41 @@ describe("useReviewQueue", () => {
   it("starts on the first document", async () => {
     vi.mocked(apiClient.getQueue).mockResolvedValue(queueOf("a", "b", "c"));
     const { result } = renderHook(() => useReviewQueue(), { wrapper: wrapper(queryClient) });
+
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("a"));
+  });
+
+  it("starts on the document the URL names when it is in the queue", async () => {
+    vi.mocked(apiClient.getQueue).mockResolvedValue(queueOf("a", "b", "c"));
+    const { result } = renderHook(() => useReviewQueue("c"), { wrapper: wrapper(queryClient) });
+
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("c"));
+    expect(apiClient.getDocument).not.toHaveBeenCalled();
+  });
+
+  it("fetches a named document beyond the queue's page, and lets go once it is filed", async () => {
+    vi.mocked(apiClient.getQueue).mockResolvedValue(queueOf("a", "b"));
+    vi.mocked(apiClient.getDocument).mockResolvedValue(doc("far"));
+    const { result } = renderHook(() => useReviewQueue("far"), { wrapper: wrapper(queryClient) });
+
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("far"));
+    expect(apiClient.getDocument).toHaveBeenCalledWith("far");
+
+    // What useApproveDocument writes into the document's cache on success.
+    act(() => {
+      queryClient.setQueryData(queryKeys.document("far"), { ...doc("far"), status: "moved" });
+    });
+
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("a"));
+  });
+
+  it("skipping a pinned document moves on to the queue", async () => {
+    vi.mocked(apiClient.getQueue).mockResolvedValue(queueOf("a", "b"));
+    vi.mocked(apiClient.getDocument).mockResolvedValue(doc("far"));
+    const { result } = renderHook(() => useReviewQueue("far"), { wrapper: wrapper(queryClient) });
+    await waitFor(() => expect(result.current.currentDocument?.id).toBe("far"));
+
+    act(() => result.current.advancePast("far"));
 
     await waitFor(() => expect(result.current.currentDocument?.id).toBe("a"));
   });

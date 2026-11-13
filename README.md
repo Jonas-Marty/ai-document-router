@@ -89,8 +89,9 @@ The first `just up` builds both images, so it takes a few minutes; later runs st
 seconds. The API container applies database migrations on every start before Uvicorn binds, so
 there is no separate migration step. Open <http://localhost:8080>.
 
-`DATABASE_URL` and `OCR_CACHE_DIR` are both overridden inside the compose file, so the values
-in `.env` only affect native development — the container always writes to its volume.
+`DATABASE_URL`, `OCR_CACHE_DIR` and `THUMBNAIL_CACHE_DIR` are all overridden inside the compose
+file, so the values in `.env` only affect native development — the container always writes to
+its volume.
 
 Useful commands:
 

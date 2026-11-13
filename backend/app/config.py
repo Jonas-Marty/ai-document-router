@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # A cached copy nobody claimed is a document that was trashed, or one sitting skipped
     # forever. Bounded by age rather than count so the cache cannot grow without limit.
     ocr_cache_max_age_days: int = 14
+    # First-page previews for the Inbox cards, keyed by content hash. Losing them costs only
+    # a re-render, so unlike the OCR cache nothing depends on them surviving.
+    thumbnail_cache_dir: str = "./data/thumbnails"
 
     # --- audit --------------------------------------------------------------
     # How long the audit log keeps events. A year covers "what happened to that invoice in

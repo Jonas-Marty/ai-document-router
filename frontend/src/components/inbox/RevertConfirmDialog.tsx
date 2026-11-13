@@ -8,19 +8,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { HistoryEntry } from "@/services/api/types";
 
-/** SPEC 8.6: "Revert opens a confirmation naming the file and its destination." The API
- * doesn't return `source_folder_path` (only the backend's revert logic knows it, to compute
- * the MOVE target) -- "its destination" here is the file's *current* location, which is what
- * the confirmation can honestly show without inventing a path the frontend was never sent. */
+export interface RevertTarget {
+  filename: string;
+  folder: string;
+}
+
+/** SPEC 8.6: a confirmation naming the file and where it is now. The folder it goes back to
+ * is not sent to the frontend; only the backend's revert computes it. */
 export function RevertConfirmDialog({
   entry,
   onOpenChange,
   onConfirm,
   isPending,
 }: {
-  entry: HistoryEntry | null;
+  entry: RevertTarget | null;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
   isPending: boolean;
@@ -32,9 +34,8 @@ export function RevertConfirmDialog({
           <DialogTitle>Revert this file?</DialogTitle>
           {entry && (
             <DialogDescription>
-              <span className="font-mono">{entry.final_filename}</span> moves out of{" "}
-              <span className="font-mono">{entry.final_folder_path}</span> and back into the review
-              queue.
+              <span className="font-mono">{entry.filename}</span> moves out of{" "}
+              <span className="font-mono">{entry.folder}</span> and back into the review queue.
             </DialogDescription>
           )}
         </DialogHeader>

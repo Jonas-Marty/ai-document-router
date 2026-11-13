@@ -1,4 +1,4 @@
-"""Endpoint tests for /folders, /history, and the routing actions."""
+"""Endpoint tests for /folders, revert, and the routing actions."""
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -445,46 +445,6 @@ class TestHistory:
         session.commit()
         return entry
 
-    def test_empty_history(self, configured: TestClient) -> None:
-        body = configured.get("/api/v1/history").json()
-
-        assert body == {"items": [], "next_cursor": None}
-
-    def test_newest_first(self, configured: TestClient) -> None:
-        with Session(db.engine) as session:
-            self._entry(session, "old.pdf", datetime(2026, 1, 1, 10, 0))
-            self._entry(session, "new.pdf", datetime(2026, 6, 1, 10, 0))
-
-        body = configured.get("/api/v1/history").json()
-
-        assert [i["original_filename"] for i in body["items"]] == ["new.pdf", "old.pdf"]
-
-    def test_paginates_without_skipping_ties(self, configured: TestClient) -> None:
-        """processed_at is not unique -- approving two documents in the same second is
-        ordinary, and a timestamp-only cursor drops or repeats rows at the boundary."""
-        same_instant = datetime(2026, 5, 1, 12, 0, 0)
-        with Session(db.engine) as session:
-            for i in range(5):
-                self._entry(session, f"tie{i}.pdf", same_instant)
-
-        seen: list[str] = []
-        cursor = None
-        for _ in range(5):
-            url = "/api/v1/history?limit=2" + (f"&cursor={cursor}" if cursor else "")
-            page = configured.get(url).json()
-            seen += [i["id"] for i in page["items"]]
-            cursor = page["next_cursor"]
-            if cursor is None:
-                break
-
-        assert len(seen) == 5
-        assert len(set(seen)) == 5
-
-    def test_rejects_a_malformed_cursor(self, configured: TestClient) -> None:
-        response = configured.get("/api/v1/history?cursor=garbage")
-
-        assert response.status_code == 422
-
     def test_revert_puts_the_document_back_in_the_queue(
         self, configured: TestClient, fake: FakeWebDav
     ) -> None:
@@ -529,11 +489,12 @@ class TestHistory:
             json={"final_name": "Filed", "final_folder_path": ROOT, "document_date": None},
         )
 
-        items = configured.get("/api/v1/history").json()["items"]
+        items = configured.get("/api/v1/inbox?group=done").json()["items"]
 
         assert len(items) == 1
-        assert items[0]["document_id"] == document_id
-        assert items[0]["final_folder_path"] == ROOT
+        assert items[0]["id"] == document_id
+        assert items[0]["folder"] == ROOT
+        assert items[0]["revertible"] is True
         assert items[0]["processed_at"].endswith("+00:00")
 
 

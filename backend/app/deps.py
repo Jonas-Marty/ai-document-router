@@ -7,7 +7,7 @@ from app.db import get_session
 from app.models import AppSettings, User
 from app.services import auth as auth_service
 from app.services import settings as settings_service
-from app.services.errors import AdminRequired
+from app.services.errors import AdminRequired, AppError
 from app.services.webdav import WebDavService, build_client
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -74,3 +74,15 @@ def get_browse_webdav(app_settings: AppSettingsDep) -> WebDavService:
 
 
 BrowseWebDavDep = Annotated[WebDavService, Depends(get_browse_webdav)]
+
+
+def get_optional_webdav(session: SessionDep, app_settings: AppSettingsDep) -> WebDavService | None:
+    """The same service as WebDavDep, or None before a Nextcloud is connected -- for reads
+    that are still useful without one, like the Inbox list."""
+    try:
+        return get_webdav(session, app_settings)
+    except AppError:
+        return None
+
+
+OptionalWebDavDep = Annotated[WebDavService | None, Depends(get_optional_webdav)]

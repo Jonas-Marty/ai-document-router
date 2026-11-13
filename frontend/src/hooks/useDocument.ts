@@ -34,16 +34,18 @@ function removeFromQueueCache(queryClient: QueryClient, id: string) {
 /** Approve, skip, trash, and regenerate all change the queue, so each invalidates it as a
  * consistency backstop even where a cache patch already gave the UI its instant update --
  * once the background refetch lands it reconciles with the server's actual ordering. Approve
- * and trash also invalidate history, since both create a history entry. */
+ * and trash also invalidate the Inbox, whose Done and Trashed tabs list history entries. */
 export function useApproveDocument() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: ApproveRequest }) =>
       apiClient.approveDocument(id, body),
-    onSuccess: (_response, { id }) => {
+    onSuccess: (response, { id }) => {
       removeFromQueueCache(queryClient, id);
+      // A document opened on its own (/review/:id) is let go of by its new status.
+      queryClient.setQueryData(queryKeys.document(id), response.document);
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
-      queryClient.invalidateQueries({ queryKey: queryKeys.history() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
       // The approval may have taught a sender or an account (SPEC 6.3c).
       queryClient.invalidateQueries({ queryKey: queryKeys.knownSenders });
     },
@@ -61,6 +63,7 @@ export function useSkipDocument() {
     mutationFn: (id: string) => apiClient.skipDocument(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });
 }
@@ -69,10 +72,11 @@ export function useTrashDocument() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiClient.trashDocument(id),
-    onSuccess: (_response, id) => {
+    onSuccess: (response, id) => {
       removeFromQueueCache(queryClient, id);
+      queryClient.setQueryData(queryKeys.document(id), response.document);
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
-      queryClient.invalidateQueries({ queryKey: queryKeys.history() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });
 }
@@ -88,6 +92,7 @@ export function useRetryFailedProposals() {
     mutationFn: () => apiClient.retryFailedProposals(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });
 }
@@ -111,6 +116,7 @@ export function useRegenerateDocument() {
     onSuccess: (_document, { id }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.document(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.queue });
+      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });
 }

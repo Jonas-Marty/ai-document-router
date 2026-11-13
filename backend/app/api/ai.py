@@ -15,6 +15,7 @@ from app.schemas import (
     AiModelsResponse,
     AiUsageRead,
     AiUsageRowRead,
+    EndpointStatusRead,
 )
 from app.services import ai_usage, connections
 from app.services.audit import Actor
@@ -25,6 +26,15 @@ router = APIRouter()
 @router.get("/ai/endpoints")
 def list_endpoints(session: SessionDep, user: CurrentUserDep) -> list[AiEndpointRead]:
     return [_read(session, endpoint) for endpoint in connections.list_endpoints(session, user.id)]
+
+
+@router.get("/ai/endpoints/status")
+def endpoint_statuses(session: SessionDep, user: CurrentUserDep) -> list[EndpointStatusRead]:
+    """Whether each connection answers, for the header (SPEC 6.4b)."""
+    return [
+        EndpointStatusRead(id=status.id, name=status.name, reachable=status.reachable)
+        for status in connections.statuses(session, user.id)
+    ]
 
 
 @router.post("/ai/endpoints")
