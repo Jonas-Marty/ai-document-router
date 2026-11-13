@@ -1102,3 +1102,18 @@ meaningful. One line of "why" each; not a full ADR log.
   high are sent as they are. Model default sends nothing, because some servers reject the
   field.
 - **Reading failures count as failed in the tick summary,** alongside filing failures.
+
+## Owner decisions for milestones 4–7 (2026-11-13)
+
+- **Re-analysing overwrites field edits.** The new proposal replaces whatever was typed.
+- **"Needs a check" flags:** new sender, new account for the sender, near-match account
+  (likely misread), missing sender/title/date, unusual folder, name already taken in the
+  target folder. Not model confidence: small local models judge it poorly.
+- **Unusual folder** ignores year segments: the archive is partly `sender/iban-or-policy/year`,
+  so a new year is expected, not a reason to check.
+- **Lab scoring:** fields match after trimming, case folding, ignoring punctuation and
+  spacing, and treating ü/ue, ö/oe, ä/ae as equal; accounts compare letters and digits only
+  (A2). Both empty is correct; filled where the answer is empty is wrong (B1). The folder
+  earns partial credit for the right parent (C2). Results show per-field accuracy and the
+  share of documents fully correct (D3). A hand-written correct answer is compared as a
+  whole name with the same normalisation (E). The owner can overrule any verdict.
