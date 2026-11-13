@@ -191,8 +191,7 @@ export interface AiEndpoint {
   timeout_seconds: number; // how long to wait for a reply before the call fails
   context_limit: number | null; // tokens the server holds per request; null = unknown (SPEC 6.3b)
   json_mode: AiJsonMode;
-  price_input_per_million: number | null;
-  price_output_per_million: number | null;
+  model_prices: AiModelPrice[]; // a model without an entry shows no cost (SPEC 6.3b)
   used_by: string[]; // names of the configurations using it; it can't be deleted while any do
 }
 
@@ -206,6 +205,12 @@ export interface AiEndpointWrite {
   timeout_seconds?: number; // omitted = keep the stored value (120 for a new endpoint)
   context_limit: number | null;
   json_mode: AiJsonMode;
+  model_prices: AiModelPrice[]; // replaces the stored list whole
+}
+
+/** What one model on a connection costs per million tokens, in the provider's currency. */
+export interface AiModelPrice {
+  model_name: string;
   price_input_per_million: number | null;
   price_output_per_million: number | null;
 }

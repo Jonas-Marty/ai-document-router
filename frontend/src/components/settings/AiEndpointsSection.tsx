@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +33,7 @@ import {
 } from "@/hooks/useAiConfig";
 import { useListAiModels } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
-import type { AiEndpoint, AiJsonMode } from "@/services/api/types";
+import type { AiEndpoint, AiJsonMode, AiModelPrice } from "@/services/api/types";
 import { type EndpointFormValues, endpointFormSchema, optionalNumber } from "./settingsSchemas";
 
 const JSON_MODE_LABELS: Record<AiJsonMode, string> = {
@@ -43,11 +43,11 @@ const JSON_MODE_LABELS: Record<AiJsonMode, string> = {
   none: "None",
 };
 
-/** "0.4 in · 1.6 out per 1M tokens", or null when neither price is set. */
-function priceLabel(endpoint: AiEndpoint): string | null {
-  const { price_input_per_million: input, price_output_per_million: output } = endpoint;
-  if (input === null && output === null) return null;
-  return `${input ?? 0} in · ${output ?? 0} out per 1M tokens`;
+/** "gpt-4.1: 0.4 in · 1.6 out per 1M". A missing side bills nothing, as the backend counts it. */
+function priceLabel(price: AiModelPrice): string {
+  const input = price.price_input_per_million ?? 0;
+  const output = price.price_output_per_million ?? 0;
+  return `${price.model_name}: ${input} in · ${output} out per 1M`;
 }
 
 /** SPEC 8.7: the places the app can send a model request, each with a name of its own.
@@ -136,9 +136,11 @@ export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: b
                           {endpoint.context_limit.toLocaleString()} tokens context
                         </Badge>
                       )}
-                      {priceLabel(endpoint) && (
-                        <Badge variant="secondary">{priceLabel(endpoint)}</Badge>
-                      )}
+                      {endpoint.model_prices.map((price) => (
+                        <Badge key={price.model_name} variant="secondary" className="break-all">
+                          {priceLabel(price)}
+                        </Badge>
+                      ))}
                       {endpoint.used_by.map((name) => (
                         <Badge key={name} variant="outline">
                           {name}
@@ -193,7 +195,7 @@ export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: b
           <DialogHeader>
             <DialogTitle>Remove {confirmDelete?.name}?</DialogTitle>
             <DialogDescription>
-              Its saved API key goes with it. Any task still using it must be changed first.
+              Its saved API key goes with it. A configuration still using it must be changed first.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -239,10 +241,14 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       timeout_seconds: String(endpoint?.timeout_seconds ?? 120),
       context_limit: endpoint?.context_limit?.toString() ?? "",
       json_mode: endpoint?.json_mode ?? "auto",
-      price_input_per_million: endpoint?.price_input_per_million?.toString() ?? "",
-      price_output_per_million: endpoint?.price_output_per_million?.toString() ?? "",
+      model_prices: (endpoint?.model_prices ?? []).map((price) => ({
+        model_name: price.model_name,
+        price_input_per_million: price.price_input_per_million?.toString() ?? "",
+        price_output_per_million: price.price_output_per_million?.toString() ?? "",
+      })),
     },
   });
+  const prices = useFieldArray({ control, name: "model_prices" });
   const isSaving = create.isPending || update.isPending;
 
   function onTest() {
@@ -278,8 +284,11 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       timeout_seconds: Number(values.timeout_seconds),
       context_limit: optionalNumber(values.context_limit),
       json_mode: values.json_mode,
-      price_input_per_million: optionalNumber(values.price_input_per_million),
-      price_output_per_million: optionalNumber(values.price_output_per_million),
+      model_prices: values.model_prices.map((price) => ({
+        model_name: price.model_name.trim(),
+        price_input_per_million: optionalNumber(price.price_input_per_million),
+        price_output_per_million: optionalNumber(price.price_output_per_million),
+      })),
       ...(key ? { api_key: key } : {}),
     };
     const handlers = {
@@ -305,8 +314,9 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const timeoutId = `endpoint-timeout-${endpoint?.id ?? "new"}`;
   const contextId = `endpoint-context-${endpoint?.id ?? "new"}`;
   const jsonModeId = `endpoint-json-${endpoint?.id ?? "new"}`;
-  const priceInId = `endpoint-price-in-${endpoint?.id ?? "new"}`;
-  const priceOutId = `endpoint-price-out-${endpoint?.id ?? "new"}`;
+  const pricesId = `endpoint-prices-${endpoint?.id ?? "new"}`;
+  // Offered while typing a model name, once a connection test has listed them.
+  const modelsListId = `${pricesId}-models`;
 
   return (
     <form
@@ -421,49 +431,106 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
           what the server took.
         </p>
       </div>
-      <fieldset className="space-y-1.5">
-        <legend className="text-sm font-medium">Price per million tokens</legend>
-        <div className="flex flex-wrap gap-3">
-          <div className="space-y-1">
-            <Label htmlFor={priceInId} className="font-normal text-muted-foreground">
-              Input
-            </Label>
-            <Input
-              id={priceInId}
-              type="number"
-              inputMode="decimal"
-              step="any"
-              className="w-32"
-              placeholder="None"
-              aria-invalid={!!errors.price_input_per_million}
-              {...register("price_input_per_million")}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor={priceOutId} className="font-normal text-muted-foreground">
-              Output
-            </Label>
-            <Input
-              id={priceOutId}
-              type="number"
-              inputMode="decimal"
-              step="any"
-              className="w-32"
-              placeholder="None"
-              aria-invalid={!!errors.price_output_per_million}
-              {...register("price_output_per_million")}
-            />
-          </div>
-        </div>
-        {(errors.price_input_per_million || errors.price_output_per_million) && (
-          <p className="text-sm text-destructive">
-            {(errors.price_input_per_million ?? errors.price_output_per_million)?.message}
-          </p>
-        )}
-        <p className="text-sm text-muted-foreground">
-          In your provider's currency. Leave blank for a connection that costs nothing per token;
-          usage then shows tokens only.
+      <fieldset className="space-y-2" aria-describedby={`${pricesId}-help`}>
+        <legend className="text-sm font-medium">Prices per million tokens</legend>
+        <p id={`${pricesId}-help`} className="text-sm text-muted-foreground">
+          Per model, in your provider's currency. A model without a price shows tokens only, which
+          is right for one that costs nothing per token.
         </p>
+        <datalist id={modelsListId}>
+          {listModels.data?.models.map((model) => (
+            <option key={model} value={model} />
+          ))}
+        </datalist>
+        {prices.fields.length > 0 && (
+          <ul className="space-y-3">
+            {prices.fields.map((field, index) => {
+              const rowErrors = errors.model_prices?.[index];
+              const message =
+                rowErrors?.model_name?.message ??
+                rowErrors?.price_input_per_million?.message ??
+                rowErrors?.price_output_per_million?.message;
+              const rowId = `${pricesId}-${index}`;
+              return (
+                <li key={field.id} className="space-y-1">
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="min-w-0 flex-1 basis-full space-y-1 sm:basis-40">
+                      <Label
+                        htmlFor={`${rowId}-model`}
+                        className="font-normal text-muted-foreground"
+                      >
+                        Model
+                      </Label>
+                      <Input
+                        id={`${rowId}-model`}
+                        className="font-mono"
+                        list={modelsListId}
+                        autoComplete="off"
+                        aria-invalid={!!rowErrors?.model_name}
+                        {...register(`model_prices.${index}.model_name`)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`${rowId}-in`} className="font-normal text-muted-foreground">
+                        Input
+                      </Label>
+                      <Input
+                        id={`${rowId}-in`}
+                        type="number"
+                        inputMode="decimal"
+                        step="any"
+                        className="w-24"
+                        placeholder="None"
+                        aria-invalid={!!rowErrors?.price_input_per_million}
+                        {...register(`model_prices.${index}.price_input_per_million`)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`${rowId}-out`} className="font-normal text-muted-foreground">
+                        Output
+                      </Label>
+                      <Input
+                        id={`${rowId}-out`}
+                        type="number"
+                        inputMode="decimal"
+                        step="any"
+                        className="w-24"
+                        placeholder="None"
+                        aria-invalid={!!rowErrors?.price_output_per_million}
+                        {...register(`model_prices.${index}.price_output_per_million`)}
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Remove price ${index + 1}`}
+                      onClick={() => prices.remove(index)}
+                    >
+                      <X aria-hidden="true" />
+                    </Button>
+                  </div>
+                  {message && <p className="text-sm text-destructive">{message}</p>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            prices.append({
+              model_name: "",
+              price_input_per_million: "",
+              price_output_per_million: "",
+            })
+          }
+        >
+          <Plus aria-hidden="true" />
+          Add a price
+        </Button>
       </fieldset>
       <div className="flex flex-wrap justify-between gap-2">
         <Button type="button" variant="outline" disabled={listModels.isPending} onClick={onTest}>

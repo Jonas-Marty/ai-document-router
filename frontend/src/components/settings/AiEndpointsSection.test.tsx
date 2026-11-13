@@ -29,8 +29,7 @@ function endpoint(overrides: Partial<AiEndpoint> = {}): AiEndpoint {
     used_by: [],
     context_limit: null,
     json_mode: "auto",
-    price_input_per_million: null,
-    price_output_per_million: null,
+    model_prices: [],
     ...overrides,
   };
 }
@@ -90,8 +89,7 @@ describe("AiEndpointsSection", () => {
       timeout_seconds: 120,
       context_limit: null,
       json_mode: "auto",
-      price_input_per_million: null,
-      price_output_per_million: null,
+      model_prices: [],
       api_key: "sk-secret-value",
     });
   });
@@ -122,10 +120,8 @@ describe("AiEndpointsSection", () => {
     });
   });
 
-  it("saves a context limit and prices, and blank clears them back to unknown", async () => {
-    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
-      endpoint({ context_limit: 4096, price_output_per_million: 2 }),
-    ]);
+  it("saves a context limit, and blank clears it back to unknown", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint({ context_limit: 4096 })]);
     const user = userEvent.setup();
     renderSection();
 
@@ -140,32 +136,92 @@ describe("AiEndpointsSection", () => {
     expect(apiClient.updateAiEndpoint).not.toHaveBeenCalled();
 
     await user.clear(context);
-    await user.type(context, "16384");
-    await user.type(screen.getByLabelText("Input"), "0.4");
-    await user.clear(screen.getByLabelText("Output"));
-    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint({ context_limit: 16384 }));
+    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint());
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
     expect(vi.mocked(apiClient.updateAiEndpoint).mock.calls[0]?.[1]).toMatchObject({
-      context_limit: 16384,
-      price_input_per_million: 0.4,
-      price_output_per_million: null,
+      context_limit: null,
     });
   });
 
-  it("shows the context limit and prices on the list", async () => {
+  it("edits prices per model, a blank side sent as null", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
+      endpoint({
+        model_prices: [
+          { model_name: "gpt-4.1", price_input_per_million: 2, price_output_per_million: 8 },
+          { model_name: "old", price_input_per_million: 1, price_output_per_million: 1 },
+        ],
+      }),
+    ]);
+    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint());
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
+    expect(screen.getAllByLabelText("Model")[0]).toHaveValue("gpt-4.1");
+
+    await user.click(screen.getByRole("button", { name: "Remove price 2" }));
+    await user.click(screen.getByRole("button", { name: "Add a price" }));
+    await user.type(screen.getAllByLabelText("Model")[1] as HTMLElement, "gpt-4.1-mini");
+    await user.type(screen.getAllByLabelText("Output")[1] as HTMLElement, "1.6");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.updateAiEndpoint).mock.calls[0]?.[1]).toMatchObject({
+      model_prices: [
+        { model_name: "gpt-4.1", price_input_per_million: 2, price_output_per_million: 8 },
+        {
+          model_name: "gpt-4.1-mini",
+          price_input_per_million: null,
+          price_output_per_million: 1.6,
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ["", "1", "Name the model."],
+    ["a", "", "Enter at least one price, or remove the row."],
+    ["gpt-4.1", "1", "This model already has a price."],
+  ])("refuses a price row %#", async (model, output, message) => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
+      endpoint({
+        model_prices: [
+          { model_name: "gpt-4.1", price_input_per_million: null, price_output_per_million: 8 },
+        ],
+      }),
+    ]);
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
+    await user.click(screen.getByRole("button", { name: "Add a price" }));
+    if (model) await user.type(screen.getAllByLabelText("Model")[1] as HTMLElement, model);
+    if (output) await user.type(screen.getAllByLabelText("Output")[1] as HTMLElement, output);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(apiClient.updateAiEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("shows the context limit and each model's price on the list", async () => {
     vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
       endpoint({
         context_limit: 16384,
-        price_input_per_million: 0.4,
-        price_output_per_million: 1.6,
+        model_prices: [
+          {
+            model_name: "gpt-4.1-mini",
+            price_input_per_million: 0.4,
+            price_output_per_million: 1.6,
+          },
+        ],
       }),
     ]);
     renderSection();
 
     expect(await screen.findByText(`${(16384).toLocaleString()} tokens context`)).toBeVisible();
-    expect(screen.getByText("0.4 in · 1.6 out per 1M tokens")).toBeVisible();
+    expect(screen.getByText("gpt-4.1-mini: 0.4 in · 1.6 out per 1M")).toBeVisible();
   });
 
   it("omits a blank key from an edit, so the stored one survives a rename", async () => {
@@ -194,8 +250,7 @@ describe("AiEndpointsSection", () => {
       timeout_seconds: 120,
       context_limit: null,
       json_mode: "auto",
-      price_input_per_million: null,
-      price_output_per_million: null,
+      model_prices: [],
     });
     expect(body).not.toHaveProperty("api_key");
   });

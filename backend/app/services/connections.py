@@ -42,6 +42,7 @@ class ResolvedStep:
 
     @classmethod
     def of(cls, endpoint: AiEndpoint, model_name: str) -> "ResolvedStep":
+        price = Capabilities.of(endpoint).price_of(model_name)
         return cls(
             endpoint_name=endpoint.name,
             endpoint_url=endpoint.base_url,
@@ -51,8 +52,8 @@ class ResolvedStep:
             timeout_seconds=endpoint.timeout_seconds,
             context_limit=endpoint.context_limit,
             json_mode=endpoint.json_mode,
-            price_input=endpoint.price_input_per_million,
-            price_output=endpoint.price_output_per_million,
+            price_input=price.price_input_per_million if price else None,
+            price_output=price.price_output_per_million if price else None,
         )
 
     @property
@@ -267,22 +268,51 @@ MAX_PRICE_PER_MILLION = 10_000.0
 
 
 @dataclass(frozen=True)
+class ModelPrice:
+    """What one model on a connection costs per million tokens. One side may be missing: a
+    provider that bills only output is a real thing."""
+
+    model_name: str
+    price_input_per_million: float | None = None
+    price_output_per_million: float | None = None
+
+    def describe(self) -> dict[str, object]:
+        return {
+            "model_name": self.model_name,
+            "price_input_per_million": self.price_input_per_million,
+            "price_output_per_million": self.price_output_per_million,
+        }
+
+
+def _price_or_none(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) else None
+
+
+@dataclass(frozen=True)
 class Capabilities:
-    """What a connection's server can take and what it charges (SPEC 6.3b). Not secrets."""
+    """What a connection's server can take and what its models cost (SPEC 6.3b). Not secrets."""
 
     context_limit: int | None = None
     json_mode: AiJsonMode = AiJsonMode.auto
-    price_input_per_million: float | None = None
-    price_output_per_million: float | None = None
+    model_prices: tuple[ModelPrice, ...] = ()
 
     @classmethod
     def of(cls, endpoint: AiEndpoint) -> "Capabilities":
         return cls(
             context_limit=endpoint.context_limit,
             json_mode=endpoint.json_mode,
-            price_input_per_million=endpoint.price_input_per_million,
-            price_output_per_million=endpoint.price_output_per_million,
+            model_prices=tuple(
+                ModelPrice(
+                    model_name=str(entry.get("model_name", "")),
+                    price_input_per_million=_price_or_none(entry.get("price_input_per_million")),
+                    price_output_per_million=_price_or_none(entry.get("price_output_per_million")),
+                )
+                for entry in endpoint.model_prices or []
+            ),
         )
+
+    def price_of(self, model_name: str) -> ModelPrice | None:
+        return next((p for p in self.model_prices if p.model_name == model_name), None)
 
     def validated(self) -> "Capabilities":
         limit = self.context_limit
@@ -291,27 +321,40 @@ class Capabilities:
                 f"The context limit must be between {MIN_CONTEXT_LIMIT:,} and "
                 f"{MAX_CONTEXT_LIMIT:,} tokens, or left empty."
             )
-        for price in (self.price_input_per_million, self.price_output_per_million):
-            if price is not None and not 0 <= price <= MAX_PRICE_PER_MILLION:
-                raise ValidationError(
-                    f"A price per million tokens must be between 0 and "
-                    f"{MAX_PRICE_PER_MILLION:,.0f}, or left empty."
-                )
-        return self
+        prices: list[ModelPrice] = []
+        seen: set[str] = set()
+        for entry in self.model_prices:
+            name = entry.model_name.strip()
+            if not name:
+                raise ValidationError("Each price needs the model it is for.")
+            if name in seen:
+                raise ValidationError(f"The model '{name}' has more than one price.")
+            seen.add(name)
+            sides = (entry.price_input_per_million, entry.price_output_per_million)
+            if all(price is None for price in sides):
+                raise ValidationError(f"Enter at least one price for '{name}', or remove it.")
+            for price in sides:
+                if price is not None and not 0 <= price <= MAX_PRICE_PER_MILLION:
+                    raise ValidationError(
+                        f"A price per million tokens must be between 0 and "
+                        f"{MAX_PRICE_PER_MILLION:,.0f}, or left empty."
+                    )
+            prices.append(
+                ModelPrice(name, entry.price_input_per_million, entry.price_output_per_million)
+            )
+        return Capabilities(self.context_limit, self.json_mode, tuple(prices))
 
     def apply(self, endpoint: AiEndpoint) -> None:
         endpoint.context_limit = self.context_limit
         endpoint.json_mode = self.json_mode
-        endpoint.price_input_per_million = self.price_input_per_million
-        endpoint.price_output_per_million = self.price_output_per_million
+        endpoint.model_prices = [price.describe() for price in self.model_prices]
 
     def describe(self) -> dict[str, object]:
         """For audit details; plain values so the JSON column takes them."""
         return {
             "context_limit": self.context_limit,
             "json_mode": str(self.json_mode),
-            "price_input_per_million": self.price_input_per_million,
-            "price_output_per_million": self.price_output_per_million,
+            "model_prices": [price.describe() for price in self.model_prices],
         }
 
 

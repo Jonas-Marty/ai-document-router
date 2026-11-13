@@ -184,8 +184,38 @@ export const endpointFormSchema = z.object({
     return Number.isInteger(tokens) && tokens >= 1024 && tokens <= 2_000_000;
   }, "Between 1,024 and 2,000,000 tokens, or blank."),
   json_mode: z.enum(["auto", "json_schema", "json_object", "none"]),
-  price_input_per_million: optionalPrice,
-  price_output_per_million: optionalPrice,
+  // Mirrors Capabilities.validated in services/connections.py.
+  model_prices: z
+    .array(
+      z
+        .object({
+          model_name: z.string().refine((value) => value.trim() !== "", "Name the model."),
+          price_input_per_million: optionalPrice,
+          price_output_per_million: optionalPrice,
+        })
+        .refine(
+          (row) =>
+            row.price_input_per_million.trim() !== "" || row.price_output_per_million.trim() !== "",
+          {
+            message: "Enter at least one price, or remove the row.",
+            path: ["price_output_per_million"],
+          },
+        ),
+    )
+    .superRefine((rows, ctx) => {
+      const seen = new Set<string>();
+      rows.forEach((row, index) => {
+        const name = row.model_name.trim();
+        if (name && seen.has(name)) {
+          ctx.addIssue({
+            code: "custom",
+            message: "This model already has a price.",
+            path: [index, "model_name"],
+          });
+        }
+        seen.add(name);
+      });
+    }),
 });
 
 /** Blank form text as null, anything else as the number it spells. */

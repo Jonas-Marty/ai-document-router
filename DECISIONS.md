@@ -1111,9 +1111,23 @@ meaningful. One line of "why" each; not a full ADR log.
   target folder. Not model confidence: small local models judge it poorly.
 - **Unusual folder** ignores year segments: the archive is partly `sender/iban-or-policy/year`,
   so a new year is expected, not a reason to check.
+  A sender may have several usual folders; one approval into a folder makes it usual for
+  that sender (and account).
 - **Lab scoring:** fields match after trimming, case folding, ignoring punctuation and
   spacing, and treating ü/ue, ö/oe, ä/ae as equal; accounts compare letters and digits only
   (A2). Both empty is correct; filled where the answer is empty is wrong (B1). The folder
   earns partial credit for the right parent (C2). Results show per-field accuracy and the
   share of documents fully correct (D3). A hand-written correct answer is compared as a
   whole name with the same normalisation (E). The owner can overrule any verdict.
+
+## Prices per model (2026-11-13)
+
+- Prices live on the connection as a list keyed by model name (`ai_endpoint.model_prices`, a
+  JSON column) rather than a table of their own: they are only ever read and written with
+  their connection, so a table would add joins and a foreign key for nothing.
+- The migration gives every model already used on a connection (by a configuration or in
+  the call history) that connection's old prices. Models not yet used start unpriced and
+  show no cost. Downgrading puts the first model's prices back on the connection.
+- A price row with neither price is refused rather than dropped silently: it is almost
+  certainly an unfinished row.
+- Costs already stored on past calls are left as they were computed.

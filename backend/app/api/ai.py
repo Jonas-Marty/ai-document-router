@@ -10,6 +10,7 @@ from app.models import AiEndpoint
 from app.schemas import (
     AiEndpointRead,
     AiEndpointWrite,
+    AiModelPrice,
     AiModelsRequest,
     AiModelsResponse,
     AiUsageRead,
@@ -65,8 +66,12 @@ def _capabilities(payload: AiEndpointWrite) -> connections.Capabilities:
     return connections.Capabilities(
         context_limit=payload.context_limit,
         json_mode=payload.json_mode,
-        price_input_per_million=payload.price_input_per_million,
-        price_output_per_million=payload.price_output_per_million,
+        model_prices=tuple(
+            connections.ModelPrice(
+                price.model_name, price.price_input_per_million, price.price_output_per_million
+            )
+            for price in payload.model_prices
+        ),
     )
 
 
@@ -105,7 +110,13 @@ def _read(session: SessionDep, endpoint: AiEndpoint) -> AiEndpointRead:
         timeout_seconds=endpoint.timeout_seconds,
         context_limit=endpoint.context_limit,
         json_mode=endpoint.json_mode,
-        price_input_per_million=endpoint.price_input_per_million,
-        price_output_per_million=endpoint.price_output_per_million,
+        model_prices=[
+            AiModelPrice(
+                model_name=price.model_name,
+                price_input_per_million=price.price_input_per_million,
+                price_output_per_million=price.price_output_per_million,
+            )
+            for price in connections.Capabilities.of(endpoint).model_prices
+        ],
         used_by=connections.endpoint_in_use(session, endpoint.id),
     )

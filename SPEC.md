@@ -205,7 +205,7 @@ ai-document-router/
 | `timeout_seconds` | int, 10–900, default 120 — how long to wait for a reply |
 | `context_limit` | int \| null, 1024–2,000,000 — tokens the server holds per request, prompt and reply together; null = unknown, no check (6.3b) |
 | `json_mode` | `auto` (default) \| `json_schema` \| `json_object` \| `none` — how filing asks for JSON (6.3) |
-| `price_input_per_million` / `price_output_per_million` | float \| null, ≥ 0 — what a million prompt / reply tokens cost on this connection; null = no price |
+| `model_prices` | JSON list of `{model_name, price_input_per_million, price_output_per_million}` — what a million prompt / reply tokens cost per model on this connection; a model with no entry has no price. Model names are unique within the list; each entry has at least one price |
 | `created_at` | datetime |
 
 **`ai_configuration`** — a named recipe for analysing a document: a reading step and a filing
@@ -312,7 +312,7 @@ the analysis or comparison that made it; not subject to audit retention.
 | `prompt_tokens` / `completion_tokens` / `cached_tokens` | int |
 | `without_usage` / `failed` / `fallback` | int — of `requests`: no token counts in the reply, no reply, made by a fallback step (always 0 since configurations replaced fallback chains) |
 | `duration_ms` / `timed` | int — summed duration over `timed` calls |
-| `cost` | float \| null — from reported tokens and the connection's prices at the time of the call; null without a price or without token counts |
+| `cost` | float \| null — from reported tokens and the model's prices on that connection at the time of the call; null without a price or without token counts |
 
 ### 4.2 Shared TypeScript types
 
@@ -443,12 +443,17 @@ export interface AiEndpoint {
   timeout_seconds: number;
   context_limit: number | null; // tokens the server holds per request; null = unknown (6.3b)
   json_mode: AiJsonMode;
-  price_input_per_million: number | null;
-  price_output_per_million: number | null;
+  model_prices: AiModelPrice[]; // on a write, replaces the stored list whole
   used_by: string[];            // names of the configurations that use it
 }
 
 export type AiJsonMode = "auto" | "json_schema" | "json_object" | "none";
+
+export interface AiModelPrice {
+  model_name: string;
+  price_input_per_million: number | null; // a missing side bills nothing
+  price_output_per_million: number | null;
+}
 
 export interface AiEndpointWrite {
   name: string;
@@ -457,8 +462,7 @@ export interface AiEndpointWrite {
   timeout_seconds?: number;     // omitted = keep the stored value
   context_limit: number | null;
   json_mode: AiJsonMode;
-  price_input_per_million: number | null;
-  price_output_per_million: number | null;
+  model_prices: AiModelPrice[]; // on a write, replaces the stored list whole
 }
 
 export type ReadingMethod = "text_layer" | "tesseract" | "vision";
@@ -796,7 +800,7 @@ for too. A server that sends no usable block still counts as a call, as `unrepor
 One analysis (every reading batch and every filing call) is added
 up per task into a `UsageSummary`, stored on `Document.analysis_usage` whether the proposal
 succeeded or failed, and logged in one line with the outcome. A reused extraction costs
-nothing and shows as `extraction: null`. When the connection has prices, each call's cost is
+nothing and shows as `extraction: null`. When the model has prices on that connection, each call's cost is
 computed from its reported tokens and stored on `ai_call.cost`; a call without token counts or
 without a price has no cost, never a cost of 0.
 
@@ -1083,8 +1087,9 @@ A **hand-written name** replaces the fields: approve sends `final_name` instead 
 - `filename_pattern` must compile as a regex; reject on save if it doesn't.
 - An endpoint needs a name, unique across endpoints, and a `base_url` that parses as
   `https://` (allow `http://` only for RFC1918 and localhost hosts — the key travels on
-  that connection). `context_limit`, when set, is 1024–2,000,000; prices, when set, are
-  0–10,000 per million tokens; `json_mode` is one of the four values in 4.1.
+  that connection). `context_limit`, when set, is 1024–2,000,000; each model price names a
+  model (unique per endpoint), has at least one price, and prices are 0–10,000 per million
+  tokens; `json_mode` is one of the four values in 4.1.
 - A configuration needs a name (≤ 80, unique per user), a filing connection that exists and
   a non-blank model; a `vision` reading needs the same for reading. Temperatures 0–2, output
   limits 256–32,768, `max_examples` 0–20, `max_folders` 10–1000, `max_text_chars`
@@ -1211,8 +1216,10 @@ currently *typed*, not the one saved, since finding out the URL is wrong is the 
 endpoint's stored key is used when the key field is blank. Below the key and timeout: context
 limit (tokens, optional; helper text says to enter what the server is set to, and that for
 Ollama that is `OLLAMA_CONTEXT_LENGTH`, 4096 by default on GPUs under 24 GB), JSON mode
-(Automatic, JSON schema, JSON object, None), and price per million input and output tokens
-(both optional). The list row shows the context limit and the prices when set. Removing asks
+(Automatic, JSON schema, JSON object, None), and a list of prices per model: each row a model
+name (suggested from the models a connection test listed), input and output price per million
+tokens (either may be blank, not both), and a remove button. The list row shows the context
+limit and one badge per priced model. Removing asks
 for confirmation, and
 the backend's refusal ("still used by the configuration …") is surfaced verbatim.
 

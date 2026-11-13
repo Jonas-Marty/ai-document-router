@@ -254,14 +254,44 @@ class TestCapabilities:
             client,
             context_limit=16384,
             json_mode="json_object",
-            price_input_per_million=0.4,
-            price_output_per_million=1.6,
+            model_prices=[
+                {
+                    "model_name": "gpt-4.1-mini",
+                    "price_input_per_million": 0.4,
+                    "price_output_per_million": 1.6,
+                },
+                {"model_name": "gpt-4.1", "price_output_per_million": 8.0},
+            ],
         )
 
         assert created["context_limit"] == 16384
         assert created["json_mode"] == "json_object"
-        assert created["price_input_per_million"] == 0.4
-        assert created["price_output_per_million"] == 1.6
+        assert created["model_prices"] == [
+            {
+                "model_name": "gpt-4.1-mini",
+                "price_input_per_million": 0.4,
+                "price_output_per_million": 1.6,
+            },
+            {
+                "model_name": "gpt-4.1",
+                "price_input_per_million": None,
+                "price_output_per_million": 8.0,
+            },
+        ]
+
+    def test_an_update_replaces_the_price_list(self, client: TestClient) -> None:
+        created = add(client, model_prices=[{"model_name": "a", "price_input_per_million": 1.0}])
+
+        response = client.put(
+            f"/api/v1/ai/endpoints/{created['id']}",
+            json={
+                "name": "Local",
+                "base_url": created["base_url"],
+                "model_prices": [{"model_name": "b", "price_output_per_million": 2.0}],
+            },
+        )
+
+        assert [p["model_name"] for p in response.json()["model_prices"]] == ["b"]
 
     def test_defaults_are_unknown_limit_automatic_json_and_no_price(
         self, client: TestClient
@@ -270,7 +300,7 @@ class TestCapabilities:
 
         assert created["context_limit"] is None
         assert created["json_mode"] == "auto"
-        assert created["price_input_per_million"] is None
+        assert created["model_prices"] == []
 
     def test_null_on_update_clears_a_limit(self, client: TestClient) -> None:
         created = add(client, context_limit=16384)
@@ -283,7 +313,14 @@ class TestCapabilities:
         assert response.json()["context_limit"] is None
 
     def test_a_steps_resolved_call_carries_them(self, client: TestClient) -> None:
-        created = add(client, context_limit=8192, price_output_per_million=2.0)
+        created = add(
+            client,
+            context_limit=8192,
+            model_prices=[
+                {"model_name": "qwen3", "price_output_per_million": 2.0},
+                {"model_name": "other", "price_output_per_million": 9.0},
+            ],
+        )
         configure(client, created["id"], "qwen3")
 
         with Session(db.engine) as session:
@@ -293,13 +330,34 @@ class TestCapabilities:
         assert step is not None
         assert (step.context_limit, step.price_output) == (8192, 2.0)
 
+    def test_a_model_without_a_price_has_no_cost(self, client: TestClient) -> None:
+        created = add(
+            client, model_prices=[{"model_name": "other", "price_output_per_million": 9.0}]
+        )
+        configure(client, created["id"], "qwen3")
+
+        with Session(db.engine) as session:
+            configuration = session.exec(select(AiConfiguration)).one()
+            step = configurations.plan(session, configuration).filing_step
+
+        assert step is not None
+        assert (step.price_input, step.price_output) == (None, None)
+
     @pytest.mark.parametrize(
         "field",
         [
             {"context_limit": 512},
             {"context_limit": 3_000_000},
-            {"price_input_per_million": -1},
-            {"price_output_per_million": 20_000},
+            {"model_prices": [{"model_name": "a", "price_input_per_million": -1}]},
+            {"model_prices": [{"model_name": "a", "price_output_per_million": 20_000}]},
+            {"model_prices": [{"model_name": " ", "price_output_per_million": 1}]},
+            {"model_prices": [{"model_name": "a"}]},
+            {
+                "model_prices": [
+                    {"model_name": "a", "price_output_per_million": 1},
+                    {"model_name": "a", "price_output_per_million": 2},
+                ]
+            },
             {"json_mode": "yaml"},
         ],
     )

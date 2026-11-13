@@ -38,8 +38,7 @@ const ENDPOINT: AiEndpoint = {
   timeout_seconds: 120,
   context_limit: 16384,
   json_mode: "auto",
-  price_input_per_million: null,
-  price_output_per_million: null,
+  model_prices: [],
   used_by: [],
 };
 

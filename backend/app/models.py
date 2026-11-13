@@ -264,9 +264,12 @@ class AiEndpoint(SQLModel, table=True):
     json_mode: AiJsonMode = Field(
         default=AiJsonMode.auto, sa_column_kwargs={"server_default": "auto"}
     )
-    # Per million tokens, in whatever currency the provider bills; not secrets.
-    price_input_per_million: float | None = None
-    price_output_per_million: float | None = None
+    # Per million tokens, per model, in whatever currency the provider bills; not secrets.
+    # A list of {model_name, price_input_per_million, price_output_per_million}: models on one
+    # connection are billed differently, and a model without an entry shows no cost.
+    model_prices: list[dict[str, object]] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
+    )
     created_at: datetime
 
 

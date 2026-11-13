@@ -249,6 +249,12 @@ class NextcloudWrite(BaseModel):
     password: str | None = None
 
 
+class AiModelPrice(BaseModel):
+    model_name: str
+    price_input_per_million: float | None = None
+    price_output_per_million: float | None = None
+
+
 class AiEndpointRead(BaseModel):
     """CLAUDE.md rule 5: the key itself never leaves the backend, only whether one is set."""
 
@@ -259,8 +265,7 @@ class AiEndpointRead(BaseModel):
     timeout_seconds: int
     context_limit: int | None
     json_mode: AiJsonMode
-    price_input_per_million: float | None
-    price_output_per_million: float | None
+    model_prices: list[AiModelPrice]
     # Names of the configurations that use it; it cannot be removed while any do.
     used_by: list[str]
 
@@ -273,12 +278,11 @@ class AiEndpointWrite(BaseModel):
     api_key: str | None = None
     # Omitted keeps the stored value (or the default, for a new endpoint).
     timeout_seconds: int | None = None
-    # Replaced as sent, like the rest of a PUT: the form always sends all four, and null is
-    # how it says "no limit known" or "no price".
+    # Replaced as sent, like the rest of a PUT: the form always sends all of them, null is
+    # how it says "no limit known", and the price list replaces the stored one whole.
     context_limit: int | None = None
     json_mode: AiJsonMode = AiJsonMode.auto
-    price_input_per_million: float | None = None
-    price_output_per_million: float | None = None
+    model_prices: list[AiModelPrice] = []
 
 
 class AiModelsRequest(BaseModel):
