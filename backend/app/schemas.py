@@ -149,11 +149,6 @@ class DocumentReadingRead(BaseModel):
 DocumentRead.model_rebuild()
 
 
-class QueueResponse(BaseModel):
-    items: list[DocumentRead]
-    total_pending: int
-
-
 class RegenerateRequest(BaseModel):
     """Optional: analyse with this configuration from now on (SPEC 6.3a)."""
 

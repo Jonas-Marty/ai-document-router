@@ -22,6 +22,7 @@ vi.mock("@/services/api/client", () => ({
     listConfigurations: vi.fn(),
     getEndpointStatuses: vi.fn(),
     revertHistoryEntry: vi.fn(),
+    retryFailedProposals: vi.fn(),
   },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -292,5 +293,27 @@ describe("InboxPage", () => {
     expect(within(grid).getByText("Waiting for Tower")).toBeInTheDocument();
     expect(within(grid).getByText("No text layer found.")).toBeInTheDocument();
     expect(within(grid).getByRole("link", { name: "scan_w.pdf" })).toBeInTheDocument();
+  });
+
+  it("retries every failed analysis from To analyse, and offers it only when one failed", async () => {
+    vi.mocked(apiClient.getInbox).mockResolvedValue(
+      page([card("x", { proposal_status: "failed", name: null, error: "Model refused." })]),
+    );
+    vi.mocked(apiClient.retryFailedProposals).mockResolvedValue({ retried: 3 });
+    const user = userEvent.setup();
+    renderPage("/?tab=analyse");
+
+    await user.click(await screen.findByRole("button", { name: "Retry failed" }));
+
+    await waitFor(() => expect(apiClient.retryFailedProposals).toHaveBeenCalled());
+    // The server's count: failures beyond the loaded page were retried too.
+    expect(toast.success).toHaveBeenCalledWith(expect.stringContaining("3 proposals"));
+  });
+
+  it("offers no Retry failed while nothing has failed", async () => {
+    renderPage("/?tab=analyse");
+    await screen.findByRole("list", { name: "To analyse" });
+
+    expect(screen.queryByRole("button", { name: "Retry failed" })).not.toBeInTheDocument();
   });
 });

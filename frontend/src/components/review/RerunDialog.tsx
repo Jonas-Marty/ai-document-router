@@ -59,7 +59,7 @@ export function RerunDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Re-run analysis</DialogTitle>
+          <DialogTitle>Re-analyse with…</DialogTitle>
           <DialogDescription>
             Choose the configuration that reads and files this document. It keeps that choice for
             later re-runs; nothing falls back to another configuration.

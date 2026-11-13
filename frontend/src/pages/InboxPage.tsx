@@ -1,9 +1,10 @@
-import { Loader2, Search, Sparkles, Trash2, X } from "lucide-react";
+import { Loader2, RotateCcw, Sparkles, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AnalyseWithDialog } from "@/components/inbox/AnalyseWithDialog";
 import { InboxCardView } from "@/components/inbox/InboxCardView";
+import { InboxFilters, useFilterState } from "@/components/inbox/InboxFilters";
 import { RevertConfirmDialog, type RevertTarget } from "@/components/inbox/RevertConfirmDialog";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
@@ -16,7 +17,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -26,7 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useRetryFailedProposals } from "@/hooks/useDocument";
 import {
   useAnalyseDocuments,
   useInbox,
@@ -35,7 +35,7 @@ import {
 } from "@/hooks/useInbox";
 import { cn } from "@/lib/utils";
 import { ApiError } from "@/services/api/errors";
-import type { InboxCard, InboxGroup, InboxSort } from "@/services/api/types";
+import type { InboxCard, InboxGroup } from "@/services/api/types";
 
 const GROUPS: { value: InboxGroup; label: string }[] = [
   { value: "analyse", label: "To analyse" },
@@ -44,22 +44,12 @@ const GROUPS: { value: InboxGroup; label: string }[] = [
   { value: "trashed", label: "Trashed" },
 ];
 
-const SORTS: { value: InboxSort; label: string }[] = [
-  { value: "newest", label: "Newest upload" },
-  { value: "document_date", label: "Document date" },
-  { value: "sender", label: "Sender" },
-  { value: "needs_check", label: "Needs a check" },
-];
-
 const EMPTY: Record<InboxGroup, { title: string; description?: string }> = {
   analyse: { title: "Nothing waiting for analysis." },
   ready: { title: "Nothing to review.", description: "New scans appear here automatically." },
   done: { title: "Nothing filed yet." },
   trashed: { title: "Nothing in the trash." },
 };
-
-// Radix Select refuses an empty value, so "no filter" needs a name of its own.
-const ALL = "__all__";
 
 function isGroup(value: string | null): value is InboxGroup {
   return GROUPS.some((group) => group.value === value);
@@ -79,46 +69,39 @@ export default function InboxPage() {
   const tabParam = searchParams.get("tab");
   const group: InboxGroup = isGroup(tabParam) ? tabParam : "ready";
 
-  const [search, setSearch] = useState("");
-  const [sender, setSender] = useState<string | null>(null);
-  const [folder, setFolder] = useState<string | null>(null);
-  const [sort, setSort] = useState<InboxSort>("newest");
+  const filters = useFilterState();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [analyseWithOpen, setAnalyseWithOpen] = useState(false);
   const [confirmTrash, setConfirmTrash] = useState(false);
   const [revertCard, setRevertCard] = useState<InboxCard | null>(null);
-  const query = useDebouncedValue(search.trim(), 300);
-
-  const inbox = useInbox({
-    group,
-    q: query || undefined,
-    sender: sender ?? undefined,
-    folder: folder ?? undefined,
-    sort,
-  });
+  const inbox = useInbox({ group, ...filters.query });
   const pages = inbox.data?.pages ?? [];
   const latest = pages[pages.length - 1];
   const cards = useMemo(() => pages.flatMap((page) => page.items), [pages]);
   const counts = latest?.counts;
-  const filtered = query !== "" || sender !== null || folder !== null;
   const selectable = group === "analyse" || group === "ready";
   const chosen = cards.filter((card) => selected.has(card.id)).map((card) => card.id);
 
   const analyse = useAnalyseDocuments();
   const trash = useTrashDocuments();
   const revert = useRevertHistoryEntry();
+  const retryFailed = useRetryFailedProposals();
+
+  function runRetryFailed() {
+    retryFailed.mutate(undefined, {
+      // The count is the server's: failures beyond the loaded page are retried too.
+      onSuccess: ({ retried }) =>
+        toast.success(
+          `Asked for ${plural(retried, "proposal", "proposals")} again. They appear as the poller gets to them.`,
+        ),
+      onError: (error) => toast.error(errorMessage(error, "Couldn't retry the failed proposals.")),
+    });
+  }
 
   function switchGroup(next: InboxGroup) {
     setSearchParams(next === "ready" ? {} : { tab: next });
-    setSender(null);
-    setFolder(null);
+    filters.clearFacets();
     setSelected(new Set());
-  }
-
-  function clearFilters() {
-    setSearch("");
-    setSender(null);
-    setFolder(null);
   }
 
   function toggle(id: string, on: boolean) {
@@ -183,58 +166,29 @@ export default function InboxPage() {
 
       <GroupTabs group={group} counts={counts} onChange={switchGroup} />
 
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="relative min-w-0 basis-full sm:flex-1 sm:basis-56">
-          <Label htmlFor="inbox-search" className="sr-only">
-            Search
-          </Label>
-          <Search
-            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <Input
-            id="inbox-search"
-            type="search"
-            className="pl-8"
-            placeholder="Search names and document text"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </div>
-        <FilterSelect
-          id="inbox-sender"
-          label="Sender"
-          allLabel="All senders"
-          value={sender}
-          options={latest?.senders ?? []}
-          onChange={setSender}
-        />
-        <FilterSelect
-          id="inbox-folder"
-          label="Folder"
-          allLabel="All folders"
-          value={folder}
-          options={latest?.folders ?? []}
-          onChange={setFolder}
-        />
-        <div className="min-w-0 flex-1 basis-36 sm:flex-none">
-          <Label htmlFor="inbox-sort" className="sr-only">
-            Sort
-          </Label>
-          <Select value={sort} onValueChange={(value) => setSort(value as InboxSort)}>
-            <SelectTrigger id="inbox-sort" className="w-full sm:w-44" aria-label="Sort">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SORTS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+      <InboxFilters
+        idPrefix="inbox"
+        state={filters}
+        senders={latest?.senders ?? []}
+        folders={latest?.folders ?? []}
+      />
+
+      {group === "analyse" && cards.some((card) => card.proposal_status === "failed") && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={retryFailed.isPending}
+          onClick={runRetryFailed}
+        >
+          {retryFailed.isPending ? (
+            <Loader2 className="animate-spin" aria-hidden="true" />
+          ) : (
+            <RotateCcw aria-hidden="true" />
+          )}
+          Retry failed
+        </Button>
+      )}
 
       {selectable && cards.length > 0 && (
         <label className="flex w-fit items-center gap-2 text-sm">
@@ -262,10 +216,10 @@ export default function InboxPage() {
           onRetry={() => inbox.refetch()}
         />
       ) : cards.length === 0 ? (
-        filtered ? (
+        filters.filtered ? (
           <EmptyState
             title="No documents match."
-            action={{ label: "Clear filters", onClick: clearFilters }}
+            action={{ label: "Clear filters", onClick: filters.clear }}
           />
         ) : (
           <EmptyState
@@ -513,44 +467,5 @@ function WaitingBanner({
         </span>
       ))}
     </p>
-  );
-}
-
-function FilterSelect({
-  id,
-  label,
-  allLabel,
-  value,
-  options,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  allLabel: string;
-  value: string | null;
-  options: string[];
-  onChange: (value: string | null) => void;
-}) {
-  // A filter set before the options changed keeps showing what it filters by.
-  const shown = value !== null && !options.includes(value) ? [value, ...options] : options;
-  return (
-    <div className="min-w-0 flex-1 basis-36 sm:flex-none">
-      <Label htmlFor={id} className="sr-only">
-        {label}
-      </Label>
-      <Select value={value ?? ALL} onValueChange={(next) => onChange(next === ALL ? null : next)}>
-        <SelectTrigger id={id} className="w-full sm:w-44" aria-label={label}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL}>{allLabel}</SelectItem>
-          {shown.map((option) => (
-            <SelectItem key={option} value={option}>
-              {option}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
   );
 }

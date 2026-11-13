@@ -1,4 +1,4 @@
-"""Tests for /queue, /documents/{id}, /content and /regenerate."""
+"""Tests for /documents/{id}, /content and /regenerate."""
 
 from collections.abc import Iterator
 from datetime import date, datetime
@@ -79,17 +79,11 @@ class TestOwnership:
 
         assert client.get(f"/api/v1/documents/{document_id}").status_code == 404
         assert client.get(f"/api/v1/documents/{document_id}/content").status_code == 404
-        assert client.get("/api/v1/queue").json()["items"] == []
+        assert client.get("/api/v1/inbox").json()["items"] == []
 
 
-class TestQueue:
-    def test_empty_queue(self, client: TestClient) -> None:
-        response = client.get("/api/v1/queue")
-
-        assert response.status_code == 200
-        assert response.json() == {"items": [], "total_pending": 0}
-
-    def test_returns_documents_with_their_proposal(self, client: TestClient) -> None:
+class TestProposalShape:
+    def test_returns_the_document_with_its_proposal(self, client: TestClient) -> None:
         with Session(db.engine) as session:
             document = make_document("scan.pdf")
             session.add(document)
@@ -107,11 +101,10 @@ class TestQueue:
                 )
             )
             session.commit()
+            document_id = document.id
 
-        body = client.get("/api/v1/queue").json()
+        item = client.get(f"/api/v1/documents/{document_id}").json()
 
-        assert body["total_pending"] == 1
-        item = body["items"][0]
         assert item["original_filename"] == "scan.pdf"
         assert item["extension"] == ".pdf"
         assert item["proposal"]["suggested_name"] == "2026-08-21_Swisscom"
@@ -139,8 +132,9 @@ class TestQueue:
                 )
             )
             session.commit()
+            document_id = document.id
 
-        (item,) = client.get("/api/v1/queue").json()["items"]
+        item = client.get(f"/api/v1/documents/{document_id}").json()
 
         assert item["proposal"]["fields"] == {
             "sender": "WIR Bank",
@@ -150,81 +144,18 @@ class TestQueue:
             "number": None,
         }
 
-    def test_pending_always_precedes_skipped(self, client: TestClient) -> None:
-        """SPEC 5: a skipped document never reappears before an unskipped one -- even
-        when the skipped one was scanned much earlier."""
-        with Session(db.engine) as session:
-            session.add(
-                make_document(
-                    "old-skipped.pdf",
-                    status=DocumentStatus.skipped,
-                    skip_count=1,
-                    scanned_at=datetime(2020, 1, 1),
-                )
-            )
-            session.add(make_document("new-pending.pdf", scanned_at=datetime(2026, 8, 21, 12, 0)))
-            session.commit()
-
-        names = [item["original_filename"] for item in client.get("/api/v1/queue").json()["items"]]
-
-        assert names == ["new-pending.pdf", "old-skipped.pdf"]
-
-    def test_pending_ordered_by_scanned_at_ascending(self, client: TestClient) -> None:
-        with Session(db.engine) as session:
-            session.add(make_document("b.pdf", scanned_at=datetime(2026, 8, 21, 12, 0)))
-            session.add(make_document("a.pdf", scanned_at=datetime(2026, 8, 20, 12, 0)))
-            session.commit()
-
-        names = [item["original_filename"] for item in client.get("/api/v1/queue").json()["items"]]
-
-        assert names == ["a.pdf", "b.pdf"]
-
-    def test_skipped_ordered_by_skip_count(self, client: TestClient) -> None:
-        with Session(db.engine) as session:
-            for count in (3, 1, 2):
-                session.add(
-                    make_document(f"s{count}.pdf", status=DocumentStatus.skipped, skip_count=count)
-                )
-            session.commit()
-
-        names = [item["original_filename"] for item in client.get("/api/v1/queue").json()["items"]]
-
-        assert names == ["s1.pdf", "s2.pdf", "s3.pdf"]
-
-    def test_excludes_filed_documents(self, client: TestClient) -> None:
-        with Session(db.engine) as session:
-            session.add(make_document("moved.pdf", status=DocumentStatus.moved))
-            session.add(make_document("trashed.pdf", status=DocumentStatus.trashed))
-            session.add(make_document("pending.pdf"))
-            session.commit()
-
-        body = client.get("/api/v1/queue").json()
-
-        assert body["total_pending"] == 1
-        assert body["items"][0]["original_filename"] == "pending.pdf"
-
-    def test_total_pending_counts_beyond_the_page(self, client: TestClient) -> None:
-        with Session(db.engine) as session:
-            for i in range(5):
-                session.add(make_document(f"s{i}.pdf"))
-            session.commit()
-
-        body = client.get("/api/v1/queue?limit=2").json()
-
-        assert len(body["items"]) == 2
-        assert body["total_pending"] == 5
-
-    def test_queue_depth_matches_total_pending(self, client: TestClient) -> None:
-        """The outage banner and the queue screen must agree about how much work exists."""
+    def test_queue_depth_counts_the_open_groups(self, client: TestClient) -> None:
+        """The outage banner and the Inbox must agree about how much work exists."""
         with Session(db.engine) as session:
             session.add(make_document("a.pdf"))
             session.add(make_document("b.pdf", status=DocumentStatus.skipped, skip_count=1))
+            session.add(make_document("p.pdf", proposal_status=ProposalStatus.pending))
             session.add(make_document("c.pdf", status=DocumentStatus.moved))
             session.commit()
 
-        assert (
-            client.get("/api/v1/health").json()["queue_depth"]
-            == client.get("/api/v1/queue").json()["total_pending"]
+        counts = client.get("/api/v1/inbox").json()["counts"]
+        assert client.get("/api/v1/health").json()["queue_depth"] == (
+            counts["analyse"] + counts["ready"]
         )
 
 

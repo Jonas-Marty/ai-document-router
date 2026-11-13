@@ -16,17 +16,15 @@ import { relativeTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { ConfidenceBadge, isLowConfidence } from "./ConfidenceBadge";
 import { ExtractedText } from "./ExtractedText";
-import { ModelChip, ModelHint } from "./ModelChip";
-import { PromptDetails } from "./PromptDetails";
-import { ReasoningBlock } from "./ReasoningBlock";
 import { effectiveName, type ReviewFormValues, rememberPrompts } from "./reviewFormSchema";
 import { SiblingList } from "./SiblingList";
-import { TokenUsage } from "./TokenUsage";
 
 export interface ReviewFormProps {
   document: Document;
   folderContext: ReturnType<typeof useFolderContext>;
   onChooseFolder: () => void;
+  /** SPEC 8.3 item 5, placed between the folder and the siblings. */
+  producedBy?: React.ReactNode;
 }
 
 function compileFilenamePattern(pattern: string | null): RegExp | null {
@@ -94,9 +92,14 @@ function RememberCheckbox({
   );
 }
 
-/** SPEC 8.3's field order 1-6 (order 7, the actions, lives in the sticky/inline action bar
+/** SPEC 8.3's field order 1-6 (item 5 comes in as `producedBy`) (order 7, the actions, lives in the sticky/inline action bar
  * that shares this form's react-hook-form instance via FormProvider -- see ReviewPage). */
-export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFormProps) {
+export function ReviewForm({
+  document,
+  folderContext,
+  onChooseFolder,
+  producedBy,
+}: ReviewFormProps) {
   const {
     register,
     watch,
@@ -128,10 +131,7 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         {document.proposal ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <ConfidenceBadge score={document.proposal.confidence_score} />
-            <ModelChip proposal={document.proposal} />
-          </div>
+          <ConfidenceBadge score={document.proposal.confidence_score} />
         ) : document.proposal_error ? (
           <p className="text-sm text-destructive">{document.proposal_error}</p>
         ) : (
@@ -284,12 +284,8 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
         )}
       </div>
 
-      {document.proposal && <ReasoningBlock text={document.proposal.reasoning_text} />}
-      {document.proposal && <ModelHint proposal={document.proposal} />}
-      {document.proposal && <PromptDetails proposal={document.proposal} />}
+      {producedBy}
       <ExtractedText document={document} />
-      {/* Outside the proposal check: a failed analysis spent tokens too. */}
-      <TokenUsage usage={document.analysis_usage} />
 
       <div className="space-y-1.5">
         <Label>Files already in this folder</Label>

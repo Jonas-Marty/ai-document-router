@@ -1196,3 +1196,23 @@ meaningful. One line of "why" each; not a full ADR log.
   review screen; they offer revert instead.
 - The History page and `GET /history` are gone; `/history` redirects to the Done tab, and
   revert keeps its route.
+
+## Redesign milestone 6 — Review in three panes
+
+- The review list is `GET /inbox?group=ready` with filters of its own, separate from the
+  Inbox's. The URL is the only pointer to the current document: moving on is a navigation
+  made in a mutation's success handler, so a failed approve cannot move it and a refetch
+  that reorders the list cannot either. `useReviewQueue` and its pinning are gone with it.
+- The next row is picked when the action starts, while the current row is still in the
+  list to count from; approve, trash and re-analyse then drop the row from every cached
+  Inbox page so it leaves at once.
+- Three panes from 1280 px, with the list fixed at 320 px. Below that the list opens in a
+  sheet from a "Ready (n)" button: preview, form and a list do not fit at 1024 px.
+- `GET /queue` is removed; nothing uses it. Retry failed moved to the Inbox's To analyse
+  tab, shown only while a card there has failed.
+- Later is `L` (it was `S` for skip); the action bar's icon is a clock.
+- Re-analyse on a document opened from outside the list (a failed one, from To analyse)
+  keeps it on screen rather than moving on: the person came to watch that document. Its
+  button reads "Try again" while the analysis has failed.
+- Compare methods stays in the Produced by block until the Lab replaces it in milestone 7.
+  "Add to a Lab test set" waits for milestone 7 too: test sets do not exist yet.

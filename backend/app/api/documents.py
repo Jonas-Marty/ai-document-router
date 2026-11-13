@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from urllib.parse import quote
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.deps import AppSettingsDep, CurrentUserDep, SessionDep, WebDavDep
@@ -15,7 +15,6 @@ from app.schemas import (
     HistoryEntryRead,
     MethodResultRead,
     NameFieldsBody,
-    QueueResponse,
     RegenerateRequest,
     RetriedResponse,
     RoutedResponse,
@@ -27,14 +26,6 @@ from app.services import router as router_service
 from app.services.audit import Actor
 
 router = APIRouter()
-
-
-@router.get("/queue")
-def read_queue(
-    session: SessionDep, user: CurrentUserDep, limit: int = Query(20, ge=1, le=100)
-) -> QueueResponse:
-    items, total = documents_service.queue(session, user.id, limit)
-    return QueueResponse(items=items, total_pending=total)
 
 
 @router.post("/documents/retry-failed")

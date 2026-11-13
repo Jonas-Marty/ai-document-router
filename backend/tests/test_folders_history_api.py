@@ -462,9 +462,9 @@ class TestHistory:
         assert body["history_entry"]["revertible"] is False
         assert fake.moves == [(f"{ROOT}/Filed.pdf", f"{WATCH}/scan.pdf")]
 
-        # Back in the queue, which is the point of revert.
-        queue = configured.get("/api/v1/queue").json()
-        assert [i["id"] for i in queue["items"]] == [document_id]
+        # Open again, which is the point of revert.
+        ready = configured.get("/api/v1/inbox?group=ready").json()
+        assert [i["id"] for i in ready["items"]] == [document_id]
 
     def test_reverting_twice_is_409(self, configured: TestClient, fake: FakeWebDav) -> None:
         document_id = make_document()

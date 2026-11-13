@@ -82,11 +82,6 @@ export interface UsageSummary {
   total_tokens: number;
 }
 
-export interface QueueResponse {
-  items: Document[];
-  total_pending: number;
-}
-
 export interface RetriedResponse {
   retried: number;
 }

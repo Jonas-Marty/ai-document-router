@@ -43,11 +43,11 @@ class TestRequestId:
     def test_the_request_line_carries_the_id(
         self, client: TestClient, context_caplog: pytest.LogCaptureFixture
     ) -> None:
-        client.get("/api/v1/queue", headers={"X-Request-ID": "trace-456"})
+        client.get("/api/v1/inbox", headers={"X-Request-ID": "trace-456"})
 
         lines = [r for r in context_caplog.records if r.name == "app.request"]
         assert any(
-            "GET /api/v1/queue 200" in r.getMessage() and r.context == "req=trace-456"  # type: ignore[attr-defined]
+            "GET /api/v1/inbox 200" in r.getMessage() and r.context == "req=trace-456"  # type: ignore[attr-defined]
             for r in lines
         )
 

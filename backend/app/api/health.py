@@ -39,9 +39,8 @@ def get_health(
 
     app_settings = settings_service.get_settings(session, user.id)
     connection = settings_service.connection_for(app_settings)
-    # Same definition as /queue's total_pending, imported rather than restated: if the
-    # two diverged, the outage banner and the queue screen would disagree about how
-    # much work is waiting.
+    # Every open document: the Inbox's To analyse and Ready groups together. QUEUED_STATUSES
+    # is imported rather than restated so the two cannot disagree about what is waiting.
     queue_depth = session.exec(
         select(func.count())
         .select_from(Document)

@@ -1,13 +1,31 @@
-import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { apiClient } from "@/services/api/client";
-import type { ApproveRequest, QueueResponse, RegenerateChoice } from "@/services/api/types";
+import type { ApproveRequest, InboxPage, RegenerateChoice } from "@/services/api/types";
 import { queryKeys } from "./queryKeys";
+
+// SPEC 8.8: often enough to follow a pending analysis step by step and show it as it lands.
+const PENDING_INTERVAL_MS = 3_000;
 
 export function useDocument(id: string | undefined) {
   return useQuery({
     queryKey: queryKeys.document(id ?? ""),
     queryFn: () => apiClient.getDocument(id as string),
     enabled: id !== undefined,
+    refetchInterval: (query) =>
+      query.state.data?.proposal_status === "pending" ? PENDING_INTERVAL_MS : false,
+  });
+}
+
+export function prefetchDocument(queryClient: QueryClient, id: string) {
+  return queryClient.prefetchQuery({
+    queryKey: queryKeys.document(id),
+    queryFn: () => apiClient.getDocument(id),
   });
 }
 
@@ -15,36 +33,33 @@ export function documentContentUrl(id: string): string {
   return apiClient.getDocumentContentUrl(id);
 }
 
-/** Approve and trash both remove their document from the queue for good. SPEC 8.8 wants that
- * reflected immediately ("drop from the cached queue, advance"), not after the next 60s
- * refetch lands -- so this patches the cache directly rather than only invalidating.
- * `total_pending` only drops if the document was actually in the cached list (it always was,
- * since only queued documents can be approved/trashed, but a stale cache is still a cache). */
-function removeFromQueueCache(queryClient: QueryClient, id: string) {
-  queryClient.setQueryData<QueueResponse>(queryKeys.queue, (old) => {
-    if (!old) return old;
-    if (!old.items.some((doc) => doc.id === id)) return old;
+/** Approve, trash and re-analyse all take a document out of Ready. SPEC 8.8 wants the row
+ * gone at once, not after the next refetch, so every cached Inbox page is patched; the
+ * invalidation that follows reconciles counts and order with the server. */
+function dropFromInbox(queryClient: QueryClient, id: string) {
+  queryClient.setQueriesData<InfiniteData<InboxPage>>({ queryKey: queryKeys.inbox }, (old) => {
+    if (!old?.pages.some((page) => page.items.some((card) => card.id === id))) return old;
     return {
-      items: old.items.filter((doc) => doc.id !== id),
-      total_pending: Math.max(0, old.total_pending - 1),
+      ...old,
+      pages: old.pages.map((page) => {
+        const items = page.items.filter((card) => card.id !== id);
+        return items.length === page.items.length
+          ? page
+          : { ...page, items, total: Math.max(0, page.total - 1) };
+      }),
     };
   });
 }
 
-/** Approve, skip, trash, and regenerate all change the queue, so each invalidates it as a
- * consistency backstop even where a cache patch already gave the UI its instant update --
- * once the background refetch lands it reconciles with the server's actual ordering. Approve
- * and trash also invalidate the Inbox, whose Done and Trashed tabs list history entries. */
 export function useApproveDocument() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: ApproveRequest }) =>
       apiClient.approveDocument(id, body),
     onSuccess: (response, { id }) => {
-      removeFromQueueCache(queryClient, id);
-      // A document opened on its own (/review/:id) is let go of by its new status.
+      dropFromInbox(queryClient, id);
+      // A document opened by its URL lets go by its new status.
       queryClient.setQueryData(queryKeys.document(id), response.document);
-      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
       queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
       // The approval may have taught a sender or an account (SPEC 6.3c).
       queryClient.invalidateQueries({ queryKey: queryKeys.knownSenders });
@@ -52,17 +67,14 @@ export function useApproveDocument() {
   });
 }
 
-/** No cache patch here, unlike approve/trash: a skipped document stays in the queue, just
- * reordered to the back (SPEC 5's skip_count ordering) -- reproducing that ordering
- * client-side would just be a second, divergence-prone copy of server logic. The caller
- * (ReviewPage) advances its own current-document pointer directly in this mutation's
- * per-call onSuccess; this hook-level one only keeps the cache eventually consistent. */
+/** Later keeps the row in Ready, only marked, so there is nothing to patch: the refetch
+ * brings the mark. The caller moves on by itself. */
 export function useSkipDocument() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiClient.skipDocument(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
+    onSuccess: (document, id) => {
+      queryClient.setQueryData(queryKeys.document(id), document);
       queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });
@@ -73,9 +85,8 @@ export function useTrashDocument() {
   return useMutation({
     mutationFn: (id: string) => apiClient.trashDocument(id),
     onSuccess: (response, id) => {
-      removeFromQueueCache(queryClient, id);
+      dropFromInbox(queryClient, id);
       queryClient.setQueryData(queryKeys.document(id), response.document);
-      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
       queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });
@@ -90,10 +101,7 @@ export function useRetryFailedProposals() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiClient.retryFailedProposals(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
-      queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.inbox }),
   });
 }
 
@@ -113,9 +121,9 @@ export function useRegenerateDocument() {
   return useMutation({
     mutationFn: ({ id, choice }: { id: string; choice?: RegenerateChoice }) =>
       apiClient.regenerateDocument(id, choice),
-    onSuccess: (_document, { id }) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.document(id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.queue });
+    onSuccess: (document, { id }) => {
+      dropFromInbox(queryClient, id);
+      queryClient.setQueryData(queryKeys.document(id), document);
       queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
     },
   });

@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 
 const SHORTCUTS: [string, string][] = [
   ["⌘/Ctrl + Enter", "Approve & move"],
-  ["S", "Skip for now"],
+  ["L", "Later"],
   ["F", "Open folder picker"],
   ["N", "Focus file name"],
   ["← / →", "Previous / next page"],

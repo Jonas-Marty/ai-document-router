@@ -1,24 +1,38 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Configuration, Document, FolderContext, Settings } from "@/services/api/types";
+import { ApiError } from "@/services/api/errors";
+import type {
+  Configuration,
+  Document,
+  FolderContext,
+  InboxCard,
+  InboxPage,
+  Settings,
+} from "@/services/api/types";
 import ReviewPage from "./ReviewPage";
 
 vi.mock("@/services/api/client", () => ({
   apiClient: {
-    getQueue: vi.fn(),
+    getInbox: vi.fn(),
+    getDocument: vi.fn(),
+    getThumbnailUrl: (id: string) => `/thumb/${id}`,
     getFolderContext: vi.fn(),
     getSettings: vi.fn(),
     getDocumentContentUrl: (id: string) => `/api/v1/documents/${id}/content`,
-    retryFailedProposals: vi.fn(),
+    approveDocument: vi.fn(),
+    skipDocument: vi.fn(),
+    trashDocument: vi.fn(),
     compareDocument: vi.fn(),
     regenerateDocument: vi.fn(),
     listConfigurations: vi.fn(),
   },
 }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+import { toast } from "sonner";
 import { apiClient } from "@/services/api/client";
 
 function configuration(id: string, name: string, isDefault: boolean): Configuration {
@@ -103,62 +117,252 @@ const FOLDER_CONTEXT: FolderContext = {
   filename_collision: false,
 };
 
-function renderReview(items: Document[], totalPending = items.length) {
-  vi.mocked(apiClient.getQueue).mockResolvedValue({ items, total_pending: totalPending });
+function cardOf(document: Document): InboxCard {
+  return {
+    id: document.id,
+    original_filename: document.original_filename,
+    name: document.proposal ? `${document.proposal.suggested_name}.pdf` : null,
+    folder: document.proposal?.target_folder_path ?? null,
+    sender: null,
+    document_date: null,
+    scanned_at: document.scanned_at,
+    configuration_name: null,
+    proposal_status: document.proposal_status,
+    later: document.status === "skipped",
+    flags: [],
+    analysis_stage: null,
+    waiting_reason: null,
+    error: null,
+    history_entry_id: null,
+    revertible: false,
+    processed_at: null,
+  };
+}
+
+function pageOf(list: Document[]): InboxPage {
+  return {
+    items: list.map(cardOf),
+    total: list.length,
+    counts: { analyse: 0, ready: list.length, done: 0, trashed: 0 },
+    senders: [],
+    folders: [],
+  };
+}
+
+function Where() {
+  return <output aria-label="Location">{useLocation().pathname}</output>;
+}
+
+/** `ready` is the list; `extra` are documents only reachable by URL (To analyse, filed). */
+function renderReview(ready: Document[], { path = "/review", extra = [] as Document[] } = {}) {
+  const byId = new Map([...ready, ...extra].map((d) => [d.id, d]));
+  vi.mocked(apiClient.getInbox).mockResolvedValue(pageOf(ready));
+  vi.mocked(apiClient.getDocument).mockImplementation(async (id) => {
+    const found = byId.get(id);
+    if (!found) throw new ApiError("not_found", "That document no longer exists.", 404);
+    return found;
+  });
   vi.mocked(apiClient.getSettings).mockResolvedValue(SETTINGS);
   vi.mocked(apiClient.getFolderContext).mockResolvedValue(FOLDER_CONTEXT);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <ReviewPage />
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/review/:id?" element={<ReviewPage />} />
+        </Routes>
+        <Where />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe("ReviewPage queue overview", () => {
+function location() {
+  return screen.getByRole("status", { name: "Location" });
+}
+
+const SWISSCOM = doc("1", "2026.05.18 Swisscom Rechnung");
+const SAC = doc("2", "2026.05.19 SAC Spendenbescheinigung");
+const HELVETIA = doc("3", "2026.04.16 Helvetia Police");
+
+function filed(document: Document): Document {
+  return { ...document, status: "moved" };
+}
+
+function routed(document: Document) {
+  return {
+    document: filed(document),
+    history_entry: {
+      id: `h${document.id}`,
+      document_id: document.id,
+      original_filename: document.original_filename,
+      final_filename: "x.pdf",
+      final_folder_path: "/Documents/Finance",
+      action: "moved" as const,
+      was_overridden: false,
+      processed_at: "2026-05-18T10:00:00Z",
+      revertible: true,
+    },
+  };
+}
+
+describe("ReviewPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
-  it("says how many documents are still open without opening anything", async () => {
-    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")], 12);
+  it("opens the first ready row and puts it in the URL", async () => {
+    renderReview([SWISSCOM, SAC]);
 
-    const trigger = await screen.findByRole("button", { name: /queue/i });
-    expect(trigger).toHaveTextContent("12");
+    expect(await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung")).toBeInTheDocument();
+    await waitFor(() => expect(location()).toHaveTextContent("/review/1"));
+    expect(screen.getByRole("button", { name: /ready/i })).toHaveTextContent("2");
+    expect(apiClient.getInbox).toHaveBeenCalledWith(expect.objectContaining({ group: "ready" }));
   });
 
-  it("offers no queue control when nothing is waiting", async () => {
-    renderReview([], 0);
+  it("says there is nothing to review and leads back to the Inbox", async () => {
+    renderReview([]);
 
-    expect(await screen.findByText("Queue's clear.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^queue/i })).not.toBeInTheDocument();
+    expect(await screen.findByText("Nothing to review.")).toBeInTheDocument();
+    expect(screen.getByText("New scans appear in the Inbox automatically.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to the Inbox" })).toBeInTheDocument();
   });
 
-  it("retries every failed proposal at once, not one document at a time", async () => {
-    // The whole point: the poller never revisits a failed proposal, so a configuration fix
-    // in Settings cannot heal a queue that already failed against the old configuration.
-    renderReview([
-      doc("1", "2026.05.18 Swisscom Rechnung"),
-      doc("2", "", {
-        proposal_status: "failed",
-        proposal: null,
-        proposal_error: "No allowed folders are configured yet — set them in Settings.",
-      }),
-    ]);
-    vi.mocked(apiClient.retryFailedProposals).mockResolvedValue({ retried: 2 });
+  it("opens the row picked in the list, marks it current and closes the list", async () => {
+    renderReview([SWISSCOM, SAC]);
+    const user = userEvent.setup();
+    await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung");
+
+    await user.click(screen.getByRole("button", { name: /ready/i }));
+    const list = await screen.findByRole("list", { name: "Ready for review" });
+    expect(within(list).getByRole("link", { name: /Swisscom/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await user.click(within(list).getByRole("link", { name: /SAC/ }));
+
+    expect(
+      await screen.findByDisplayValue("2026.05.19 SAC Spendenbescheinigung"),
+    ).toBeInTheDocument();
+    expect(location()).toHaveTextContent("/review/2");
+    await waitFor(() =>
+      expect(screen.queryByRole("list", { name: "Ready for review" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("moves to the row below after an approve", async () => {
+    renderReview([SWISSCOM, SAC, HELVETIA], { path: "/review/2" });
+    vi.mocked(apiClient.approveDocument).mockResolvedValue(routed(SAC));
+    const user = userEvent.setup();
+    await screen.findByDisplayValue("2026.05.19 SAC Spendenbescheinigung");
+
+    await user.click(screen.getByRole("button", { name: /approve & move/i }));
+
+    await waitFor(() => expect(location()).toHaveTextContent("/review/3"));
+    expect(await screen.findByDisplayValue("2026.04.16 Helvetia Police")).toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith("Moved to /Documents/Finance");
+  });
+
+  it("stays on the document with the edits kept when an approve fails", async () => {
+    renderReview([SWISSCOM, SAC]);
+    vi.mocked(apiClient.approveDocument).mockRejectedValue(
+      new ApiError("collision", "A file with that name already exists.", 409),
+    );
+    const user = userEvent.setup();
+    const name = await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung");
+    await waitFor(() => expect(location()).toHaveTextContent("/review/1"));
+
+    await user.clear(name);
+    await user.type(name, "2026.05.18 Swisscom Mobile");
+    await user.click(screen.getByRole("button", { name: /approve & move/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A file with that name already exists.",
+    );
+    expect(location()).toHaveTextContent("/review/1");
+    expect(screen.getByDisplayValue("2026.05.18 Swisscom Mobile")).toBeInTheDocument();
+  });
+
+  it("puts the last row off and moves to the one above it", async () => {
+    renderReview([SWISSCOM, SAC], { path: "/review/2" });
+    vi.mocked(apiClient.skipDocument).mockResolvedValue({ ...SAC, status: "skipped" });
+    const user = userEvent.setup();
+    await screen.findByDisplayValue("2026.05.19 SAC Spendenbescheinigung");
+
+    await user.click(screen.getByRole("button", { name: "Later" }));
+
+    await waitFor(() => expect(apiClient.skipDocument).toHaveBeenCalledWith("2"));
+    await waitFor(() => expect(location()).toHaveTextContent("/review/1"));
+  });
+
+  it("trashes after confirming and moves on", async () => {
+    renderReview([SWISSCOM, SAC]);
+    vi.mocked(apiClient.trashDocument).mockResolvedValue(routed(SWISSCOM));
+    const user = userEvent.setup();
+    await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung");
+
+    await user.click(screen.getByRole("button", { name: "Move to trash" }));
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", { name: "Move to trash" }),
+    );
+
+    await waitFor(() => expect(location()).toHaveTextContent("/review/2"));
+  });
+
+  it("says when the document in the URL was filed meanwhile, and offers the list", async () => {
+    renderReview([SWISSCOM], { path: "/review/9", extra: [filed(doc("9", "Old"))] });
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: /queue/i }));
-    await user.click(await screen.findByRole("button", { name: /retry failed/i }));
+    expect(
+      await screen.findByText("This document has already been filed or trashed."),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review the next one" }));
 
-    await waitFor(() => expect(apiClient.retryFailedProposals).toHaveBeenCalled());
+    expect(await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung")).toBeInTheDocument();
+  });
+
+  it("re-analyses with the document's own configuration and moves on", async () => {
+    renderReview([SWISSCOM, SAC]);
+    vi.mocked(apiClient.regenerateDocument).mockResolvedValue({
+      ...SWISSCOM,
+      proposal_status: "pending",
+      proposal: null,
+    });
+    const user = userEvent.setup();
+    await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung");
+
+    const producedBy = screen.getByRole("region", { name: "Produced by" });
+    expect(producedBy).toHaveTextContent("test-model");
+    await user.click(within(producedBy).getByRole("button", { name: "Re-analyse" }));
+
+    await waitFor(() => expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1", undefined));
+    await waitFor(() => expect(location()).toHaveTextContent("/review/2"));
+  });
+
+  it("stays on a failed document opened from To analyse when it is tried again", async () => {
+    const broken = doc("7", "", {
+      proposal_status: "failed",
+      proposal: null,
+      proposal_error: "No text layer found.",
+    });
+    renderReview([SWISSCOM], { path: "/review/7", extra: [broken] });
+    vi.mocked(apiClient.regenerateDocument).mockResolvedValue({
+      ...broken,
+      proposal_status: "pending",
+      proposal_error: null,
+    });
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("No text layer found.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(apiClient.regenerateDocument).toHaveBeenCalledWith("7", undefined));
+    expect(location()).toHaveTextContent("/review/7");
   });
 
   it("fills the review form from the comparison method that was picked", async () => {
-    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    renderReview([SWISSCOM]);
     vi.mocked(apiClient.compareDocument).mockResolvedValue({
       results: [
         {
@@ -199,29 +403,8 @@ describe("ReviewPage queue overview", () => {
     expect(screen.getByDisplayValue("2026-04-16")).toBeInTheDocument();
   });
 
-  it("lists every open document and jumps to the one that is picked", async () => {
-    renderReview([
-      doc("1", "2026.05.18 Swisscom Rechnung"),
-      doc("2", "2026.05.19 SAC Spendenbescheinigung"),
-    ]);
-    const user = userEvent.setup();
-
-    // The review form starts on the first document.
-    expect(await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /queue/i }));
-    await user.click(
-      await screen.findByRole("button", { name: /2026.05.19 SAC Spendenbescheinigung/ }),
-    );
-
-    // Picking closes the panel and the form is now editing the document that was picked.
-    await waitFor(() =>
-      expect(screen.getByDisplayValue("2026.05.19 SAC Spendenbescheinigung")).toBeInTheDocument(),
-    );
-  });
-
   it("shows the last comparison when reopened instead of paying for another run", async () => {
-    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    renderReview([SWISSCOM]);
     vi.mocked(apiClient.compareDocument).mockResolvedValue({ results: [] });
     const user = userEvent.setup();
 
@@ -236,22 +419,26 @@ describe("ReviewPage queue overview", () => {
   });
 
   it("says which step the analysis is on while the proposal is being made", async () => {
-    renderReview([
-      doc("1", "scan.pdf", {
-        proposal_status: "pending",
-        proposal: null,
-        analysis_stage: "Reading the document with Jonas-PC · chandra-ocr-2…",
-      }),
-    ]);
+    // Opened from To analyse: outside the list, followed by its URL.
+    renderReview([SWISSCOM], {
+      path: "/review/5",
+      extra: [
+        doc("5", "scan.pdf", {
+          proposal_status: "pending",
+          proposal: null,
+          analysis_stage: "Reading the document with Jonas-PC · chandra-ocr-2…",
+        }),
+      ],
+    });
 
     expect(
       await screen.findByText("Reading the document with Jonas-PC · chandra-ocr-2…"),
     ).toBeInTheDocument();
   });
 
-  it("re-runs with the configuration picked in the dialog", async () => {
+  it("re-analyses with the configuration picked in the dialog", async () => {
     // After a configuration changed in the Lab, a ready proposal is stale.
-    renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
+    renderReview([SWISSCOM]);
     vi.mocked(apiClient.listConfigurations).mockResolvedValue([
       configuration("c1", "Daily", true),
       configuration("c2", "Careful", false),
@@ -261,7 +448,7 @@ describe("ReviewPage queue overview", () => {
     );
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: /re-run analysis/i }));
+    await user.click(await screen.findByRole("button", { name: /re-analyse with/i }));
     const dialog = await screen.findByRole("dialog");
 
     // Starts on the default, which this document follows, so confirming alone repeats it.
@@ -287,7 +474,7 @@ describe("ReviewPage queue overview", () => {
     ]);
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("button", { name: /re-run analysis/i }));
+    await user.click(await screen.findByRole("button", { name: /re-analyse with/i }));
     const dialog = await screen.findByRole("dialog");
 
     await waitFor(() =>
@@ -298,13 +485,16 @@ describe("ReviewPage queue overview", () => {
   });
 
   it("says why a document is waiting rather than showing it as in progress", async () => {
-    renderReview([
-      doc("1", "unused", {
-        proposal_status: "pending",
-        proposal: null,
-        waiting_reason: "Waiting for Tower to read",
-      }),
-    ]);
+    renderReview([], {
+      path: "/review/1",
+      extra: [
+        doc("1", "unused", {
+          proposal_status: "pending",
+          proposal: null,
+          waiting_reason: "Waiting for Tower to read",
+        }),
+      ],
+    });
 
     expect(await screen.findAllByText("Waiting for Tower to read")).not.toHaveLength(0);
   });

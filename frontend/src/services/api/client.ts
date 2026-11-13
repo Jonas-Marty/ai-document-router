@@ -35,7 +35,6 @@ import type {
   KnownSenderWrite,
   NextcloudConnection,
   NextcloudWrite,
-  QueueResponse,
   RegenerateChoice,
   RetriedResponse,
   RevertResponse,
@@ -49,7 +48,6 @@ import type {
 export interface ApiClient {
   getHealth(): Promise<HealthResponse>;
 
-  getQueue(limit?: number): Promise<QueueResponse>;
   getDocument(id: string): Promise<Document>;
   /** Not a fetch: the content endpoint streams bytes, so this just builds the URL for a
    * viewer (react-pdf, <img>) to load directly. */
@@ -117,10 +115,6 @@ const logger = createLogger("api");
 export class HttpApiClient implements ApiClient {
   getHealth(): Promise<HealthResponse> {
     return this.request<HealthResponse>("GET", "/health");
-  }
-
-  getQueue(limit?: number): Promise<QueueResponse> {
-    return this.request<QueueResponse>("GET", `/queue${query({ limit })}`);
   }
 
   getDocument(id: string): Promise<Document> {

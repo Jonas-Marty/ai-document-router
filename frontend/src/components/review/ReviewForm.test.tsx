@@ -131,45 +131,6 @@ describe("ReviewForm", () => {
     expect(screen.getByText("/Documents/Finance")).toBeInTheDocument();
   });
 
-  it("names the connection and model, and the configuration and reading behind them", async () => {
-    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
-    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
-    const proposal = {
-      ...baseDocument.proposal,
-      connection_name: "Infomaniak",
-      configuration_name: "Careful",
-      reading_label: "Text layer",
-    };
-    render(<Harness document={{ ...baseDocument, proposal } as Document} />);
-
-    expect(screen.getByText("Infomaniak · test-model")).toBeInTheDocument();
-    expect(screen.getByText("Configuration “Careful” · read with Text layer")).toBeInTheDocument();
-  });
-
-  it("says nothing about a configuration for a proposal from before them", async () => {
-    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
-    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
-    render(<Harness document={baseDocument} />);
-
-    expect(screen.queryByText(/Configuration “/)).not.toBeInTheDocument();
-  });
-
-  it("reveals what was sent to the AI only once asked, and hides it again on request", async () => {
-    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
-    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
-    const user = userEvent.setup();
-    render(<Harness document={baseDocument} />);
-
-    expect(screen.queryByText("You file scanned documents.")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /show what was sent to the ai/i }));
-    expect(screen.getByText("You file scanned documents.")).toBeInTheDocument();
-    expect(screen.getByText(/Folders available \(choose exactly one\):/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /hide what was sent to the ai/i }));
-    expect(screen.queryByText("You file scanned documents.")).not.toBeInTheDocument();
-  });
-
   it("shows the text filing read, and what read it, only once asked", async () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
@@ -195,37 +156,6 @@ describe("ReviewForm", () => {
     render(<Harness document={baseDocument} />);
 
     expect(screen.queryByRole("button", { name: /text filing read/i })).not.toBeInTheDocument();
-  });
-
-  it("explains when the document-specific prompt wasn't recorded for an older proposal", async () => {
-    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
-    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
-    const user = userEvent.setup();
-    render(
-      <Harness
-        document={{
-          ...baseDocument,
-          proposal: {
-            suggested_name: "2026.05.18 Test Invoice",
-            fields: null,
-            target_folder_path: "/Documents/Finance",
-            document_date: "2026-05-18",
-            confidence_score: 0.92,
-            reasoning_text: "Looks like an invoice.",
-            model_name: "test-model",
-            connection_name: null,
-            configuration_name: null,
-            reading_label: null,
-            prompt_text: null,
-            system_prompt: "You file scanned documents.",
-          },
-        }}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /show what was sent to the ai/i }));
-
-    expect(screen.getByText(/wasn't recorded for this proposal/i)).toBeInTheDocument();
   });
 
   it("shows the SPEC 7.4 low-confidence banner below the 0.60 threshold", async () => {
@@ -271,34 +201,6 @@ describe("ReviewForm", () => {
     // SPEC 8.8: "full manual approvability" -- fields are present and editable even without
     // a proposal.
     expect(screen.getByLabelText(/file name/i)).toBeEnabled();
-  });
-
-  it("shows what a failed analysis cost, since it spent tokens without a proposal", () => {
-    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
-    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
-    const failed: Document = {
-      ...baseDocument,
-      proposal_status: "failed",
-      proposal: null,
-      proposal_error: "The model chose '/Elsewhere', which is outside your folders.",
-      analysis_usage: {
-        extraction: null,
-        filing: {
-          model_label: "Infomaniak · gpt-4o",
-          prompt_tokens: 1150,
-          completion_tokens: 58,
-          total_tokens: 1208,
-          calls: 1,
-          unreported_calls: 0,
-        },
-        total_tokens: 1208,
-      },
-    };
-    render(<Harness document={failed} />);
-
-    expect(screen.getByText("Tokens").closest("summary")).toHaveTextContent(
-      "Tokens · filing 1.2K · total 1.2K",
-    );
   });
 
   it("says a searchable copy will be filed when one is ready, and stays quiet otherwise", async () => {

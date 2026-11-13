@@ -1,6 +1,5 @@
-"""Reading documents and the review queue."""
+"""Reading documents and asking for a fresh analysis."""
 
-from sqlalchemy import case, func
 from sqlmodel import Session, select
 
 from app.models import (
@@ -16,14 +15,6 @@ from app.schemas import AIProposalRead, DocumentRead, DocumentReadingRead, NameF
 from app.services import ai, audit, configurations, naming, progress
 from app.services.audit import Actor
 from app.services.errors import NotFoundError
-
-# SPEC 5: pending first by scanned_at, then skipped by skip_count then scanned_at. Written
-# as an explicit CASE rather than ordering on the status column -- that happens to work today
-# only because "pending" sorts before "skipped" alphabetically, which is luck, not intent.
-_STATUS_RANK = case(
-    (Document.status == DocumentStatus.pending, 0),  # type: ignore[arg-type]
-    else_=1,
-)
 
 QUEUED_STATUSES = (DocumentStatus.pending, DocumentStatus.skipped)
 
@@ -161,23 +152,3 @@ def retry_failed_proposals(session: Session, user_id: str, *, actor: Actor) -> i
     )
     session.commit()
     return len(failed)
-
-
-def queue(session: Session, user_id: str, limit: int = 20) -> tuple[list[DocumentRead], int]:
-    """One user's review queue in SPEC 5 order, plus how many of their documents wait."""
-    documents = session.exec(
-        select(Document)
-        .where(Document.user_id == user_id)
-        .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
-        .order_by(_STATUS_RANK, Document.skip_count, Document.scanned_at)  # type: ignore[arg-type]
-        .limit(limit)
-    ).all()
-
-    total = session.exec(
-        select(func.count())
-        .select_from(Document)
-        .where(Document.user_id == user_id)
-        .where(Document.status.in_(QUEUED_STATUSES))  # type: ignore[attr-defined]
-    ).one()
-
-    return [to_read_schema(session, document) for document in documents], int(total)

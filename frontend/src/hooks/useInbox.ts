@@ -38,14 +38,11 @@ export function useInbox(filters: InboxFilters) {
   });
 }
 
-/** Anything that moves a document between groups invalidates every Inbox page and the
- * review queue: which page a card was on is not worth tracking. */
+/** Anything that moves a document between groups invalidates every Inbox page, the review
+ * list among them: which page a card was on is not worth tracking. */
 function useInvalidateDocuments() {
   const queryClient = useQueryClient();
-  return () => {
-    queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
-    queryClient.invalidateQueries({ queryKey: queryKeys.queue });
-  };
+  return () => queryClient.invalidateQueries({ queryKey: queryKeys.inbox });
 }
 
 export function useAnalyseDocuments() {

@@ -10,10 +10,11 @@ import type { DesktopDocumentPaneHandle } from "@/components/review/DesktopDocum
 import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
 import { DocumentViewer } from "@/components/review/DocumentViewer";
 import { MethodComparison } from "@/components/review/MethodComparison";
-import { QueuePanel } from "@/components/review/QueuePanel";
+import { ProducedBy } from "@/components/review/ProducedBy";
 import { RerunDialog } from "@/components/review/RerunDialog";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
 import { ReviewForm } from "@/components/review/ReviewForm";
+import { ReviewList } from "@/components/review/ReviewList";
 import {
   approveRequestFor,
   effectiveName,
@@ -26,116 +27,143 @@ import { ShortcutCheatSheet } from "@/components/review/ShortcutCheatSheet";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useIsDesktop } from "@/hooks/useBreakpoint";
+import { useIsDesktop, useIsWide } from "@/hooks/useBreakpoint";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
-  documentContentUrl,
   useApproveDocument,
   useCompareDocument,
   useRegenerateDocument,
-  useRetryFailedProposals,
   useSkipDocument,
   useTrashDocument,
 } from "@/hooks/useDocument";
 import { useFolderContext } from "@/hooks/useFolders";
 import { useKnowledge, useKnownSenders } from "@/hooks/useKnowledge";
-import { useReviewQueue } from "@/hooks/useReviewQueue";
+import { useReviewList } from "@/hooks/useReviewList";
 import { useReviewShortcuts } from "@/hooks/useReviewShortcuts";
 import { ApiError } from "@/services/api/errors";
 import type { Document } from "@/services/api/types";
 
+function isOpen(document: Document): boolean {
+  return document.status === "pending" || document.status === "skipped";
+}
+
 export default function ReviewPage() {
   const { id: requestedId } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const queue = useReviewQueue(requestedId);
-  const currentId = queue.currentDocument?.id;
+  const review = useReviewList(requestedId);
+  const isWide = useIsWide();
+  const [listOpen, setListOpen] = useState(false);
+  const { list, document, currentId } = review;
 
-  // SPEC 8.8: the URL follows the current document, so a reload or a shared link lands on
-  // it. Keyed on the document alone: the URL changing is the hook's input, not this one's.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: follows the document only
+  // SPEC 8.8: a reload or a shared link lands on the same document, so the URL names the
+  // current one as soon as there is one.
   useEffect(() => {
-    if (queue.isLoading || !currentId || currentId === requestedId) return;
-    navigate(`/review/${currentId}`, { replace: true });
-  }, [currentId, queue.isLoading]);
-  const [queueOpen, setQueueOpen] = useState(false);
-  const retryFailed = useRetryFailedProposals();
+    if (requestedId === undefined && currentId !== undefined) review.show(currentId);
+  }, [requestedId, currentId, review.show]);
 
-  function handleRetryFailed() {
-    retryFailed.mutate(undefined, {
-      // The count comes from the server, not from the visible rows: /queue is capped, so a
-      // backlog can hold failures this list never showed.
-      onSuccess: ({ retried }) =>
-        toast.success(
-          retried === 1
-            ? "Asked for 1 proposal again. It appears as the poller gets to it."
-            : `Asked for ${retried} proposals again. They appear as the poller gets to them.`,
-        ),
-      onError: (error) =>
-        toast.error(
-          error instanceof ApiError ? error.message : "Couldn't retry the failed proposals.",
-        ),
-    });
+  const firstId = review.cards.find((card) => card.id !== currentId)?.id;
+  let body: React.ReactNode;
+  if (list.isLoading || (currentId !== undefined && document.isLoading)) {
+    body = <ReviewSkeleton />;
+  } else if (currentId === undefined) {
+    body = list.isError ? (
+      <div className="p-4">
+        <ErrorState
+          message={list.error instanceof ApiError ? list.error.message : "Couldn't load the list."}
+          onRetry={() => list.refetch()}
+        />
+      </div>
+    ) : (
+      <div className="p-4">
+        <EmptyState
+          title={review.filters.filtered ? "Nothing matches these filters." : "Nothing to review."}
+          description="New scans appear in the Inbox automatically."
+          action={{ label: "Back to the Inbox", onClick: () => navigate("/") }}
+        />
+      </div>
+    );
+  } else if (document.isError || (document.data && !isOpen(document.data))) {
+    // SPEC 8.8: filed or trashed meanwhile -- in another tab, by another device -- or never
+    // the person's to see. A 404 answers both, and neither is worth more than this.
+    const gone =
+      document.isError && !(document.error instanceof ApiError && document.error.status === 404);
+    body = (
+      <div className="p-4">
+        {gone ? (
+          <ErrorState
+            message={
+              document.error instanceof ApiError
+                ? document.error.message
+                : "Couldn't load this document."
+            }
+            onRetry={() => document.refetch()}
+          />
+        ) : (
+          <EmptyState
+            title="This document has already been filed or trashed."
+            action={
+              firstId
+                ? { label: "Review the next one", onClick: () => review.show(firstId) }
+                : { label: "Back to the Inbox", onClick: () => navigate("/") }
+            }
+          />
+        )}
+      </div>
+    );
+  } else if (document.data) {
+    body = <DocumentReview key={document.data.id} document={document.data} review={review} />;
   }
 
   return (
-    <div className="mx-auto flex h-full max-w-6xl flex-col lg:max-w-none">
-      <div className="flex items-center justify-between gap-2 p-4 pb-0">
-        <h1 className="text-lg font-semibold">Review</h1>
-        {/* The count is the whole point of the control, so it is in the label rather than
-            behind the click: "what is still open?" is answered without opening anything. */}
-        {queue.totalPending > 0 && (
-          <Button variant="outline" size="sm" onClick={() => setQueueOpen(true)}>
-            <ListChecks className="size-4" aria-hidden="true" />
-            Queue
-            <span className="rounded bg-secondary px-1.5 py-0.5 text-xs font-medium tabular-nums text-secondary-foreground">
-              {queue.totalPending}
-            </span>
-          </Button>
-        )}
-      </div>
-      {queue.isLoading ? (
-        <QueueSkeleton />
-      ) : queue.isError ? (
-        <div className="p-4">
-          <ErrorState
-            message={
-              queue.error instanceof ApiError ? queue.error.message : "Couldn't load the queue."
-            }
-            onRetry={() => queue.refetch()}
-          />
-        </div>
-      ) : !queue.currentDocument ? (
-        <div className="p-4">
-          <EmptyState
-            title="Queue's clear."
-            description="New scans appear in the Inbox automatically."
-            action={{ label: "Back to the Inbox", onClick: () => navigate("/") }}
-          />
-        </div>
-      ) : (
-        <DocumentReview
-          key={queue.currentDocument.id}
-          document={queue.currentDocument}
-          nextDocument={queue.items.find((d) => d.id !== queue.currentDocument?.id)}
-          advancePast={queue.advancePast}
-        />
+    <div className="flex h-full min-h-0">
+      {isWide && (
+        <aside
+          aria-label="Ready for review"
+          className="flex w-80 shrink-0 flex-col border-r border-border"
+        >
+          <ReviewList review={review} />
+        </aside>
       )}
-      <QueuePanel
-        open={queueOpen}
-        onOpenChange={setQueueOpen}
-        items={queue.items}
-        totalPending={queue.totalPending}
-        currentId={queue.currentDocument?.id}
-        onSelect={queue.selectDocument}
-        onRetryFailed={handleRetryFailed}
-        isRetryingFailed={retryFailed.isPending}
-      />
+      <div className="mx-auto flex h-full min-w-0 max-w-6xl flex-1 flex-col lg:max-w-none">
+        <div className="flex items-center justify-between gap-2 p-4 pb-0">
+          <h1 className="text-lg font-semibold">Review</h1>
+          {/* The count is in the label rather than behind the click: "what is still open?"
+              is answered without opening anything. */}
+          {!isWide && (
+            <Button variant="outline" size="sm" onClick={() => setListOpen(true)}>
+              <ListChecks className="size-4" aria-hidden="true" />
+              Ready
+              <span className="rounded bg-secondary px-1.5 py-0.5 text-xs font-medium tabular-nums text-secondary-foreground">
+                {review.readyCount}
+              </span>
+            </Button>
+          )}
+        </div>
+        {body}
+      </div>
+      {!isWide && (
+        <Sheet open={listOpen} onOpenChange={setListOpen}>
+          <SheetContent
+            side="left"
+            className="flex flex-col gap-0 p-0 data-[side=left]:w-full data-[side=left]:sm:max-w-sm"
+            // Focusing the search box would raise the phone keyboard over the list.
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <SheetHeader className="p-4 pb-3">
+              <SheetTitle>Ready for review ({review.readyCount})</SheetTitle>
+            </SheetHeader>
+            {/* Closing on a pick: left open, the list would cover the document just chosen. */}
+            <ReviewList review={review} onPick={() => setListOpen(false)} />
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }
 
-function QueueSkeleton() {
+function ReviewSkeleton() {
   return (
     <div className="space-y-4 p-4" aria-busy="true">
       <Skeleton className="h-20 w-full" />
@@ -154,12 +182,10 @@ function QueueSkeleton() {
  * fighting stale state across a shared instance. */
 function DocumentReview({
   document,
-  nextDocument,
-  advancePast,
+  review,
 }: {
   document: Document;
-  nextDocument: Document | undefined;
-  advancePast: (id: string) => void;
+  review: ReturnType<typeof useReviewList>;
 }) {
   const isDesktop = useIsDesktop();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -198,14 +224,6 @@ function DocumentReview({
   const debouncedFilename = useDebouncedValue(`${name}${document.extension}`, 300);
   const folderContext = useFolderContext(debouncedFolderPath, debouncedFilename);
 
-  // SPEC 8.8: prefetch the next document's content in the background.
-  useEffect(() => {
-    if (!nextDocument) return;
-    const controller = new AbortController();
-    fetch(documentContentUrl(nextDocument.id), { signal: controller.signal }).catch(() => {});
-    return () => controller.abort();
-  }, [nextDocument]);
-
   const approveMutation = useApproveDocument();
   const skipMutation = useSkipDocument();
   const trashMutation = useTrashDocument();
@@ -222,8 +240,16 @@ function DocumentReview({
     }
   }
 
+  /** SPEC 8.8: on success the next row becomes current -- picked now, while this row is
+   * still in the list to count from. A failure never gets to `moveOn`. */
+  function moveOnFrom(id: string) {
+    const next = review.nextAfter(id);
+    return () => review.show(next);
+  }
+
   function handleApprove(values: ReviewFormValues) {
     setApproveError(null);
+    const moveOn = moveOnFrom(document.id);
     approveMutation.mutate(
       {
         id: document.id,
@@ -232,6 +258,7 @@ function DocumentReview({
       {
         onSuccess: (response) => {
           toast.success(`Moved to ${response.history_entry.final_folder_path}`);
+          moveOn();
         },
         onError: (error) => {
           const message =
@@ -244,22 +271,51 @@ function DocumentReview({
   }
   const submitApprove = methods.handleSubmit(handleApprove);
 
-  function handleSkip() {
+  function handleLater() {
+    const moveOn = moveOnFrom(document.id);
     skipMutation.mutate(document.id, {
-      onSuccess: () => advancePast(document.id),
+      onSuccess: moveOn,
       onError: (error) => {
-        toast.error(error instanceof ApiError ? error.message : "Couldn't skip this document.");
+        toast.error(error instanceof ApiError ? error.message : "Couldn't put this off.");
       },
     });
   }
 
   function handleTrash() {
+    const moveOn = moveOnFrom(document.id);
     trashMutation.mutate(document.id, {
-      onSuccess: () => toast.success("Moved to trash"),
+      onSuccess: () => {
+        toast.success("Moved to trash");
+        moveOn();
+      },
       onError: (error) => {
         toast.error(error instanceof ApiError ? error.message : "Couldn't trash this document.");
       },
     });
+  }
+
+  /** SPEC 8.8: the document goes back to To analyse and the next row becomes current. One
+   * opened from outside the list -- a failed analysis, from To analyse -- stays on screen
+   * instead: the person came to watch that one. */
+  function reanalyse(configurationId?: string) {
+    const moveOn = review.inList(document.id) ? moveOnFrom(document.id) : null;
+    regenerateMutation.mutate(
+      {
+        id: document.id,
+        choice: configurationId ? { configuration_id: configurationId } : undefined,
+      },
+      {
+        onSuccess: () => {
+          setRerunOpen(false);
+          moveOn?.();
+        },
+        onError: (error) => {
+          toast.error(
+            error instanceof ApiError ? error.message : "Couldn't ask for a new analysis.",
+          );
+        },
+      },
+    );
   }
 
   const isPendingProposal = document.proposal_status === "pending";
@@ -271,7 +327,7 @@ function DocumentReview({
   // fought by this global listener.
   useReviewShortcuts(isDesktop && !isPendingProposal && !pickerOpen && !cheatSheetOpen, {
     onApprove: () => canApprove && submitApprove(),
-    onSkip: handleSkip,
+    onLater: handleLater,
     onOpenFolderPicker: () => setPickerOpen(true),
     onFocusName: () => methods.setFocus(methods.getValues("handWritten") ? "name" : "sender"),
     onPrevPage: () => viewerRef.current?.prevPage(),
@@ -285,39 +341,16 @@ function DocumentReview({
         document={document}
         folderContext={folderContext}
         onChooseFolder={() => setPickerOpen(true)}
+        producedBy={
+          <ProducedBy
+            document={document}
+            isReanalysing={regenerateMutation.isPending}
+            onReanalyse={() => reanalyse()}
+            onReanalyseWith={() => setRerunOpen(true)}
+            onCompare={openComparison}
+          />
+        }
       />
-      <div className="flex flex-wrap items-center gap-4">
-        {/* Offered for a ready proposal too: after changing a configuration in the Lab, the
-            existing proposal is stale and this is how to get a fresh one. */}
-        <button
-          type="button"
-          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-          onClick={() => setRerunOpen(true)}
-          disabled={regenerateMutation.isPending}
-        >
-          {regenerateMutation.isPending ? "Re-running…" : "Re-run analysis"}
-        </button>
-        {document.proposal_status === "failed" && (
-          <button
-            type="button"
-            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-            onClick={() => regenerateMutation.mutate({ id: document.id })}
-            disabled={regenerateMutation.isPending}
-          >
-            Try again
-          </button>
-        )}
-        {/* Offered whatever the proposal status: the interesting question is often "could
-            something else have read this better", which a *successful* proposal raises just
-            as much as a failed one. */}
-        <button
-          type="button"
-          className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-          onClick={openComparison}
-        >
-          Compare methods
-        </button>
-      </div>
     </FormProvider>
   );
 
@@ -336,11 +369,11 @@ function DocumentReview({
     <ActionBar
       canApprove={canApprove}
       isApproving={approveMutation.isPending}
-      isSkipping={skipMutation.isPending}
+      isLater={skipMutation.isPending}
       isTrashing={trashMutation.isPending}
       approveError={approveError}
       onApprove={submitApprove}
-      onSkip={handleSkip}
+      onLater={handleLater}
       onTrash={handleTrash}
     />
   );
@@ -360,12 +393,7 @@ function DocumentReview({
         onOpenChange={setRerunOpen}
         isPending={regenerateMutation.isPending}
         currentConfigurationName={document.configuration_name}
-        onRun={(choice) =>
-          regenerateMutation.mutate(
-            { id: document.id, choice },
-            { onSuccess: () => setRerunOpen(false) },
-          )
-        }
+        onRun={(choice) => reanalyse(choice.configuration_id)}
       />
       <ShortcutCheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />
       <MethodComparison

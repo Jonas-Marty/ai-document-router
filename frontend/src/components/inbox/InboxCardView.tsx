@@ -20,12 +20,19 @@ export const FLAG_LABELS: Record<CheckFlag, string> = {
   name_taken: "Name taken",
 };
 
-function Thumbnail({ id }: { id: string }) {
+/** The first page, small. A document with no thumbnail (an image the server can't render,
+ * a file gone from the Nextcloud) shows a plain icon instead of a broken image. */
+export function Thumbnail({ id, className }: { id: string; className?: string }) {
   const [failed, setFailed] = useState(false);
   return (
-    <div className="flex aspect-[3/4] w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-muted sm:w-24">
+    <div
+      className={cn(
+        "flex aspect-[3/4] shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-muted",
+        className ?? "w-20 sm:w-24",
+      )}
+    >
       {failed ? (
-        <FileText className="size-8 text-muted-foreground" aria-hidden="true" />
+        <FileText className="size-1/2 max-h-8 max-w-8 text-muted-foreground" aria-hidden="true" />
       ) : (
         <img
           src={apiClient.getThumbnailUrl(id)}

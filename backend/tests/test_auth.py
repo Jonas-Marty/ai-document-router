@@ -177,7 +177,6 @@ def test_an_expired_session_is_rejected_and_cleaned_up(client: TestClient) -> No
     "method,path",
     [
         ("get", "/api/v1/settings"),
-        ("get", "/api/v1/queue"),
         ("get", "/api/v1/inbox"),
         ("get", "/api/v1/documents/x/thumbnail"),
         ("post", "/api/v1/documents/analyse"),

@@ -683,7 +683,6 @@ Base path `/api/v1`. JSON in, JSON out.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| GET | `/queue?limit=20` | — | `{ items: Document[], total_pending: number }` |
 | GET | `/inbox?group=&q=&sender=&folder=&sort=&offset=0&limit=48` | — | `InboxPage` (6.4b) — one group's cards with every group's count |
 | GET | `/documents/{id}` | — | `Document` |
 | GET | `/documents/{id}/thumbnail` | — | JPEG of the first page, at most 320 px wide, `Cache-Control: private, max-age=86400` |
@@ -695,7 +694,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
 | POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document three ways and files each with its configuration's filing step; stores nothing |
-| POST | `/documents/retry-failed` | — | `{ retried: number }` — every failed proposal still in the queue goes back to `pending` |
+| POST | `/documents/retry-failed` | — | `{ retried: number }` — every failed proposal of an open document goes back to `pending` |
 | POST | `/documents/{id}/regenerate` | `{ configuration_id? }` | `{ document }` — re-runs the analysis; with `configuration_id`, with that configuration from now on (the default's id clears the pick) |
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
 | POST | `/folders` | `{ parent_path, name }` | `FolderNode` |
@@ -738,9 +737,6 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/auth/logout` | — | 204, clears the cookie |
 | GET | `/auth/oidc/login` | — | 303 to the provider |
 | GET | `/auth/oidc/callback` | — | 303 back into the app, or to `/login?error=…` |
-
-**Queue ordering:** `pending` first by `scanned_at` ascending, then `skipped` by `skip_count`
-ascending, then `scanned_at`. A skipped document never reappears before an unskipped one.
 
 **Errors:** non-2xx returns `{ "error": { "code": string, "message": string } }`. `message`
 is written for a human and is displayed verbatim in the UI. Codes used:
@@ -1154,7 +1150,7 @@ needs WebDAV answers 409 `nextcloud_not_configured`, and the poller skips the us
 Stdlib `logging`, configured once in `main.py` at import from `LOG_LEVEL` and `LOG_FORMAT`
 (`text` for a terminal, `json` — one object per line — for a collector). uvicorn's own loggers
 share the handler; its access log is replaced by one line per request from
-`RequestLogMiddleware` (`GET /api/v1/queue 200 34ms`), with `/health` and `/metrics` at DEBUG.
+`RequestLogMiddleware` (`GET /api/v1/inbox 200 34ms`), with `/health` and `/metrics` at DEBUG.
 
 Every line carries a context: `req=<id>` inside a request (the `X-Request-ID`), `tick=<id>`
 inside a poller run, so one request's or one tick's lines can be pulled out together. An
@@ -1303,25 +1299,30 @@ and lets the outage banner speak — an unreachable backend must not look like a
 
 | | width | Review layout |
 |---|---|---|
-| Mobile | `< 768px` | single column, form-first, sticky bottom action bar |
-| Tablet | `768–1023px` | single column, larger preview, inline action buttons |
-| Desktop | `>= 1024px` | resizable horizontal split, default 55/45 |
+| Mobile | `< 768px` | single column, form-first, sticky bottom action bar; list in a sheet |
+| Tablet | `768–1023px` | single column, larger preview, inline action buttons; list in a sheet |
+| Desktop | `1024–1279px` | preview and form in a resizable split, default 55/45; list in a sheet |
+| Wide | `>= 1280px` | three panes: list (320 px), then preview and form in the split |
 
 Build mobile-first. Every screen must be usable one-handed on a phone.
 
 ### 8.3 Review — desktop
 
-Resizable split, min 30% per side, ratio persisted to localStorage.
+Three panes from 1280 px. Preview and form share a resizable split, min 30% per side, ratio
+persisted to localStorage; the list pane is fixed at 320 px.
 
-*Left:* document viewer. `react-pdf` continuous scroll with a toolbar — page indicator,
+*List:* the Ready for review group (6.4b) as compact rows — small thumbnail, name (the
+original while there is none), folder, "Later" and the check flags — with the Inbox's search,
+sender, folder and sort controls stacked above and `Load more` below. The current document's
+row is marked (`aria-current`); picking a row makes it current. Below 1280 px the same list
+opens in a sheet from a `Ready (n)` button in the Review header, and closes on a pick.
+
+*Preview:* document viewer. `react-pdf` continuous scroll with a toolbar — page indicator,
 prev/next, zoom out/in, fit width, rotate. Images use the same toolbar minus paging. Source
 filename and size shown above, muted.
 
-*Right:* review form, in this order —
-1. Confidence badge + relative scan time, and a chip saying what produced the proposal: the
-   configuration's name, with how the document was read and which connection · model filed it
-   on hover and in the expanded reading. A document picked for another configuration says
-   so while it waits.
+*Form:* in this order —
+1. Confidence badge + relative scan time.
 2. Document date (date input; required unless the name is hand-written).
 3. Name fields (7.1a): Sender and Title required, Account, Period and Number optional — each
    its own text input, on two columns from the `sm` breakpoint. Below them the assembled name
@@ -1336,15 +1337,18 @@ filename and size shown above, muted.
    "Remember 738.953-48.5800 for WIR Bank". Both start unticked and are sent with the
    approve; nothing is learned without them. Hidden for a hand-written name.
 4. Target folder — breadcrumb display + "Choose folder" button.
-5. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
+5. **Produced by** — a bordered block: the configuration's name, how the document was read,
+   and the connection · model that filed it; then `Re-analyse` (with the document's own
+   configuration) and `Re-analyse with…` (choose one, 8.8). Inside it, items 5a–5c.
+5a. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
    "Show more".
-5a. **What was sent to the AI** — collapsed by default behind a "Show what was sent to the
+5b. **What was sent to the AI** — collapsed by default behind a "Show what was sent to the
     AI" toggle. Expanded, it shows the fixed system instructions and the document-specific
     prompt (folder tree, sample filenames, naming hint, document text) that produced this
     proposal (6.3), each in its own scrollable monospace block. If the document-specific part
     wasn't recorded (a proposal from before this existed), say so instead of showing nothing.
     Lets someone judge a bad proposal and tune Settings instead of guessing.
-5b. **Token usage** — one muted line, `Tokens · extraction 3.4K · filing 1.2K · total 4.6K`,
+5c. **Token usage** — one muted line, `Tokens · extraction 3.4K · filing 1.2K · total 4.6K`,
     from `analysis_usage`, shown for failed analyses too. A `<details>` expands it to prompt +
     completion per task with the endpoint · model; `≥` and a note when a call didn't report
     usage. Nothing when no model was reached.
@@ -1352,7 +1356,7 @@ filename and size shown above, muted.
    Re-fetches with a 300 ms debounce whenever the target folder changes; it must always show
    the *currently selected* folder, not the AI's original suggestion. This block is the
    reason the app exists.
-7. Actions: `Approve & move` (primary) · `Skip for now` (secondary) · `Move to trash`
+7. Actions: `Approve & move` (primary) · `Later` (secondary) · `Move to trash`
    (destructive ghost).
 
 ### 8.4 Review — mobile
@@ -1364,7 +1368,7 @@ Single column, in this order:
 - The same form fields, full width, with larger touch targets (min 44 px).
 - Sibling files as a compact list rather than a table.
 - **Sticky bottom action bar**, safe-area padded: `Approve & move` full width primary, with
-  skip and trash as icon buttons beside it. Trash keeps its confirmation dialog.
+  Later and trash as icon buttons beside it. Trash keeps its confirmation dialog.
 - Folder picker opens as a **full-screen sheet**, not a modal dialog.
 - No keyboard shortcuts and no resizable split on mobile — do not render that machinery.
 
@@ -1399,6 +1403,8 @@ Trash confirms with the count. Results come back as a toast; the selection clear
 **Done and Trashed** cards show where the file went and a `Revert` button (confirm naming
 the file and its destination); not revertible shows it disabled with "Already reverted, or
 the file has moved."
+
+While any To analyse document has failed, that tab offers `Retry failed` (8.8).
 
 Empty states: To analyse "Nothing waiting for analysis." Ready "Nothing to review. New scans
 appear here automatically." with `Check for new documents`. Done "Nothing filed yet."
@@ -1441,46 +1447,43 @@ actually wanted. On a fetch error the reason shows inside the open dropdown; the
 configured model still appears as an option so a working setting is never blanked by a failed
 fetch. An endpoint that answers but lists nothing is not an error.
 
-### 8.8 Queue behaviour
+### 8.8 Review behaviour
 
-- Fetch `/queue` on load; current document is the first item.
-- `/review/:id` makes that document current, fetched on its own when it is not among the
-  queue's first page; the URL follows the current document. With nothing left it says so
-  and links back to the Inbox.
-- Prefetch the next document's content in the background.
-- Approve → mutation → on success: toast naming the destination, drop from the cached queue,
-  advance, reset the form. On failure: stay put, keep the user's edits, show an inline error
-  above the actions plus a toast. **Never advance on failure.**
-- Skip → to the back of the queue, advance immediately.
-- Trash → confirm → advance.
-- Empty queue: "Queue's clear. New scans appear in the Inbox automatically." plus a
-  `Back to the Inbox` button.
-- **Queue overview.** The Review header carries a `Queue` control labelled with the number of
-  documents still open, hidden when that is zero. It opens a panel — dialog on desktop,
-  full-height sheet on mobile — listing everything queued in the order the screen will reach
-  it, each row labelled with the proposed filename (the original only while there is no
-  proposal), its destination folder, and whether it is waiting on the AI, failed, or skipped.
-  Picking a row makes that document current and closes the panel; the queue is not reordered.
-  `/queue` is capped, so a backlog larger than the page says how many are behind the rows.
-  When any listed document has failed, the panel offers a bulk `Retry failed`, hitting
-  `/documents/retry-failed`. The poller never revisits a failed proposal on its own, so
-  without this a setting corrected after the fact cannot heal a queue that already failed
-  against the old one.
-- Refetch on a 60 s interval and on window refocus.
+- The list is `/inbox?group=ready` with the pane's search, filters and sort; the current
+  document is the one in the URL (`/review/:id`), else the list's first row. The URL names
+  any document, so one from To analyse opened from the Inbox shows here too, outside the
+  list, while it waits.
+- Prefetch the next row's document and content in the background.
+- Approve → on success: toast naming the destination, the row leaves the list, and the next
+  row becomes current — the one below, else the one above. On failure: stay put, keep the
+  user's edits, show an inline error above the actions plus a toast. **Never advance on
+  failure.**
+- Later → the document stays in Ready, marked; the next row becomes current.
+- Trash → confirm → the next row.
+- Re-analyse and Re-analyse with… → the document goes back to To analyse with its proposal
+  replaced when the new one arrives; edits made here are not kept. The next row becomes
+  current. Re-analyse with… asks which configuration to use, the one that produced the
+  proposal preselected; that choice stays with the document (6.3a).
+- With nothing left: "Nothing to review. New scans appear in the Inbox automatically." plus
+  a `Back to the Inbox` button.
+- A document named in the URL that has been filed or trashed meanwhile says so, with a button
+  to the list's first row.
+- The list refetches every 60 s and on window refocus, and every 3 s while anything is in To
+  analyse. The current document refetches every 3 s while its proposal is pending.
 - `proposal_status = "pending"`: form skeleton, actions disabled, and the document's
   `analysis_stage` while the poller is working on it — "Reading the document with Jonas-PC ·
   chandra-ocr-2…", "Choosing a name and folder with Infomaniak · …" — else its
   `waiting_reason` ("Read · waiting for Tower to file"), else "Waiting for the AI proposal."
-  The queue refetches every 3 s while any document is pending. Re-running an analysis, or
-  retrying failed ones, starts a poller tick at once instead of at the end of the interval.
-- `Re-run analysis` asks which configuration to use, the one that produced the proposal
-  preselected. Picking one sends `/regenerate` with its id.
 - `proposal_status = "failed"`: show `proposal_error`, empty but editable fields, a
   `Try again` button hitting `/regenerate`, and full manual approvability.
+- **Retry failed** lives on the Inbox's To analyse tab (8.6): a button shown while any
+  document there has failed, hitting `/documents/retry-failed`. The poller never revisits a
+  failed proposal on its own, so without it a setting corrected afterwards could not heal
+  documents that already failed against the old one.
 
 ### 8.9 Keyboard shortcuts (desktop only)
 
-`⌘/Ctrl+Enter` approve · `S` skip · `F` folder picker · `N` focus the first name field (the name itself when hand-written) · `←`/`→` page.
+`⌘/Ctrl+Enter` approve · `L` later · `F` folder picker · `N` focus the first name field (the name itself when hand-written) · `←`/`→` page.
 Ignored while an input is focused, except the ⌘ combo. `?` opens a cheat sheet.
 
 ### 8.10 Required states
@@ -1490,7 +1493,7 @@ with only a happy path.
 
 | Surface | Loading | Empty | Error |
 |---|---|---|---|
-| Queue / review | full skeleton | "Queue's clear" | error card + Try again |
+| Review | full skeleton | "Nothing to review" | error card + Try again |
 | Viewer | spinner over pane | — | "Couldn't load the file" + Retry |
 | Sibling files | 3 skeleton rows | "This folder is empty" / "will be created" | inline + Retry |
 | Folder tree | skeleton nodes | "No subfolders" | inline + Retry |

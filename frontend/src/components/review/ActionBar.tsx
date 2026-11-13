@@ -1,4 +1,4 @@
-import { Loader2, SkipForward, Trash2 } from "lucide-react";
+import { Clock, Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,15 +13,15 @@ import {
 export interface ActionBarProps {
   canApprove: boolean;
   isApproving: boolean;
-  isSkipping: boolean;
+  isLater: boolean;
   isTrashing: boolean;
   approveError: string | null;
   onApprove: () => void;
-  onSkip: () => void;
+  onLater: () => void;
   onTrash: () => void;
 }
 
-/** SPEC 8.4's sticky bottom action bar: full-width primary Approve, Skip and Trash as icon
+/** SPEC 8.4's sticky bottom action bar: full-width primary Approve, Later and Trash as icon
  * buttons beside it, safe-area padded. Trash keeps its confirmation dialog. SPEC 8.8: a
  * failed approve shows its error right here, above the actions, in addition to a toast --
  * the toast alone would be easy to miss/dismiss and this is the one place the user is
@@ -29,15 +29,15 @@ export interface ActionBarProps {
 export function ActionBar({
   canApprove,
   isApproving,
-  isSkipping,
+  isLater,
   isTrashing,
   approveError,
   onApprove,
-  onSkip,
+  onLater,
   onTrash,
 }: ActionBarProps) {
   const [confirmTrash, setConfirmTrash] = useState(false);
-  const busy = isApproving || isSkipping || isTrashing;
+  const busy = isApproving || isLater || isTrashing;
 
   return (
     <div className="sticky bottom-0 border-t border-border bg-background pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3">
@@ -56,10 +56,11 @@ export function ActionBar({
           size="icon"
           className="size-11 shrink-0"
           disabled={busy}
-          onClick={onSkip}
-          aria-label="Skip for now"
+          onClick={onLater}
+          aria-label="Later"
+          title="Later — keep it in Ready, marked"
         >
-          {isSkipping ? <Loader2 className="animate-spin" /> : <SkipForward />}
+          {isLater ? <Loader2 className="animate-spin" /> : <Clock />}
         </Button>
         <Button
           variant="ghost"
