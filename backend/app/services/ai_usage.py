@@ -55,6 +55,7 @@ def store(
                     fallback=int(call.fallback),
                     duration_ms=call.duration_ms,
                     timed=1,
+                    cost=call.cost,
                 )
             )
 
@@ -77,6 +78,8 @@ class UsageRow:
     fallback: int
     duration_ms: int
     timed: int
+    # None when no call in the row had a price, which is not the same as costing nothing.
+    cost: float | None = None
 
 
 @dataclass
@@ -117,6 +120,7 @@ def report(session: Session, user_id: str, start: date, end: date) -> UsageRepor
             AiCall.fallback,
             AiCall.duration_ms,
             AiCall.timed,
+            AiCall.cost,
         )
     ]
     # Core select from a list: sqlmodel's typed overloads stop at a handful of columns.
@@ -150,6 +154,7 @@ def report(session: Session, user_id: str, start: date, end: date) -> UsageRepor
             fallback=int(r[11]),
             duration_ms=int(r[12]),
             timed=int(r[13]),
+            cost=None if r[14] is None else float(r[14]),
         )
         for r in grouped
     ]

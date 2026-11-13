@@ -27,6 +27,10 @@ function endpoint(overrides: Partial<AiEndpoint> = {}): AiEndpoint {
     api_key_set: false,
     timeout_seconds: 120,
     used_by: [],
+    context_limit: null,
+    json_mode: "auto",
+    price_input_per_million: null,
+    price_output_per_million: null,
     ...overrides,
   };
 }
@@ -84,6 +88,10 @@ describe("AiEndpointsSection", () => {
       name: "Workshop PC",
       base_url: "http://192.168.1.50:11434/v1",
       timeout_seconds: 120,
+      context_limit: null,
+      json_mode: "auto",
+      price_input_per_million: null,
+      price_output_per_million: null,
       api_key: "sk-secret-value",
     });
   });
@@ -114,6 +122,52 @@ describe("AiEndpointsSection", () => {
     });
   });
 
+  it("saves a context limit and prices, and blank clears them back to unknown", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
+      endpoint({ context_limit: 4096, price_output_per_million: 2 }),
+    ]);
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
+    const context = screen.getByLabelText("Context limit (tokens)");
+    expect(context).toHaveValue(4096);
+
+    await user.clear(context);
+    await user.type(context, "512");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Between 1,024 and 2,000,000 tokens, or blank.")).toBeVisible();
+    expect(apiClient.updateAiEndpoint).not.toHaveBeenCalled();
+
+    await user.clear(context);
+    await user.type(context, "16384");
+    await user.type(screen.getByLabelText("Input"), "0.4");
+    await user.clear(screen.getByLabelText("Output"));
+    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint({ context_limit: 16384 }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.updateAiEndpoint).mock.calls[0]?.[1]).toMatchObject({
+      context_limit: 16384,
+      price_input_per_million: 0.4,
+      price_output_per_million: null,
+    });
+  });
+
+  it("shows the context limit and prices on the list", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
+      endpoint({
+        context_limit: 16384,
+        price_input_per_million: 0.4,
+        price_output_per_million: 1.6,
+      }),
+    ]);
+    renderSection();
+
+    expect(await screen.findByText(`${(16384).toLocaleString()} tokens context`)).toBeVisible();
+    expect(screen.getByText("0.4 in · 1.6 out per 1M tokens")).toBeVisible();
+  });
+
   it("omits a blank key from an edit, so the stored one survives a rename", async () => {
     vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint({ api_key_set: true })]);
     const user = userEvent.setup();
@@ -138,6 +192,10 @@ describe("AiEndpointsSection", () => {
       name: "Renamed",
       base_url: "http://192.168.1.50:11434/v1",
       timeout_seconds: 120,
+      context_limit: null,
+      json_mode: "auto",
+      price_input_per_million: null,
+      price_output_per_million: null,
     });
     expect(body).not.toHaveProperty("api_key");
   });

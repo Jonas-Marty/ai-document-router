@@ -20,6 +20,7 @@ function row(overrides: Partial<AiUsageRow> = {}): AiUsageRow {
     fallback: 0,
     duration_ms: 1000,
     timed: 1,
+    cost: null,
     ...overrides,
   };
 }
@@ -38,6 +39,11 @@ describe("totals", () => {
     const sum = totals([row({ requests: 2, duration_ms: 0, timed: 0 })]);
 
     expect(sum.avgMs).toBeNull();
+  });
+
+  it("adds up the priced rows and has no cost when none was priced", () => {
+    expect(totals([row({ cost: 0.25 }), row({ cost: null }), row({ cost: 1 })]).cost).toBe(1.25);
+    expect(totals([row({ cost: null })]).cost).toBeNull();
   });
 });
 

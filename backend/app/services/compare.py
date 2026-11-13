@@ -100,6 +100,9 @@ def compare(
                     allowed_roots=list(app_settings.allowed_root_folders),
                     usage=step.usage(meter, AiTask.filing),
                     timeout=step.timeout_seconds,
+                    context_limit=step.context_limit,
+                    json_mode=step.json_mode,
+                    folder_choices=ai.prompt_folders(folder_tree),
                 ),
                 AiTask.filing,
             )

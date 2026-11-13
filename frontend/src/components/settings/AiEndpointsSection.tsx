@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +17,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   useAiEndpoints,
@@ -26,13 +33,27 @@ import {
 } from "@/hooks/useAiConfig";
 import { useListAiModels } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
-import type { AiEndpoint } from "@/services/api/types";
-import { type EndpointFormValues, endpointFormSchema } from "./settingsSchemas";
+import type { AiEndpoint, AiJsonMode } from "@/services/api/types";
+import { type EndpointFormValues, endpointFormSchema, optionalNumber } from "./settingsSchemas";
 
 const TASK_LABELS: Record<string, string> = {
   extraction: "Extraction",
   filing: "Filing",
 };
+
+const JSON_MODE_LABELS: Record<AiJsonMode, string> = {
+  auto: "Automatic",
+  json_schema: "JSON schema",
+  json_object: "JSON object",
+  none: "None",
+};
+
+/** "0.4 in · 1.6 out per 1M tokens", or null when neither price is set. */
+function priceLabel(endpoint: AiEndpoint): string | null {
+  const { price_input_per_million: input, price_output_per_million: output } = endpoint;
+  if (input === null && output === null) return null;
+  return `${input ?? 0} in · ${output ?? 0} out per 1M tokens`;
+}
 
 /** SPEC 8.7: the places the app can send a model request, each with a name of its own.
  *
@@ -115,6 +136,14 @@ export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: b
                     </p>
                     <div className="flex flex-wrap gap-1">
                       {endpoint.api_key_set && <Badge variant="secondary">Key saved</Badge>}
+                      {endpoint.context_limit !== null && (
+                        <Badge variant="secondary">
+                          {endpoint.context_limit.toLocaleString()} tokens context
+                        </Badge>
+                      )}
+                      {priceLabel(endpoint) && (
+                        <Badge variant="secondary">{priceLabel(endpoint)}</Badge>
+                      )}
                       {endpoint.used_by.map((task) => (
                         <Badge key={task} variant="outline">
                           {TASK_LABELS[task] ?? task}
@@ -202,6 +231,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const listModels = useListAiModels();
   const {
     register,
+    control,
     handleSubmit,
     getValues,
     formState: { errors },
@@ -212,6 +242,10 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       base_url: endpoint?.base_url ?? "",
       api_key: "",
       timeout_seconds: String(endpoint?.timeout_seconds ?? 120),
+      context_limit: endpoint?.context_limit?.toString() ?? "",
+      json_mode: endpoint?.json_mode ?? "auto",
+      price_input_per_million: endpoint?.price_input_per_million?.toString() ?? "",
+      price_output_per_million: endpoint?.price_output_per_million?.toString() ?? "",
     },
   });
   const isSaving = create.isPending || update.isPending;
@@ -247,6 +281,10 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       name: values.name.trim(),
       base_url: values.base_url.trim(),
       timeout_seconds: Number(values.timeout_seconds),
+      context_limit: optionalNumber(values.context_limit),
+      json_mode: values.json_mode,
+      price_input_per_million: optionalNumber(values.price_input_per_million),
+      price_output_per_million: optionalNumber(values.price_output_per_million),
       ...(key ? { api_key: key } : {}),
     };
     const handlers = {
@@ -270,6 +308,10 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const urlId = `endpoint-url-${endpoint?.id ?? "new"}`;
   const keyId = `endpoint-key-${endpoint?.id ?? "new"}`;
   const timeoutId = `endpoint-timeout-${endpoint?.id ?? "new"}`;
+  const contextId = `endpoint-context-${endpoint?.id ?? "new"}`;
+  const jsonModeId = `endpoint-json-${endpoint?.id ?? "new"}`;
+  const priceInId = `endpoint-price-in-${endpoint?.id ?? "new"}`;
+  const priceOutId = `endpoint-price-out-${endpoint?.id ?? "new"}`;
 
   return (
     <form
@@ -333,6 +375,101 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
           </p>
         )}
       </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={contextId}>Context limit (tokens)</Label>
+        <Input
+          id={contextId}
+          type="number"
+          inputMode="numeric"
+          className="w-40"
+          placeholder="Unknown"
+          aria-invalid={!!errors.context_limit}
+          aria-describedby={`${contextId}-help`}
+          {...register("context_limit")}
+        />
+        {errors.context_limit ? (
+          <p className="text-sm text-destructive">{errors.context_limit.message}</p>
+        ) : (
+          <p id={`${contextId}-help`} className="text-sm text-muted-foreground">
+            Enter what the server is set to; this app cannot ask it. For Ollama that is
+            OLLAMA_CONTEXT_LENGTH, 4096 by default on GPUs under 24 GB. A prompt that won't fit is
+            not sent, rather than cut off silently. Leave blank to send without checking.
+          </p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={jsonModeId}>JSON mode</Label>
+        <Controller
+          control={control}
+          name="json_mode"
+          render={({ field }) => (
+            <Select value={field.value} onValueChange={field.onChange}>
+              <SelectTrigger
+                id={jsonModeId}
+                className="w-48"
+                aria-describedby={`${jsonModeId}-help`}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(JSON_MODE_LABELS) as AiJsonMode[]).map((mode) => (
+                  <SelectItem key={mode} value={mode}>
+                    {JSON_MODE_LABELS[mode]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        />
+        <p id={`${jsonModeId}-help`} className="text-sm text-muted-foreground">
+          Automatic tries a JSON schema first, then a plain JSON object, then neither, and remembers
+          what the server took.
+        </p>
+      </div>
+      <fieldset className="space-y-1.5">
+        <legend className="text-sm font-medium">Price per million tokens</legend>
+        <div className="flex flex-wrap gap-3">
+          <div className="space-y-1">
+            <Label htmlFor={priceInId} className="font-normal text-muted-foreground">
+              Input
+            </Label>
+            <Input
+              id={priceInId}
+              type="number"
+              inputMode="decimal"
+              step="any"
+              className="w-32"
+              placeholder="None"
+              aria-invalid={!!errors.price_input_per_million}
+              {...register("price_input_per_million")}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={priceOutId} className="font-normal text-muted-foreground">
+              Output
+            </Label>
+            <Input
+              id={priceOutId}
+              type="number"
+              inputMode="decimal"
+              step="any"
+              className="w-32"
+              placeholder="None"
+              aria-invalid={!!errors.price_output_per_million}
+              {...register("price_output_per_million")}
+            />
+          </div>
+        </div>
+        {(errors.price_input_per_million || errors.price_output_per_million) && (
+          <p className="text-sm text-destructive">
+            {(errors.price_input_per_million ?? errors.price_output_per_million)?.message}
+          </p>
+        )}
+        <p className="text-sm text-muted-foreground">
+          In your provider's currency. Leave blank for a connection that costs nothing per token;
+          usage then shows tokens only.
+        </p>
+      </fieldset>
       <div className="flex flex-wrap justify-between gap-2">
         <Button type="button" variant="outline" disabled={listModels.isPending} onClick={onTest}>
           {listModels.isPending && <Loader2 className="animate-spin" />}

@@ -1006,3 +1006,37 @@ meaningful. One line of "why" each; not a full ADR log.
   answering connection's name, whether the person hand-picked it, and the labels of earlier
   chain steps that didn't answer. A copy rather than a foreign key so renaming or removing a
   connection later doesn't rewrite history. Older proposals show the model name alone.
+
+## Redesign milestone 1 — call parameters and connection capabilities (2026-11-13)
+
+- **Context size is not set per request; it is checked.** Ollama's OpenAI-compatible
+  endpoint has no field for it (docs.ollama.com/api/openai-compatibility), defaults to 4096
+  tokens on GPUs under 24 GB, and cuts an overlong prompt silently from the start. vLLM and
+  LocalAI also fix it at load time. The owner chose to stay OpenAI-compatible only (no native
+  `/api/chat` connection kind) and set `OLLAMA_CONTEXT_LENGTH` on the GPU machine; each
+  connection records that number and the backend refuses a prompt that would not fit.
+- **The token estimate is characters / 3 plus 1600 per page image**, deliberately high. No
+  tokenizer: that would be a new dependency, and the server's tokenizer is unknown anyway.
+  The JSON schema is not counted: Ollama turns it into a grammar rather than prompt tokens.
+- **A too-long prompt moves the chain on but cools nothing down.** It is a fact about this
+  prompt, not the endpoint. Chains go away in milestone 3; until then this keeps a hosted
+  fallback useful for a long document.
+- **Temperature and output limits are constants per task** (filing 0.1 / 2048, extraction
+  0.1 / 4096 per page batch) until configurations own them in milestone 3, rather than
+  settings columns that would be migrated away again. No seed: not asked for, and a server
+  that rejects unknown fields would fail every call for it.
+- **The output limit shrinks to fit** what the context limit leaves after the estimate, but
+  never below a minimum reply (512 filing, 1024 extraction); below that the prompt is refused.
+- **`finish_reason: "length"` is a failure, not a partial result.** A cut filing reply is a
+  rejected proposal; a cut reading is a failed extraction (`ReplyCutOff`, an `AppError`), and
+  filing then proceeds from the text layer as for any failed extraction.
+- **`json_schema` is now tried first** in automatic JSON mode, with the prompt's folders as an
+  `enum` and `additionalProperties: false`. A fixed JSON mode asks only that way and is not
+  remembered. A connection whose server took `json_object` before re-learns it after one 400.
+- **Prices have no currency.** They are per connection, in whatever the provider bills, and
+  the usage page shows cost as a bare number. One price set and the other blank counts the
+  blank side as free; both blank means no cost (null), never 0.
+- **Cost is stored per call on `ai_call.cost`** at the time of the call, so a later price
+  change does not rewrite history. The usage page shows the period's cost in the Total tile.
+- **No thinking switch yet.** Ollama's `/v1` takes `reasoning_effort`, but the accepted
+  values are per model and unverified; left for the per-configuration parameters (finding 9).

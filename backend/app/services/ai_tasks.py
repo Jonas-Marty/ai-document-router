@@ -15,9 +15,9 @@ from dataclasses import dataclass
 from sqlmodel import Session, select
 
 from app.config import settings as config
-from app.models import AiEndpoint, AiTask, AiTaskStep, AuditAction
+from app.models import AiEndpoint, AiJsonMode, AiTask, AiTaskStep, AuditAction
 from app.services import ai, audit, crypto, metrics, progress, urls
-from app.services.ai import AIUnavailable
+from app.services.ai import AIUnavailable, PromptTooLong
 from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
@@ -76,6 +76,26 @@ class ResolvedStep:
     endpoint_id: str | None = None
     position: int = 0
     timeout_seconds: float = ai.REQUEST_TIMEOUT_SECONDS
+    context_limit: int | None = None
+    json_mode: AiJsonMode = AiJsonMode.auto
+    price_input: float | None = None
+    price_output: float | None = None
+
+    @classmethod
+    def of(cls, endpoint: AiEndpoint, model_name: str, position: int = 0) -> "ResolvedStep":
+        return cls(
+            endpoint_name=endpoint.name,
+            endpoint_url=endpoint.base_url,
+            api_key=decrypt_key(endpoint),
+            model_name=model_name,
+            endpoint_id=endpoint.id,
+            position=position,
+            timeout_seconds=endpoint.timeout_seconds,
+            context_limit=endpoint.context_limit,
+            json_mode=endpoint.json_mode,
+            price_input=endpoint.price_input_per_million,
+            price_output=endpoint.price_output_per_million,
+        )
 
     @property
     def label(self) -> str:
@@ -91,6 +111,8 @@ class ResolvedStep:
             connection=self.endpoint_name,
             model=self.model_name,
             fallback=self.position > 0,
+            price_input=self.price_input,
+            price_output=self.price_output,
         )
 
 
@@ -117,15 +139,7 @@ def chain_for(session: Session, user_id: str, task: AiTask) -> list[ChainStep]:
 def resolve_chain(session: Session, user_id: str, task: AiTask) -> list[ResolvedStep]:
     """Every step of one user's chain for a task, in the order they should be tried."""
     return [
-        ResolvedStep(
-            endpoint_name=endpoint.name,
-            endpoint_url=endpoint.base_url,
-            api_key=decrypt_key(endpoint),
-            model_name=step.model_name,
-            endpoint_id=endpoint.id,
-            position=position,
-            timeout_seconds=endpoint.timeout_seconds,
-        )
+        ResolvedStep.of(endpoint, step.model_name, position)
         for position, (step, endpoint) in enumerate(_rows(session, user_id, task))
     ]
 
@@ -136,17 +150,7 @@ def resolve_single(
     """One explicitly chosen (endpoint, model) as a chain of one: no fallback, because the
     person picked this model on purpose and a silent substitute would answer a different
     question than the one they asked."""
-    endpoint = get_endpoint(session, user_id, endpoint_id)
-    return [
-        ResolvedStep(
-            endpoint_name=endpoint.name,
-            endpoint_url=endpoint.base_url,
-            api_key=decrypt_key(endpoint),
-            model_name=model_name,
-            endpoint_id=endpoint.id,
-            timeout_seconds=endpoint.timeout_seconds,
-        )
-    ]
+    return [ResolvedStep.of(get_endpoint(session, user_id, endpoint_id), model_name)]
 
 
 def _rows(session: Session, user_id: str, task: AiTask) -> list[tuple[AiTaskStep, AiEndpoint]]:
@@ -175,15 +179,18 @@ def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], t
 
     failures: list[str] = []
     unanswered: list[str] = []
+    too_long: list[str] = []
     skipped = [step.label for step in steps if _is_cooling(step)]
     # Every step cooling down: try them all anyway rather than fail without asking anyone.
     live = [step for step in steps if not _is_cooling(step)] or steps
     if live is steps:
         skipped = []
     for position, step in enumerate(live):
-        notes = [f"{label} didn't answer" for label in unanswered] + [
-            f"{label} skipped, didn't answer a moment ago" for label in skipped
-        ]
+        notes = (
+            [f"{label} didn't answer" for label in unanswered]
+            + [f"prompt too long for {label}" for label in too_long]
+            + [f"{label} skipped, didn't answer a moment ago" for label in skipped]
+        )
         progress.report(
             f"{_VERBS.get(task, str(task))} with {step.label}…"
             + (f" ({'; '.join(notes)})" if notes else "")
@@ -191,6 +198,13 @@ def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], t
         started = time.monotonic()
         try:
             result = call(step)
+        except PromptTooLong as exc:
+            # Nothing was sent, and the next document may well fit: no cooldown.
+            _observe_step(task, step, "too_long", started)
+            logger.warning("%s via %s not sent: %s", task, step.label, exc.message)
+            failures.append(f"{step.label} ({exc.message})")
+            too_long.append(step.label)
+            continue
         except AIUnavailable as exc:
             _observe_step(task, step, "unavailable", started)
             _cool_down(step)
@@ -323,8 +337,10 @@ def create_endpoint(
     api_key: str | None,
     *,
     timeout_seconds: int | None = None,
+    capabilities: "Capabilities | None" = None,
     actor: Actor,
 ) -> AiEndpoint:
+    caps = (capabilities or Capabilities()).validated()
     endpoint = AiEndpoint(
         user_id=user_id,
         name=_validate_name(session, user_id, name, endpoint_id=None),
@@ -333,6 +349,7 @@ def create_endpoint(
         timeout_seconds=_validate_timeout(timeout_seconds),
         created_at=utc_now(),
     )
+    caps.apply(endpoint)
     session.add(endpoint)
     audit.record(
         session,
@@ -344,6 +361,7 @@ def create_endpoint(
             "name": endpoint.name,
             "base_url": endpoint.base_url,
             "timeout_seconds": endpoint.timeout_seconds,
+            **Capabilities.of(endpoint).describe(),
             "api_key_set": endpoint.api_key_encrypted is not None,
         },
     )
@@ -361,15 +379,19 @@ def update_endpoint(
     api_key: str | None,
     *,
     timeout_seconds: int | None = None,
+    capabilities: "Capabilities | None" = None,
     actor: Actor,
 ) -> AiEndpoint:
-    """A blank key leaves the stored one alone -- the form is never given it back to resend."""
+    """A blank key leaves the stored one alone -- the form is never given it back to resend.
+    Capabilities are replaced as given: the form always sends all of them."""
     endpoint = get_endpoint(session, user_id, endpoint_id)
     clear_cooldown(endpoint_id)
+    caps = (capabilities or Capabilities()).validated()
     before: dict[str, object] = {
         "name": endpoint.name,
         "base_url": endpoint.base_url,
         "timeout_seconds": endpoint.timeout_seconds,
+        **Capabilities.of(endpoint).describe(),
     }
     endpoint.name = _validate_name(session, user_id, name, endpoint_id=endpoint_id)
     endpoint.base_url = validate_endpoint_url(base_url)
@@ -377,12 +399,14 @@ def update_endpoint(
         endpoint.timeout_seconds = _validate_timeout(timeout_seconds)
     if api_key:
         endpoint.api_key_encrypted = crypto.encrypt(config.secret_key, api_key)
+    caps.apply(endpoint)
 
     session.add(endpoint)
     after: dict[str, object] = {
         "name": endpoint.name,
         "base_url": endpoint.base_url,
         "timeout_seconds": endpoint.timeout_seconds,
+        **Capabilities.of(endpoint).describe(),
     }
     audit.record(
         session,
@@ -402,6 +426,60 @@ def update_endpoint(
     session.commit()
     session.refresh(endpoint)
     return endpoint
+
+
+MIN_CONTEXT_LIMIT = 1024
+MAX_CONTEXT_LIMIT = 2_000_000
+MAX_PRICE_PER_MILLION = 10_000.0
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    """What a connection's server can take and what it charges (SPEC 6.3b). Not secrets."""
+
+    context_limit: int | None = None
+    json_mode: AiJsonMode = AiJsonMode.auto
+    price_input_per_million: float | None = None
+    price_output_per_million: float | None = None
+
+    @classmethod
+    def of(cls, endpoint: AiEndpoint) -> "Capabilities":
+        return cls(
+            context_limit=endpoint.context_limit,
+            json_mode=endpoint.json_mode,
+            price_input_per_million=endpoint.price_input_per_million,
+            price_output_per_million=endpoint.price_output_per_million,
+        )
+
+    def validated(self) -> "Capabilities":
+        limit = self.context_limit
+        if limit is not None and not MIN_CONTEXT_LIMIT <= limit <= MAX_CONTEXT_LIMIT:
+            raise ValidationError(
+                f"The context limit must be between {MIN_CONTEXT_LIMIT:,} and "
+                f"{MAX_CONTEXT_LIMIT:,} tokens, or left empty."
+            )
+        for price in (self.price_input_per_million, self.price_output_per_million):
+            if price is not None and not 0 <= price <= MAX_PRICE_PER_MILLION:
+                raise ValidationError(
+                    f"A price per million tokens must be between 0 and "
+                    f"{MAX_PRICE_PER_MILLION:,.0f}, or left empty."
+                )
+        return self
+
+    def apply(self, endpoint: AiEndpoint) -> None:
+        endpoint.context_limit = self.context_limit
+        endpoint.json_mode = self.json_mode
+        endpoint.price_input_per_million = self.price_input_per_million
+        endpoint.price_output_per_million = self.price_output_per_million
+
+    def describe(self) -> dict[str, object]:
+        """For audit details; plain values so the JSON column takes them."""
+        return {
+            "context_limit": self.context_limit,
+            "json_mode": str(self.json_mode),
+            "price_input_per_million": self.price_input_per_million,
+            "price_output_per_million": self.price_output_per_million,
+        }
 
 
 MIN_TIMEOUT_SECONDS = 10

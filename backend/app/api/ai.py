@@ -41,6 +41,7 @@ def create_endpoint(
         payload.base_url,
         payload.api_key,
         timeout_seconds=payload.timeout_seconds,
+        capabilities=_capabilities(payload),
         actor=Actor.from_user(user),
     )
     return _read(session, endpoint)
@@ -58,9 +59,19 @@ def update_endpoint(
         payload.base_url,
         payload.api_key,
         timeout_seconds=payload.timeout_seconds,
+        capabilities=_capabilities(payload),
         actor=Actor.from_user(user),
     )
     return _read(session, endpoint)
+
+
+def _capabilities(payload: AiEndpointWrite) -> ai_tasks.Capabilities:
+    return ai_tasks.Capabilities(
+        context_limit=payload.context_limit,
+        json_mode=payload.json_mode,
+        price_input_per_million=payload.price_input_per_million,
+        price_output_per_million=payload.price_output_per_million,
+    )
 
 
 @router.delete("/ai/endpoints/{endpoint_id}")
@@ -132,6 +143,10 @@ def _read(session: SessionDep, endpoint: AiEndpoint) -> AiEndpointRead:
         base_url=endpoint.base_url,
         api_key_set=endpoint.api_key_encrypted is not None,
         timeout_seconds=endpoint.timeout_seconds,
+        context_limit=endpoint.context_limit,
+        json_mode=endpoint.json_mode,
+        price_input_per_million=endpoint.price_input_per_million,
+        price_output_per_million=endpoint.price_output_per_million,
         used_by=ai_tasks.endpoint_in_use(session, endpoint.id),
     )
 

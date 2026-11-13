@@ -8,6 +8,7 @@ put a wrong folder in front of the user pre-filled and pre-trusted.
 import base64
 import json
 import logging
+import math
 import mimetypes
 import time
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from typing import TypeGuard
 
 import httpx
 
+from app.models import AiJsonMode
 from app.services import metrics, naming
 from app.services.errors import AppError
 from app.services.paths import is_within, normalize_path
@@ -66,12 +68,92 @@ class AIUnavailable(AppError):
     status_code = 503
 
 
+class PromptTooLong(AIUnavailable):
+    """The prompt would not fit the connection's context limit, so it was never sent.
+
+    An AIUnavailable so a chain moves on to an endpoint that may hold more, but not a fact
+    about the endpoint's health: run_chain puts no step into cooldown for it.
+    """
+
+    code = "prompt_too_long"
+
+
+class ReplyCutOff(AppError):
+    """The model stopped at the output limit. What it wrote is incomplete, not wrong."""
+
+    code = "ai_reply_cut_off"
+    status_code = 502
+
+
 class ProposalRejected(Exception):
     """The model replied, but the reply was not usable. Carries the user-facing reason."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class TaskParameters:
+    """What every call for one task sends besides the prompt (SPEC 6.3b).
+
+    Fixed per task until configurations own them. Low temperature because both tasks copy
+    from the page rather than invent; an explicit output limit because a server's own default
+    can be small enough to cut a two-page transcription off mid-table.
+    """
+
+    temperature: float
+    max_tokens: int
+    # The smallest reply worth asking for. A prompt that leaves less than this of the context
+    # limit is refused rather than sent to come back cut off.
+    min_reply_tokens: int
+
+
+FILING_PARAMETERS = TaskParameters(temperature=0.1, max_tokens=2048, min_reply_tokens=512)
+EXTRACTION_PARAMETERS = TaskParameters(temperature=0.1, max_tokens=4096, min_reply_tokens=1024)
+
+# Token estimate before sending (SPEC 6.3b). German text with account numbers runs at about
+# 3.5 to 4 characters per token; dividing by 3 errs high, which is the side to err on when
+# the alternative is Ollama silently cutting the instructions off the front of the prompt.
+CHARS_PER_TOKEN_ESTIMATE = 3
+# Vision models spend anything from a few hundred to a few thousand tokens on one page; this
+# sits at the high end of the common ones at the 150 DPI the pages are rendered at.
+TOKENS_PER_IMAGE_ESTIMATE = 1600
+
+
+def estimate_prompt_tokens(system_prompt: str, prompt: str, images: int = 0) -> int:
+    """A deliberately high guess at what the server will count for this request."""
+    text_tokens = math.ceil((len(system_prompt) + len(prompt)) / CHARS_PER_TOKEN_ESTIMATE)
+    return text_tokens + images * TOKENS_PER_IMAGE_ESTIMATE
+
+
+def reply_budget(estimate: int, parameters: TaskParameters, context_limit: int | None) -> int:
+    """The max_tokens to send, or PromptTooLong when the reply would not get enough room."""
+    if context_limit is None:
+        return parameters.max_tokens
+    room = context_limit - estimate
+    if room < parameters.min_reply_tokens:
+        raise PromptTooLong(
+            f"The prompt is about {estimate:,} tokens, which leaves no room for a reply within "
+            f"this connection's context limit of {context_limit:,}. If the server holds more, "
+            "raise the limit in Settings."
+        )
+    return min(parameters.max_tokens, room)
+
+
+def call_cost(
+    usage: "TokenUsage | None", price_input: float | None, price_output: float | None
+) -> float | None:
+    """What a call cost from its token counts; None when either side of that is missing.
+
+    A missing price on one side counts as free rather than unknown: a provider that bills
+    only output is a real thing, and the person entered the one price there is.
+    """
+    if usage is None or (price_input is None and price_output is None):
+        return None
+    return (
+        usage.prompt_tokens * (price_input or 0.0) + usage.completion_tokens * (price_output or 0.0)
+    ) / 1_000_000
 
 
 @dataclass(frozen=True)
@@ -113,6 +195,8 @@ class CallRecord:
     failed: bool = False
     # Made by a step after the first, because an earlier one was unavailable.
     fallback: bool = False
+    # From the connection's prices at the time of the call; None without a price or usage.
+    cost: float | None = None
 
 
 @dataclass(frozen=True)
@@ -186,8 +270,20 @@ class UsageMeter:
         connection: str = "",
         model: str = "",
         fallback: bool = False,
+        price_input: float | None = None,
+        price_output: float | None = None,
     ) -> "UsageRecorder":
-        return UsageRecorder(self, task, label, endpoint_id, connection, model, fallback)
+        return UsageRecorder(
+            self,
+            task,
+            label,
+            endpoint_id,
+            connection,
+            model,
+            fallback,
+            price_input,
+            price_output,
+        )
 
     def summary(self) -> UsageSummary | None:
         """None when nothing was called, which is different from a call that cost nothing."""
@@ -222,6 +318,8 @@ class UsageRecorder:
     connection: str = ""
     model: str = ""
     fallback: bool = False
+    price_input: float | None = None
+    price_output: float | None = None
 
     def _call(self, usage: TokenUsage | None, duration_ms: int, failed: bool) -> CallRecord:
         return CallRecord(
@@ -234,6 +332,7 @@ class UsageRecorder:
             model=self.model,
             failed=failed,
             fallback=self.fallback,
+            cost=call_cost(usage, self.price_input, self.price_output),
         )
 
     def record_failure(self, duration_ms: int) -> None:
@@ -287,16 +386,24 @@ def build_prompt(
     return "\n".join(sections)
 
 
-def _render_tree(paths: list[str]) -> list[str]:
-    """Render absolute paths as an indented list, capped at MAX_TREE_DEPTH and MAX_TREE_FOLDERS.
+def prompt_folders(paths: list[str]) -> list[str]:
+    """The folders the prompt lists, capped at MAX_TREE_DEPTH and MAX_TREE_FOLDERS, sorted.
 
     When the count cap bites, shallower folders are kept: they are the plausible filing
     targets, and anything dropped can still be typed by hand in the review form. Keeping the
     *alphabetically* first N instead would silently delete every folder past the letter it
     ran out at, which reads as a much stranger tree than a truncated one.
+
+    Also the `enum` of the JSON schema, so the model is offered exactly what it was shown.
     """
     within_depth = sorted({path for path in paths if path.count("/") - 1 < MAX_TREE_DEPTH})
-    kept = sorted(sorted(within_depth, key=lambda p: (p.count("/"), p))[:MAX_TREE_FOLDERS])
+    return sorted(sorted(within_depth, key=lambda p: (p.count("/"), p))[:MAX_TREE_FOLDERS])
+
+
+def _render_tree(paths: list[str]) -> list[str]:
+    """Render absolute paths as an indented list of prompt_folders, noting what was dropped."""
+    within_depth = {path for path in paths if path.count("/") - 1 < MAX_TREE_DEPTH}
+    kept = prompt_folders(paths)
 
     rendered = [f"{'  ' * (path.count('/') - 1)}{path}" for path in kept]
     dropped = len(within_depth) - len(kept)
@@ -316,6 +423,10 @@ def request_proposal(
     client: httpx.Client | None = None,
     usage: UsageRecorder | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
+    parameters: TaskParameters = FILING_PARAMETERS,
+    context_limit: int | None = None,
+    json_mode: AiJsonMode = AiJsonMode.auto,
+    folder_choices: list[str] | None = None,
 ) -> Proposal:
     """Call the model and validate its reply.
 
@@ -324,28 +435,32 @@ def request_proposal(
     It is the same call either way: one request that returns a proposal, not an OCR step
     bolted in front of a second one.
 
-    Raises AIUnavailable if the endpoint could not be reached, or ProposalRejected if it
-    replied with something unusable.
+    `folder_choices` become the schema's enum for the folder: what the prompt listed.
+
+    Raises PromptTooLong before any request when the prompt would not fit `context_limit`,
+    AIUnavailable if the endpoint could not be reached, or ProposalRejected if it replied with
+    something unusable.
     """
+    max_tokens = reply_budget(
+        estimate_prompt_tokens(SYSTEM_PROMPT, prompt, len(images or [])),
+        parameters,
+        context_limit,
+    )
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = f"{endpoint_url.rstrip('/')}/chat/completions"
     started = time.monotonic()
-    cache_key = (url, model_name)
+    schema = proposal_schema(folder_choices)
 
     owned = client is None
     http = client or _client(timeout)
     try:
-        # SPEC 6.3 asks for JSON output, but servers disagree on how to ask: some want
-        # json_object, some only the newer json_schema, some 400 on either. Try them in
-        # that order, and remember what worked so the next document goes straight there.
-        formats = RESPONSE_FORMATS[
-            RESPONSE_FORMATS.index(_known_format.get(cache_key, "json_object")) :
-        ]
+        formats = _formats_to_try(json_mode, (url, model_name))
         for position, response_format in enumerate(formats):
+            payload = _payload(model_name, prompt, images, response_format, schema)
+            payload["temperature"] = parameters.temperature
+            payload["max_tokens"] = max_tokens
             try:
-                body = _post_with_retry(
-                    url, _payload(model_name, prompt, images, response_format), headers, http
-                )
+                body = _post_with_retry(url, payload, headers, http)
             except _Rejected as rejected:
                 # Only 400: a 401 or a 404 means the key or the URL is wrong, and would fail
                 # the same way whatever format was asked for.
@@ -358,7 +473,8 @@ def request_proposal(
                     formats[position + 1] or "none",
                 )
                 continue
-            _known_format[cache_key] = response_format
+            if json_mode == AiJsonMode.auto:
+                _known_format[(url, model_name)] = response_format
             break
     except AIUnavailable:
         _record_failure(usage, started)
@@ -368,8 +484,35 @@ def request_proposal(
             http.close()
 
     _record_usage(usage, body, started)
+    if _finish_reason(body) == "length":
+        raise ProposalRejected(
+            f"The model's reply was cut off at the output limit of {max_tokens:,} tokens."
+        )
     content = _extract_message_content(body)
     return _validate(content, model_name, allowed_roots)
+
+
+def _formats_to_try(json_mode: AiJsonMode, cache_key: tuple[str, str]) -> list[str | None]:
+    """The response_format values to ask with, in order (SPEC 6.3).
+
+    In auto mode servers disagree on how to be asked: some want json_schema, some only
+    json_object, some 400 on either. json_schema goes first because constraining a small model
+    to the schema -- the folder an enum of the real ones -- is worth more than anything the
+    prompt can say. What worked is remembered so the next document goes straight there.
+    """
+    if json_mode == AiJsonMode.none:
+        return [None]
+    if json_mode != AiJsonMode.auto:
+        return [str(json_mode)]
+    start = _known_format.get(cache_key, RESPONSE_FORMATS[0])
+    return RESPONSE_FORMATS[RESPONSE_FORMATS.index(start) :]
+
+
+def _finish_reason(body: dict[str, object]) -> object:
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return choices[0].get("finish_reason")
+    return None
 
 
 def request_completion(
@@ -383,14 +526,23 @@ def request_completion(
     client: httpx.Client | None = None,
     usage: UsageRecorder | None = None,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
+    parameters: TaskParameters = EXTRACTION_PARAMETERS,
+    context_limit: int | None = None,
 ) -> str:
     """Call the model and hand back its reply verbatim.
 
     The prose counterpart to request_proposal: no JSON mode and no validation, because the
     answer wanted here is a transcription rather than a set of fields. Raises AIUnavailable
     for anything that stopped the endpoint from replying, so a caller walking a fallback
-    chain sees endpoint trouble as endpoint trouble.
+    chain sees endpoint trouble as endpoint trouble; PromptTooLong, one of those, before any
+    request; ReplyCutOff when the reply stopped at the output limit, since half a page read
+    is not a reading.
     """
+    max_tokens = reply_budget(
+        estimate_prompt_tokens(system_prompt, prompt, len(images or [])),
+        parameters,
+        context_limit,
+    )
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     url = f"{endpoint_url.rstrip('/')}/chat/completions"
     payload: dict[str, object] = {
@@ -399,6 +551,8 @@ def request_completion(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _user_content(prompt, images)},
         ],
+        "temperature": parameters.temperature,
+        "max_tokens": max_tokens,
     }
 
     started = time.monotonic()
@@ -417,6 +571,10 @@ def request_completion(
             http.close()
 
     _record_usage(usage, body, started)
+    if _finish_reason(body) == "length":
+        raise ReplyCutOff(
+            f"The model's reply was cut off at the output limit of {max_tokens:,} tokens."
+        )
     return _extract_message_content(body)
 
 
@@ -465,35 +623,46 @@ def _is_count(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-RESPONSE_FORMATS: list[str | None] = ["json_object", "json_schema", None]
+RESPONSE_FORMATS: list[str | None] = ["json_schema", "json_object", None]
 # (url, model) -> the response_format that endpoint last accepted. In memory: a restart
 # costs at most one refused request per endpoint to find out again.
 _known_format: dict[tuple[str, str], str | None] = {}
 
-PROPOSAL_SCHEMA: dict[str, object] = {
-    "type": "object",
-    # Order matters: a model writes its reply front to back, so the name comes after the
-    # date and folder it is built from, and after the reasoning that settles them. With the
-    # name first, models wrote "2026 ..." and then the correct full date below it.
-    "properties": {
-        "reasoning_text": {"type": "string"},
-        "document_date": {"type": ["string", "null"]},
-        "target_folder_path": {"type": "string"},
-        "suggested_name": {"type": "string"},
-        "confidence_score": {"type": "number"},
-    },
-    "required": [
-        "reasoning_text",
-        "document_date",
-        "target_folder_path",
-        "suggested_name",
-        "confidence_score",
-    ],
-}
+
+def proposal_schema(folder_choices: list[str] | None = None) -> dict[str, object]:
+    """The reply's JSON schema; with folder choices, the folder must be one of them."""
+    folder: dict[str, object] = {"type": "string"}
+    if folder_choices:
+        folder["enum"] = list(folder_choices)
+    return {
+        "type": "object",
+        # Order matters: a model writes its reply front to back, so the name comes after the
+        # date and folder it is built from, and after the reasoning that settles them. With
+        # the name first, models wrote "2026 ..." and then the correct full date below it.
+        "properties": {
+            "reasoning_text": {"type": "string"},
+            "document_date": {"type": ["string", "null"]},
+            "target_folder_path": folder,
+            "suggested_name": {"type": "string"},
+            "confidence_score": {"type": "number"},
+        },
+        "required": [
+            "reasoning_text",
+            "document_date",
+            "target_folder_path",
+            "suggested_name",
+            "confidence_score",
+        ],
+        "additionalProperties": False,
+    }
 
 
 def _payload(
-    model_name: str, prompt: str, images: list[bytes] | None, response_format: str | None
+    model_name: str,
+    prompt: str,
+    images: list[bytes] | None,
+    response_format: str | None,
+    schema: dict[str, object],
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "model": model_name,
@@ -507,7 +676,7 @@ def _payload(
     elif response_format == "json_schema":
         payload["response_format"] = {
             "type": "json_schema",
-            "json_schema": {"name": "proposal", "schema": PROPOSAL_SCHEMA},
+            "json_schema": {"name": "proposal", "schema": schema},
         }
     return payload
 

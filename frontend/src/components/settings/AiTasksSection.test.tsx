@@ -25,6 +25,10 @@ const LOCAL: AiEndpoint = {
   api_key_set: false,
   timeout_seconds: 120,
   used_by: [],
+  context_limit: null,
+  json_mode: "auto",
+  price_input_per_million: null,
+  price_output_per_million: null,
 };
 const HOSTED: AiEndpoint = {
   id: "ep-hosted",
@@ -33,6 +37,10 @@ const HOSTED: AiEndpoint = {
   api_key_set: true,
   timeout_seconds: 120,
   used_by: [],
+  context_limit: null,
+  json_mode: "auto",
+  price_input_per_million: null,
+  price_output_per_million: null,
 };
 
 const EMPTY_CHAINS: AiTaskChain[] = [

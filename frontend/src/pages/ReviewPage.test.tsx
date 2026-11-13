@@ -235,6 +235,10 @@ describe("ReviewPage queue overview", () => {
         base_url: "http://a/v1",
         api_key_set: false,
         timeout_seconds: 60,
+        context_limit: null,
+        json_mode: "auto",
+        price_input_per_million: null,
+        price_output_per_million: null,
         used_by: ["filing"],
       },
       {
@@ -243,6 +247,10 @@ describe("ReviewPage queue overview", () => {
         base_url: "https://b/v1",
         api_key_set: true,
         timeout_seconds: 60,
+        context_limit: null,
+        json_mode: "auto",
+        price_input_per_million: null,
+        price_output_per_million: null,
         used_by: [],
       },
     ]);

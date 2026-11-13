@@ -52,7 +52,8 @@ http_request_duration = Histogram(
 
 ai_requests = Counter(
     "docrouter_ai_requests_total",
-    "Chain steps tried, by outcome: ok, rejected (answered unusably) or unavailable.",
+    "Chain steps tried, by outcome: ok, rejected (answered unusably), unavailable, or "
+    "too_long (not sent: the prompt would not fit the context limit).",
     ["task", "step", "outcome"],
 )
 ai_request_duration = Histogram(

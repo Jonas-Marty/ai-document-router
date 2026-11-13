@@ -177,14 +177,25 @@ export interface AiEndpoint {
   base_url: string;
   api_key_set: boolean; // never the key itself
   timeout_seconds: number; // how long to wait for a reply before trying the next step
+  context_limit: number | null; // tokens the server holds per request; null = unknown (SPEC 6.3b)
+  json_mode: AiJsonMode;
+  price_input_per_million: number | null;
+  price_output_per_million: number | null;
   used_by: AiTask[]; // tasks that would lose a step if this were removed
 }
+
+/** How filing asks the endpoint for JSON (SPEC 6.3). */
+export type AiJsonMode = "auto" | "json_schema" | "json_object" | "none";
 
 export interface AiEndpointWrite {
   name: string;
   base_url: string;
   api_key?: string; // omitted or empty = leave the stored key unchanged
   timeout_seconds?: number; // omitted = keep the stored value (120 for a new endpoint)
+  context_limit: number | null;
+  json_mode: AiJsonMode;
+  price_input_per_million: number | null;
+  price_output_per_million: number | null;
 }
 
 export interface AiTaskStep {
@@ -308,6 +319,7 @@ export interface AiUsageRow {
   fallback: number; // made by a later step because an earlier one was unavailable
   duration_ms: number; // summed over `timed`
   timed: number;
+  cost: number | null; // from the connection's prices; null when no call in the row had one
 }
 
 export interface AiUsageReport {

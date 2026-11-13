@@ -553,6 +553,7 @@ def propose_for(
         app_settings.filing_instructions,
     )
     allowed_roots = list(app_settings.allowed_root_folders)
+    folder_choices = ai.prompt_folders(tree)
 
     chosen_by_user = document.rerun_endpoint_id is not None
     answered: list[ai_tasks.ResolvedStep] = []
@@ -566,6 +567,9 @@ def propose_for(
             allowed_roots=allowed_roots,
             usage=step.usage(meter, AiTask.filing),
             timeout=step.timeout_seconds,
+            context_limit=step.context_limit,
+            json_mode=step.json_mode,
+            folder_choices=folder_choices,
         )
         answered[:] = [step]
         return reply

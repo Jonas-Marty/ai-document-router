@@ -278,26 +278,26 @@ class TestTransport:
 
         assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
         formats = [body.get("response_format", {}).get("type") for body in bodies]
-        assert formats == ["json_object", "json_schema", None]
+        assert formats == ["json_schema", "json_object", None]
         assert bodies[2]["messages"] == bodies[0]["messages"]
 
     def test_remembers_the_format_an_endpoint_accepted(self) -> None:
-        """Infomaniak refuses json_object but takes json_schema. Asking json_object first on
-        every document would double every request to it."""
+        """A server that refuses json_schema but takes json_object would otherwise double
+        every request to it."""
         formats: list[str | None] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
             kind = body.get("response_format", {}).get("type")
             formats.append(kind)
-            if kind == "json_object":
-                return httpx.Response(400, json={"error": {"message": "use json_schema"}})
+            if kind == "json_schema":
+                return httpx.Response(400, json={"error": {"message": "use json_object"}})
             return httpx.Response(200, json=completion(VALID_REPLY))
 
         self._call(handler)
         self._call(handler)
 
-        assert formats == ["json_object", "json_schema", "json_schema"]
+        assert formats == ["json_schema", "json_object", "json_object"]
 
     def test_a_reply_that_takes_too_long_is_not_asked_again(self) -> None:
         calls = 0
@@ -346,7 +346,7 @@ class TestTransport:
         assert str(seen[0].url) == "https://ai.example.com/v1/chat/completions"
         assert seen[0].headers["Authorization"] == "Bearer k"
         body = json.loads(seen[0].content)
-        assert body["response_format"] == {"type": "json_object"}
+        assert body["response_format"]["type"] == "json_schema"
 
 
 class TestPrompt:

@@ -195,6 +195,9 @@ ai-document-router/
 | `base_url` | str |
 | `api_key_encrypted` | bytes \| null — Fernet, key from `SECRET_KEY` |
 | `timeout_seconds` | int, 10–900, default 120 — how long to wait for a reply |
+| `context_limit` | int \| null, 1024–2,000,000 — tokens the server holds per request, prompt and reply together; null = unknown, no check (6.3b) |
+| `json_mode` | `auto` (default) \| `json_schema` \| `json_object` \| `none` — how filing asks for JSON (6.3) |
+| `price_input_per_million` / `price_output_per_million` | float \| null, ≥ 0 — what a million prompt / reply tokens cost on this connection; null = no price |
 | `created_at` | datetime |
 
 **`ai_task_step`** — one rung of one task's fallback chain.
@@ -270,6 +273,7 @@ the analysis or comparison that made it; not subject to audit retention.
 | `prompt_tokens` / `completion_tokens` / `cached_tokens` | int |
 | `without_usage` / `failed` / `fallback` | int — of `requests`: no token counts in the reply, no reply, made by a step after the first |
 | `duration_ms` / `timed` | int — summed duration over `timed` calls |
+| `cost` | float \| null — from reported tokens and the connection's prices at the time of the call; null without a price or without token counts |
 
 ### 4.2 Shared TypeScript types
 
@@ -376,13 +380,25 @@ export interface AiEndpoint {
   name: string;
   base_url: string;
   api_key_set: boolean;         // never the key itself
+  timeout_seconds: number;
+  context_limit: number | null; // tokens the server holds per request; null = unknown (6.3b)
+  json_mode: AiJsonMode;
+  price_input_per_million: number | null;
+  price_output_per_million: number | null;
   used_by: AiTask[];            // tasks that would lose a step if this were removed
 }
+
+export type AiJsonMode = "auto" | "json_schema" | "json_object" | "none";
 
 export interface AiEndpointWrite {
   name: string;
   base_url: string;
   api_key?: string;             // omitted or empty = leave the stored key unchanged
+  timeout_seconds?: number;     // omitted = keep the stored value
+  context_limit: number | null;
+  json_mode: AiJsonMode;
+  price_input_per_million: number | null;
+  price_output_per_million: number | null;
 }
 
 export interface AiTaskStep {
@@ -639,9 +655,13 @@ Input assembled by the backend:
   reply format.
 
 Call: `POST {endpoint.base_url}/chat/completions` for the first step of the filing chain,
-OpenAI-compatible. JSON output is asked for with `response_format` `json_object`, then
-`json_schema`, then none, each tried only after the previous one was refused with a 400; the
+OpenAI-compatible, with the call parameters in 6.3b. How JSON output is asked for follows the
+endpoint's `json_mode`. `auto` asks with `response_format` `json_schema` first, then
+`json_object`, then none, each tried only after the previous one was refused with a 400; the
 one an endpoint and model accepted is remembered in memory and asked for first from then on.
+A fixed mode asks only that way. The schema lists the folders sent in the prompt as an `enum`
+for `target_folder_path`, so a schema-constrained model cannot invent one, and forbids other
+keys.
 Connecting gives up after 5 seconds; the reply gets the endpoint's own `timeout_seconds`
 (default 120). One retry on a failed connection, or on a 5xx that arrived within 5 seconds;
 a reply that timed out is not retried, since the timeout is already the longest allowed,
@@ -675,7 +695,9 @@ for too. A server that sends no usable block still counts as a call, as `unrepor
 One analysis (every extraction batch, every fallback step that answered, and filing) is added
 up per task into a `UsageSummary`, stored on `Document.analysis_usage` whether the proposal
 succeeded or failed, and logged in one line with the outcome. A reused extraction costs
-nothing and shows as `extraction: null`. Tokens only — no prices.
+nothing and shows as `extraction: null`. When the connection has prices, each call's cost is
+computed from its reported tokens and stored on `ai_call.cost`; a call without token counts or
+without a price has no cost, never a cost of 0.
 
 ### 6.3a AI workflow (`services/ai_tasks.py`, `services/transcribe.py`)
 
@@ -713,6 +735,26 @@ Endpoints are named, and the name is what appears in failure messages and on the
 screen (`"Workshop PC · qwen3"`). Deleting one is **refused** while any task still references
 it, rather than quietly shortening that chain. A chain is replaced wholesale on save, not
 diffed — it is an ordered list the user edits as a whole.
+
+### 6.3b Call parameters and context limit (`services/ai.py`)
+
+Every model call sends `temperature` and `max_tokens`. Until configurations exist they are
+fixed per task: filing 0.1 and 2048 tokens, extraction 0.1 and 4096 tokens per page batch.
+A reply that stopped at the output limit (`finish_reason: "length"`) is a readable failure,
+never parsed as if it were complete: for filing a rejected proposal, for extraction a failed
+reading (filing proceeds from the text layer, as for any failed extraction).
+
+OpenAI-compatible servers cannot be told a context size per request, and Ollama silently cuts
+a prompt that does not fit, from the start, where the instructions sit. So each endpoint
+carries the `context_limit` its server is configured with (for Ollama,
+`OLLAMA_CONTEXT_LENGTH` or a Modelfile's `num_ctx`), and before sending, the backend estimates
+the prompt: a character count divided by 3 for the system prompt and message, plus a fixed
+1600 tokens per page image. The estimate errs high on purpose. When the estimate plus a
+minimum reply (filing 512, extraction 1024 tokens) exceeds the limit, the call is not made
+and fails with `PromptTooLong`, naming the estimate and the limit. Otherwise `max_tokens` is
+lowered to what is left of the limit, if that is less than the task's output limit.
+`PromptTooLong` is an `AIUnavailable`, so the chain moves to the next step, but it puts no step
+into cooldown (6.3a): it is about this prompt, not about the endpoint.
 
 ### 6.4 Approve, trash, revert (`services/router.py`)
 
@@ -892,7 +934,8 @@ likely to divide by are created at zero on startup.
 - `filename_pattern` must compile as a regex; reject on save if it doesn't.
 - An endpoint needs a name, unique across endpoints, and a `base_url` that parses as
   `https://` (allow `http://` only for RFC1918 and localhost hosts — the key travels on
-  that connection).
+  that connection). `context_limit`, when set, is 1024–2,000,000; prices, when set, are
+  0–10,000 per million tokens; `json_mode` is one of the four values in 4.1.
 - Every step of a task chain needs an endpoint that exists and a non-blank model name.
   An empty chain is valid: it means the task is switched off.
 - API key is write-only: sent only when non-empty, never returned, never logged, never put
@@ -1014,7 +1057,12 @@ The API key field renders `••••••••  (saved)` as its placeholder
 to keep the current key" — the key is never returned, so blank can only mean "leave it alone".
 Each form has a `Test connection` button that lists the endpoint's `/models` using the URL
 currently *typed*, not the one saved, since finding out the URL is wrong is the point; a saved
-endpoint's stored key is used when the key field is blank. Removing asks for confirmation, and
+endpoint's stored key is used when the key field is blank. Below the key and timeout: context
+limit (tokens, optional; helper text says to enter what the server is set to, and that for
+Ollama that is `OLLAMA_CONTEXT_LENGTH`, 4096 by default on GPUs under 24 GB), JSON mode
+(Automatic, JSON schema, JSON object, None), and price per million input and output tokens
+(both optional). The list row shows the context limit and the prices when set. Removing asks
+for confirmation, and
 the backend's refusal ("still assigned to the filing task") is surfaced verbatim.
 
 **AI tasks.** One card per task (6.3a), each an ordered list of steps labelled `First choice`,
@@ -1111,8 +1159,8 @@ modelled on the same page in cash-flow.
 
 - *Period*: This month (default), Last month, This year, or a date range.
 - *Tiles*: Requests (with analyses · comparisons), Tokens in (with how many were cached),
-  Tokens out, Total (Ø per request that reported tokens), Failed (no reply), Without counts
-  (replied without a usage block).
+  Tokens out, Total (Ø per request that reported tokens, and the period's cost when any call
+  had one), Failed (no reply), Without counts (replied without a usage block).
 - *Chart*: stacked bars of tokens per day — per month beyond about two months — grouped by
   Connection, Model or Feature (Reading, Filing, Comparisons). The legend toggles a group.
 - *Breakdown*: per group, requests, in, out, total, share, Ø / request, Ø duration, failed.

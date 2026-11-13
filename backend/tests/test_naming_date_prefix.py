@@ -67,7 +67,7 @@ def test_the_reasoning_says_the_name_was_dated() -> None:
 def test_the_model_is_asked_for_the_date_before_the_name() -> None:
     # Models write front to back; asked for the name first, they wrote "2026 ..." and the
     # full date only afterwards.
-    keys = list(ai.PROPOSAL_SCHEMA["properties"])  # type: ignore[call-overload]
+    keys = list(ai.proposal_schema()["properties"])  # type: ignore[call-overload]
     assert keys.index("document_date") < keys.index("suggested_name")
     assert keys.index("reasoning_text") < keys.index("suggested_name")
     assert ai.SYSTEM_PROMPT.index("- document_date") < ai.SYSTEM_PROMPT.index("- suggested_name")

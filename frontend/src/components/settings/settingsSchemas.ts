@@ -173,6 +173,12 @@ export type InstructionsFormValues = z.infer<typeof instructionsFormSchema>;
 // here would drift the moment one side changes. This is feedback only: catch the
 // obviously-wrong case (no scheme at all) client-side, and let the save's own error message
 // (which is authoritative) explain a rejected public http:// URL.
+const optionalPrice = z.string().refine((value) => {
+  if (value.trim() === "") return true;
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 && price <= 10_000;
+}, "Between 0 and 10,000, or blank.");
+
 export const endpointFormSchema = z.object({
   name: z.string().refine((value) => value.trim().length > 0, "Give the endpoint a name."),
   base_url: z
@@ -183,7 +189,21 @@ export const endpointFormSchema = z.object({
     const seconds = Number(value);
     return Number.isInteger(seconds) && seconds >= 10 && seconds <= 900;
   }, "Between 10 and 900 seconds."),
+  // Blank = unknown, so the backend sends without checking the prompt fits (SPEC 6.3b).
+  context_limit: z.string().refine((value) => {
+    if (value.trim() === "") return true;
+    const tokens = Number(value);
+    return Number.isInteger(tokens) && tokens >= 1024 && tokens <= 2_000_000;
+  }, "Between 1,024 and 2,000,000 tokens, or blank."),
+  json_mode: z.enum(["auto", "json_schema", "json_object", "none"]),
+  price_input_per_million: optionalPrice,
+  price_output_per_million: optionalPrice,
 });
+
+/** Blank form text as null, anything else as the number it spells. */
+export function optionalNumber(value: string): number | null {
+  return value.trim() === "" ? null : Number(value);
+}
 
 export type EndpointFormValues = z.infer<typeof endpointFormSchema>;
 

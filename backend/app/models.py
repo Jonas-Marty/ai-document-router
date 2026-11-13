@@ -54,6 +54,16 @@ class AiTask(enum.StrEnum):
     filing = "filing"
 
 
+class AiJsonMode(enum.StrEnum):
+    """How filing asks an endpoint for JSON (SPEC 6.3). Names equal values, since SQLAlchemy
+    stores enum names."""
+
+    auto = "auto"
+    json_schema = "json_schema"
+    json_object = "json_object"
+    none = "none"
+
+
 class AuditAction(enum.StrEnum):
     """Everything the audit log records (SPEC 6.7). Dotted so a category is a prefix."""
 
@@ -214,6 +224,16 @@ class AiEndpoint(SQLModel, table=True):
     # How long to wait for a reply. Per endpoint because a hosted API answers in seconds
     # and a 14B model on a home GPU, loading cold and thinking first, can take minutes.
     timeout_seconds: int = Field(default=120, sa_column_kwargs={"server_default": "120"})
+    # Tokens the server holds per request, prompt and reply together (SPEC 6.3b). Entered by
+    # hand to match the server: an OpenAI-compatible API cannot be asked for it, and Ollama
+    # cuts an overlong prompt silently instead of refusing it. None means unknown, unchecked.
+    context_limit: int | None = None
+    json_mode: AiJsonMode = Field(
+        default=AiJsonMode.auto, sa_column_kwargs={"server_default": "auto"}
+    )
+    # Per million tokens, in whatever currency the provider bills; not secrets.
+    price_input_per_million: float | None = None
+    price_output_per_million: float | None = None
     created_at: datetime
 
 
@@ -298,6 +318,8 @@ class AiCall(SQLModel, table=True):
     # Summed over `timed` calls; carried-over rows have no durations.
     duration_ms: int = 0
     timed: int = 0
+    # Priced at the time of the call, so a later price change does not rewrite history.
+    cost: float | None = None
 
 
 class User(SQLModel, table=True):

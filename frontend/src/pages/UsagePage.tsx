@@ -170,7 +170,14 @@ export default function UsagePage() {
             <Tile
               label="Total"
               value={fmt(sum.total)}
-              sub={sum.avgTokens !== null ? `Ø ${fmt(sum.avgTokens)} / request` : undefined}
+              sub={
+                [
+                  sum.avgTokens !== null ? `Ø ${fmt(sum.avgTokens)} / request` : null,
+                  sum.cost !== null ? `cost ${fmtCost(sum.cost)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || undefined
+              }
             />
             <Tile
               label="Failed"
@@ -307,6 +314,15 @@ function Segmented({
       ))}
     </fieldset>
   );
+}
+
+/** Prices carry no currency (SPEC 4.1), so neither does the cost; four places keep a
+ * month of a cheap model from reading as 0.00. */
+function fmtCost(value: number): string {
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: value < 1 ? 4 : 2,
+    maximumFractionDigits: value < 1 ? 4 : 2,
+  });
 }
 
 function Tile({

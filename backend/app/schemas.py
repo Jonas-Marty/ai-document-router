@@ -3,6 +3,7 @@ from datetime import date, datetime
 from pydantic import BaseModel, field_serializer, model_validator
 
 from app.models import (
+    AiJsonMode,
     AiTask,
     AuditEvent,
     Document,
@@ -245,6 +246,10 @@ class AiEndpointRead(BaseModel):
     base_url: str
     api_key_set: bool
     timeout_seconds: int
+    context_limit: int | None
+    json_mode: AiJsonMode
+    price_input_per_million: float | None
+    price_output_per_million: float | None
     used_by: list[AiTask]
 
 
@@ -256,6 +261,12 @@ class AiEndpointWrite(BaseModel):
     api_key: str | None = None
     # Omitted keeps the stored value (or the default, for a new endpoint).
     timeout_seconds: int | None = None
+    # Replaced as sent, like the rest of a PUT: the form always sends all four, and null is
+    # how it says "no limit known" or "no price".
+    context_limit: int | None = None
+    json_mode: AiJsonMode = AiJsonMode.auto
+    price_input_per_million: float | None = None
+    price_output_per_million: float | None = None
 
 
 class AiTaskStepWrite(BaseModel):
@@ -429,6 +440,7 @@ class AiUsageRowRead(BaseModel):
     fallback: int
     duration_ms: int
     timed: int
+    cost: float | None
 
 
 class AiUsageRead(BaseModel):

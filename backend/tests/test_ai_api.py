@@ -6,13 +6,14 @@ never handed back, only the fact that one is set.
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from app import db
 from app.config import settings as app_config
-from app.models import AiEndpoint
-from app.services import ai, crypto
+from app.models import AiEndpoint, AiTask
+from app.services import ai, ai_tasks, crypto
 
 
 def add(client: TestClient, name: str = "Local", **overrides: Any) -> dict[str, Any]:
@@ -274,3 +275,67 @@ class TestReplyTimeout:
         )
 
         assert response.status_code == 422
+
+
+class TestCapabilities:
+    """SPEC 6.3b: what a connection's server holds and charges, set per endpoint."""
+
+    def test_round_trip(self, client: TestClient) -> None:
+        created = add(
+            client,
+            context_limit=16384,
+            json_mode="json_object",
+            price_input_per_million=0.4,
+            price_output_per_million=1.6,
+        )
+
+        assert created["context_limit"] == 16384
+        assert created["json_mode"] == "json_object"
+        assert created["price_input_per_million"] == 0.4
+        assert created["price_output_per_million"] == 1.6
+
+    def test_defaults_are_unknown_limit_automatic_json_and_no_price(
+        self, client: TestClient
+    ) -> None:
+        created = add(client)
+
+        assert created["context_limit"] is None
+        assert created["json_mode"] == "auto"
+        assert created["price_input_per_million"] is None
+
+    def test_null_on_update_clears_a_limit(self, client: TestClient) -> None:
+        created = add(client, context_limit=16384)
+
+        response = client.put(
+            f"/api/v1/ai/endpoints/{created['id']}",
+            json={"name": "Local", "base_url": created["base_url"], "context_limit": None},
+        )
+
+        assert response.json()["context_limit"] is None
+
+    def test_a_steps_resolved_call_carries_them(self, client: TestClient) -> None:
+        created = add(client, context_limit=8192, price_output_per_million=2.0)
+        client.put(
+            "/api/v1/ai/tasks/filing",
+            json={"steps": [{"endpoint_id": created["id"], "model_name": "qwen3"}]},
+        )
+
+        with Session(db.engine) as session:
+            user_id = session.exec(select(AiEndpoint)).one().user_id
+            (step,) = ai_tasks.resolve_chain(session, user_id, AiTask.filing)
+
+        assert (step.context_limit, step.price_output) == (8192, 2.0)
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            {"context_limit": 512},
+            {"context_limit": 3_000_000},
+            {"price_input_per_million": -1},
+            {"price_output_per_million": 20_000},
+            {"json_mode": "yaml"},
+        ],
+    )
+    def test_rejects_out_of_range_values(self, client: TestClient, field: dict[str, Any]) -> None:
+        payload = {"name": "Local", "base_url": "http://192.168.1.50:11434/v1", **field}
+        assert client.post("/api/v1/ai/endpoints", json=payload).status_code == 422

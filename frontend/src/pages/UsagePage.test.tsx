@@ -30,6 +30,7 @@ function row(overrides: Partial<AiUsageRow> = {}): AiUsageRow {
     fallback: 0,
     duration_ms: 8_000,
     timed: 4,
+    cost: null,
     ...overrides,
   };
 }
