@@ -170,6 +170,86 @@ class TestApprove:
         assert entry.action == HistoryAction.moved
         assert entry.revertible is True
 
+    def test_assembles_the_name_from_fields_and_keeps_them_on_the_history(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = make_document(session)
+
+        _, entry = router_service.approve(
+            session,
+            webdav,
+            app_settings,
+            document.id,  # type: ignore[arg-type]
+            final_name=None,
+            final_folder_path=ROOT,
+            document_date=date(2026, 5, 13),
+            name_fields={"sender": " WIR Bank ", "account": "738.953-48.5800", "title": "Konto"},
+            actor=TEST_ACTOR,
+        )
+
+        assert entry.final_filename == "2026.05.13 WIR Bank 738.953-48.5800 Konto.pdf"
+        assert entry.name_fields == {
+            "sender": "WIR Bank",
+            "account": "738.953-48.5800",
+            "title": "Konto",
+            "period": None,
+            "number": None,
+        }
+
+    def test_a_hand_written_name_keeps_no_fields(
+        self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
+    ) -> None:
+        document = make_document(session)
+
+        _, entry = router_service.approve(
+            session,
+            webdav,
+            app_settings,
+            document.id,  # type: ignore[arg-type]
+            final_name="Whatever I like",
+            final_folder_path=ROOT,
+            document_date=None,
+            actor=TEST_ACTOR,
+        )
+
+        assert entry.name_fields is None
+
+    @pytest.mark.parametrize(
+        ("final_name", "fields", "document_date", "message"),
+        [
+            (None, None, date(2026, 5, 13), "either"),
+            ("Name", {"sender": "A", "title": "B"}, date(2026, 5, 13), "either"),
+            (None, {"sender": "A", "title": "B"}, None, "date is required"),
+            (None, {"sender": "A", "title": ""}, date(2026, 5, 13), "Title is required"),
+            (None, {"sender": "A/B", "title": "C"}, date(2026, 5, 13), "Sender can't contain /"),
+        ],
+    )
+    def test_refuses_a_name_it_cannot_build_and_moves_nothing(
+        self,
+        session: Session,
+        webdav: FakeWebDav,
+        app_settings: AppSettings,
+        final_name: str | None,
+        fields: dict[str, str] | None,
+        document_date: date | None,
+        message: str,
+    ) -> None:
+        document = make_document(session)
+
+        with pytest.raises(ValidationError, match=message):
+            router_service.approve(
+                session,
+                webdav,
+                app_settings,
+                document.id,  # type: ignore[arg-type]
+                final_name=final_name,
+                final_folder_path=ROOT,
+                document_date=document_date,
+                name_fields=fields,
+                actor=TEST_ACTOR,
+            )
+        assert webdav.moves == []
+
     def test_carries_the_extension_from_the_source_file(
         self, session: Session, webdav: FakeWebDav, app_settings: AppSettings
     ) -> None:

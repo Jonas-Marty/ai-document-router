@@ -12,6 +12,7 @@ function result(overrides: Partial<MethodResult> = {}): MethodResult {
     text_preview: "Helvetia Versicherungspolice",
     proposal: {
       suggested_name: "2026.04.16 Helvetia Police",
+      fields: null,
       target_folder_path: "/Documents/Insurance",
       document_date: "2026-04-16",
       confidence_score: 0.88,
@@ -61,6 +62,7 @@ describe("MethodComparison", () => {
           label: "Markdown · Local · qwen2.5vl:7b",
           proposal: {
             suggested_name: "2026.04.16 Helvetia Versicherungspolice",
+            fields: null,
             target_folder_path: "/Documents/Insurance",
             document_date: "2026-04-16",
             confidence_score: 0.95,

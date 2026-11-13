@@ -1040,3 +1040,30 @@ meaningful. One line of "why" each; not a full ADR log.
   change does not rewrite history. The usage page shows the period's cost in the Total tile.
 - **No thinking switch yet.** Ollama's `/v1` takes `reasoning_effort`, but the accepted
   values are per model and unverified; left for the per-configuration parameters (finding 9).
+
+## Redesign milestone 2 — field-based proposals (2026-11-13)
+
+- **The template is fixed** (`date sender [account] title [period] [number]`, single spaces,
+  date as `YYYY.MM.DD`) until Archive knowledge makes it editable in milestone 4. No settings
+  column yet: it would be migrated again once the editor exists.
+- **Sender and title are required in a model reply; the date is not.** A reply without a
+  sender or title is rejected (fully valid or a readable failure). A missing date is a real
+  case (some documents carry none), so the name is assembled without it and review asks for
+  one before approving. Any "none"-like word in a field counts as empty.
+- **Dots, spaces and dashes are trimmed off each field's ends in a model reply.** "Rechnung
+  Nr." is a good title, and the name it ends would only be refused for its trailing dot.
+  Forbidden characters are still a rejection, not silently replaced, as before (SPEC 6.3).
+  An invoice number sent as a JSON number is taken as text.
+- **Approve takes fields or a hand-written name, never both**, and with fields the backend
+  assembles the name itself; the client's preview is never what gets filed. Approving from
+  fields needs the document date.
+- **Approved fields are stored on `history_entry.name_fields`** now, so milestone 4 has
+  examples from the first approvals onwards. A hand-written name stores none.
+- **Existing proposals need no backfill.** All-null fields mark a free name from before
+  fields existed; the review form opens those with "Write the name by hand" ticked.
+- **`align_date_prefix` and `with_date_prefix` are removed.** The date in an assembled name
+  comes from the date field, so the symptom they patched (finding 4) cannot occur. The
+  `filename_pattern` warning stays as a frontend hint on the effective name.
+- **Unticking "Write the name by hand" returns to the fields as they were**, not to fields
+  re-parsed from the edited name: splitting a free name back into fields is guesswork.
+- **The `N` shortcut focuses Sender**, or the name itself while it is hand-written.

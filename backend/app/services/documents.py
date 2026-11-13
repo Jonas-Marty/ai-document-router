@@ -4,8 +4,8 @@ from sqlalchemy import case, func
 from sqlmodel import Session, select
 
 from app.models import AuditAction, Document, DocumentStatus, Proposal, ProposalStatus
-from app.schemas import AIProposalRead, DocumentRead
-from app.services import ai_tasks, audit, progress
+from app.schemas import AIProposalRead, DocumentRead, NameFieldsBody
+from app.services import ai_tasks, audit, naming, progress
 from app.services.audit import Actor
 from app.services.errors import NotFoundError
 
@@ -29,12 +29,30 @@ def get_document(session: Session, user_id: str, document_id: str) -> Document:
     return document
 
 
+def proposal_fields(proposal: Proposal) -> dict[str, str | None] | None:
+    """The proposal's name fields, or None for a free name from before fields existed."""
+    if proposal.sender is None or proposal.title is None:
+        return None
+    return naming.NameFields(
+        sender=proposal.sender,
+        title=proposal.title,
+        account=proposal.account,
+        period=proposal.period,
+        number=proposal.number,
+    ).to_json()
+
+
+def _fields_body(fields: dict[str, str | None] | None) -> NameFieldsBody | None:
+    return NameFieldsBody.model_validate(fields) if fields else None
+
+
 def read_proposal(session: Session, document_id: str) -> AIProposalRead | None:
     proposal = session.exec(select(Proposal).where(Proposal.document_id == document_id)).first()
     if proposal is None:
         return None
     return AIProposalRead(
         suggested_name=proposal.suggested_name,
+        fields=_fields_body(proposal_fields(proposal)),
         target_folder_path=proposal.target_folder_path,
         document_date=proposal.document_date,
         confidence_score=proposal.confidence_score,

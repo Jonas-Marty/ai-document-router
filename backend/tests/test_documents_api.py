@@ -1,7 +1,7 @@
 """Tests for /queue, /documents/{id}, /content and /regenerate."""
 
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -116,6 +116,39 @@ class TestQueue:
         assert item["extension"] == ".pdf"
         assert item["proposal"]["suggested_name"] == "2026-08-21_Swisscom"
         assert item["proposal"]["confidence_score"] == 0.91
+        # Stored before name fields existed: a whole, free name (SPEC 7.1a).
+        assert item["proposal"]["fields"] is None
+
+    def test_a_field_proposal_returns_its_fields(self, client: TestClient) -> None:
+        with Session(db.engine) as session:
+            document = make_document("scan.pdf")
+            session.add(document)
+            session.commit()
+            session.add(
+                Proposal(
+                    document_id=document.id,
+                    suggested_name="2026.05.13 WIR Bank Konto",
+                    target_folder_path="/Documents/Bank",
+                    document_date=date(2026, 5, 13),
+                    sender="WIR Bank",
+                    title="Konto",
+                    confidence_score=0.9,
+                    reasoning_text="Letterhead.",
+                    model_name="m",
+                    created_at=datetime(2026, 5, 13, 9, 6),
+                )
+            )
+            session.commit()
+
+        (item,) = client.get("/api/v1/queue").json()["items"]
+
+        assert item["proposal"]["fields"] == {
+            "sender": "WIR Bank",
+            "account": None,
+            "title": "Konto",
+            "period": None,
+            "number": None,
+        }
 
     def test_pending_always_precedes_skipped(self, client: TestClient) -> None:
         """SPEC 5: a skipped document never reappears before an unskipped one -- even

@@ -16,12 +16,17 @@ from app.services.ai import AIUnavailable, ProposalRejected, request_proposal
 ROOTS = ["/Documents", "/Archive"]
 
 VALID_REPLY = {
-    "suggested_name": "2026-08-21_Swisscom_Rechnung",
-    "target_folder_path": "/Documents/Finance/2026",
-    "document_date": "2026-08-21",
-    "confidence_score": 0.91,
     "reasoning_text": "Invoice header shows Swisscom, dated 21.08.2026.",
+    "document_date": "2026-08-21",
+    "sender": "Swisscom",
+    "account": None,
+    "title": "Rechnung",
+    "period": "August 2026",
+    "number": "1234567",
+    "target_folder_path": "/Documents/Finance/2026",
+    "confidence_score": 0.91,
 }
+VALID_NAME = "2026.08.21 Swisscom Rechnung August 2026 1234567"
 
 
 def completion(reply: dict[str, Any] | str) -> dict[str, Any]:
@@ -48,15 +53,34 @@ class TestValidReply:
     def test_parses_every_field(self) -> None:
         proposal = call(VALID_REPLY)
 
-        assert proposal.suggested_name == "2026-08-21_Swisscom_Rechnung"
+        assert proposal.suggested_name == VALID_NAME
+        assert proposal.fields is not None
+        assert (proposal.fields.sender, proposal.fields.account) == ("Swisscom", None)
         assert proposal.target_folder_path == "/Documents/Finance/2026"
         assert proposal.document_date is not None
         assert proposal.document_date.isoformat() == "2026-08-21"
         assert proposal.confidence_score == 0.91
         assert proposal.model_name == "gpt-4o"
 
-    def test_accepts_a_null_date(self) -> None:
-        assert call({**VALID_REPLY, "document_date": None}).document_date is None
+    def test_accepts_a_null_date_and_names_without_it(self) -> None:
+        proposal = call({**VALID_REPLY, "document_date": None})
+        assert proposal.document_date is None
+        assert proposal.suggested_name == "Swisscom Rechnung August 2026 1234567"
+
+    @pytest.mark.parametrize("value", [None, "", "null", "N/A", "none", "  "])
+    def test_an_optional_field_saying_none_is_left_out(self, value: object) -> None:
+        proposal = call({**VALID_REPLY, "number": value})
+        assert proposal.fields is not None and proposal.fields.number is None
+        assert proposal.suggested_name == "2026.08.21 Swisscom Rechnung August 2026"
+
+    def test_a_number_given_as_a_json_number_is_kept(self) -> None:
+        proposal = call({**VALID_REPLY, "number": 9291491})
+        assert proposal.suggested_name.endswith(" 9291491")
+
+    def test_trailing_dots_and_dashes_are_trimmed_off_a_field(self) -> None:
+        """ "Rechnung Nr." is a good answer; the name it ends would only fail for its dot."""
+        proposal = call({**VALID_REPLY, "title": "Rechnung Nr.", "period": None, "number": None})
+        assert proposal.suggested_name == "2026.08.21 Swisscom Rechnung Nr"
 
     @pytest.mark.parametrize("value", ["null", "none", "None", "N/A", "n/a", "-", "  "])
     def test_treats_nullish_strings_as_no_date(self, value: str) -> None:
@@ -80,50 +104,33 @@ class TestRejectsBadOutput:
     @pytest.mark.parametrize(
         ("field", "value"),
         [
-            ("suggested_name", "invoice/../../etc/passwd"),
-            ("suggested_name", "in|valid"),
-            ("suggested_name", ""),
-            ("suggested_name", "   "),
-            ("suggested_name", 42),
-            ("suggested_name", None),
-            ("suggested_name", "x" * 201),
-            ("suggested_name", ".hidden"),
-            ("suggested_name", "trailing-"),
-            ("suggested_name", "trailing."),
-            ("suggested_name", "-leading"),
+            ("sender", ""),
+            ("sender", None),
+            ("sender", "null"),
+            ("title", "   "),
+            ("title", ["Rechnung"]),
+            ("title", "Rechnung 01/2026"),
+            ("account", "CH33|0070"),
+            ("period", "x" * 201),
+            ("number", "12\x0034"),
         ],
-        ids=lambda v: f"name={v!r}"[:40],
+        ids=lambda v: f"{v!r}"[:40],
     )
-    def test_rejects_bad_names(self, field: str, value: object) -> None:
-        with pytest.raises(ProposalRejected):
+    def test_rejects_bad_fields_naming_them(self, field: str, value: object) -> None:
+        with pytest.raises(ProposalRejected, match="field|name"):
             call({**VALID_REPLY, field: value})
 
-    def test_trims_surrounding_whitespace_rather_than_rejecting(self) -> None:
-        """Whitespace is the model being sloppy, not the model being wrong. SPEC 7.1
-        trims it; a trailing dot or hyphen is still a rejection."""
-        assert call({**VALID_REPLY, "suggested_name": "  Invoice  "}).suggested_name == "Invoice"
-
-    @pytest.mark.parametrize("name", ["invoice.pdf", "scan.PDF", "photo.png", "backup.tar.gz"])
-    def test_rejects_a_name_carrying_an_extension(self, name: str) -> None:
+    def test_rejects_a_name_carrying_an_extension(self) -> None:
         """The real extension is carried from the source file; accepting one here would
         produce 'invoice.pdf.pdf' after the move."""
         with pytest.raises(ProposalRejected, match="extension"):
-            call({**VALID_REPLY, "suggested_name": name})
+            call({**VALID_REPLY, "period": None, "number": "invoice.pdf"})
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "2026.05.18 Reka Kartenersatz",
-            "2026.01.13 Green Rechnung 01.01.2026 - 31.01.2026 9004761",
-            "2026.02.01 SAC Schweizer Alpen-Club Spendenbescheinigung 2025",
-            "2026.03.26 Microsoft Learn Credentials MartyJonas-7379",
-        ],
-    )
-    def test_allows_dots_used_as_date_separators(self, name: str) -> None:
-        """A real filing convention here is 'YYYY.MM.DD Sender Description'. Treating any
-        dot as an extension rejected every proposal this user's model produced -- the
-        mocked cases all used hyphens, so nothing caught it until real data did."""
-        assert call({**VALID_REPLY, "suggested_name": name}).suggested_name == name
+    def test_allows_dots_used_as_date_separators(self) -> None:
+        """'YYYY.MM.DD Sender ...' and printed periods are full of dots that are not an
+        extension."""
+        reply = {**VALID_REPLY, "period": "01.01.2026 - 31.01.2026", "number": "9004761"}
+        assert call(reply).suggested_name.endswith("01.01.2026 - 31.01.2026 9004761")
 
     @pytest.mark.parametrize(
         "folder",
@@ -153,7 +160,7 @@ class TestRejectsBadOutput:
         fence is the usual one. Rejecting it would fail a proposal that is entirely correct."""
         fenced = f"```json\n{json.dumps(VALID_REPLY)}\n```"
 
-        assert call(fenced).suggested_name == VALID_REPLY["suggested_name"]
+        assert call(fenced).suggested_name == VALID_NAME
 
     def test_rejects_non_json_content(self) -> None:
         with pytest.raises(ProposalRejected, match="JSON"):
@@ -206,7 +213,7 @@ class TestTransport:
                 return httpx.Response(503)
             return httpx.Response(200, json=completion(VALID_REPLY))
 
-        assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
+        assert self._call(handler).suggested_name == VALID_NAME
         assert len(calls) == 2
 
     def test_retries_once_on_timeout_then_succeeds(self) -> None:
@@ -276,7 +283,7 @@ class TestTransport:
                 return httpx.Response(400, json={"error": {"message": "response_format"}})
             return httpx.Response(200, json=completion(VALID_REPLY))
 
-        assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
+        assert self._call(handler).suggested_name == VALID_NAME
         formats = [body.get("response_format", {}).get("type") for body in bodies]
         assert formats == ["json_schema", "json_object", None]
         assert bodies[2]["messages"] == bodies[0]["messages"]
@@ -315,7 +322,7 @@ class TestTransport:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=completion(json.dumps([VALID_REPLY])))
 
-        assert self._call(handler).suggested_name == VALID_REPLY["suggested_name"]
+        assert self._call(handler).suggested_name == VALID_NAME
 
     def test_reports_the_reason_the_endpoint_gave(self) -> None:
         """A 400 with no detail is unactionable: an unsupported field, a context overflow and

@@ -7,6 +7,7 @@ import { QueueList } from "./QueueList";
 function proposal(overrides: Partial<AIProposal> = {}): AIProposal {
   return {
     suggested_name: "2026.05.18 Swisscom Rechnung",
+    fields: null,
     target_folder_path: "/Documents/Finance",
     document_date: "2026-05-18",
     confidence_score: 0.9,

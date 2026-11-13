@@ -4,7 +4,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { useFolderContext } from "@/hooks/useFolders";
 import { useSettings } from "@/hooks/useSettings";
-import { trimStemOnBlur } from "@/lib/naming";
+import {
+  FIELD_LABELS,
+  NAME_FIELDS,
+  type NameFieldKey,
+  REQUIRED_FIELDS,
+  trimStemOnBlur,
+} from "@/lib/naming";
 import { relativeTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { ConfidenceBadge, isLowConfidence } from "./ConfidenceBadge";
@@ -12,7 +18,7 @@ import { ExtractedText } from "./ExtractedText";
 import { ModelChip, ModelHint } from "./ModelChip";
 import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
-import type { ReviewFormValues } from "./reviewFormSchema";
+import { effectiveName, type ReviewFormValues } from "./reviewFormSchema";
 import { SiblingList } from "./SiblingList";
 import { TokenUsage } from "./TokenUsage";
 
@@ -35,6 +41,41 @@ function compileFilenamePattern(pattern: string | null): RegExp | null {
   }
 }
 
+/** One of the name's fields (SPEC 7.1a), trimmed on blur like the name itself. */
+function NameFieldInput({ field }: { field: NameFieldKey }) {
+  const {
+    register,
+    setValue,
+    formState: { errors },
+  } = useFormContext<ReviewFormValues>();
+  const registered = register(field);
+  const error = errors[field];
+  const id = `review-${field}`;
+  const optional = !REQUIRED_FIELDS.has(field);
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>
+        {FIELD_LABELS[field]}
+        {optional && <span className="font-normal text-muted-foreground"> (optional)</span>}
+      </Label>
+      <Input
+        id={id}
+        aria-invalid={!!error}
+        {...registered}
+        onBlur={(e) => {
+          registered.onBlur(e);
+          const trimmed = e.target.value.trim();
+          if (trimmed !== e.target.value) {
+            setValue(field, trimmed, { shouldValidate: true, shouldDirty: true });
+          }
+        }}
+      />
+      {error && <p className="text-sm text-destructive">{error.message}</p>}
+    </div>
+  );
+}
+
 /** SPEC 8.3's field order 1-6 (order 7, the actions, lives in the sticky/inline action bar
  * that shares this form's react-hook-form instance via FormProvider -- see ReviewPage). */
 export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFormProps) {
@@ -46,8 +87,10 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
   } = useFormContext<ReviewFormValues>();
   const { data: settings } = useSettings();
   const nameField = register("name");
-  const folderPath = watch("folderPath");
-  const name = watch("name");
+  const values = watch();
+  const folderPath = values.folderPath;
+  const handWritten = values.handWritten;
+  const name = effectiveName(values);
 
   const patternRe = useMemo(
     () => compileFilenamePattern(settings?.filename_pattern ?? null),
@@ -97,31 +140,72 @@ export function ReviewForm({ document, folderContext, onChooseFolder }: ReviewFo
 
       <div className="space-y-1.5">
         <Label htmlFor="review-document-date">Document date</Label>
-        <Input id="review-document-date" type="date" {...register("documentDate")} />
+        <Input
+          id="review-document-date"
+          type="date"
+          aria-invalid={!!errors.documentDate}
+          {...register("documentDate")}
+        />
+        {errors.documentDate && (
+          <p className="text-sm text-destructive">{errors.documentDate.message}</p>
+        )}
       </div>
 
+      {!handWritten && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {NAME_FIELDS.map((key) => (
+            <NameFieldInput key={key} field={key} />
+          ))}
+        </div>
+      )}
+
       <div className="space-y-1.5">
-        <Label htmlFor="review-name">File name</Label>
+        <Label htmlFor={handWritten ? "review-name" : undefined}>File name</Label>
         <div className="flex items-center gap-2">
-          <Input
-            id="review-name"
-            className="min-w-0 flex-1 font-mono"
-            // Long names are clipped in the field; the native tooltip shows the whole name.
-            title={name}
-            aria-invalid={!!errors.name || collision}
-            {...nameField}
-            onBlur={(e) => {
-              nameField.onBlur(e);
-              const trimmed = trimStemOnBlur(e.target.value);
-              if (trimmed !== e.target.value) {
-                setValue("name", trimmed, { shouldValidate: true, shouldDirty: true });
-              }
-            }}
-          />
+          {handWritten ? (
+            <Input
+              id="review-name"
+              className="min-w-0 flex-1 font-mono"
+              // Long names are clipped in the field; the native tooltip shows the whole name.
+              title={name}
+              aria-invalid={!!errors.name || collision}
+              {...nameField}
+              onBlur={(e) => {
+                nameField.onBlur(e);
+                const trimmed = trimStemOnBlur(e.target.value);
+                if (trimmed !== e.target.value) {
+                  setValue("name", trimmed, { shouldValidate: true, shouldDirty: true });
+                }
+              }}
+            />
+          ) : (
+            // The live result of the fields above; what the backend assembles again on approve.
+            <output
+              aria-label="Assembled file name"
+              className="min-h-9 min-w-0 flex-1 break-words rounded-md border border-dashed border-border px-2.5 py-1.5 font-mono text-sm"
+            >
+              {name || <span className="text-muted-foreground">Fill in the fields above</span>}
+            </output>
+          )}
           <span className="shrink-0 rounded-md border border-border bg-muted px-2.5 py-1.5 font-mono text-sm text-muted-foreground">
             {document.extension}
           </span>
         </div>
+        <label className="flex min-h-11 items-center gap-2 text-sm sm:min-h-0">
+          <input
+            type="checkbox"
+            className="size-4 accent-primary"
+            checked={handWritten}
+            onChange={(e) => {
+              const options = { shouldValidate: true, shouldDirty: true };
+              // Start the hand-written name from what the fields made, not from blank. Leaving
+              // hand-writing keeps the fields as they were.
+              if (e.target.checked) setValue("name", name, options);
+              setValue("handWritten", e.target.checked, options);
+            }}
+          />
+          Write the name by hand
+        </label>
         {errors.name ? (
           <p className="text-sm text-destructive">{errors.name.message}</p>
         ) : collision ? (

@@ -24,8 +24,12 @@ FOLDERS = ["/Documents", "/Documents/Bank", "/Documents/Versicherung"]
 REPLY = {
     "reasoning_text": "Letterhead says WIR Bank.",
     "document_date": "2026-05-13",
+    "sender": "WIR Bank",
+    "account": "738.953-48.5800",
+    "title": "Kontoeröffnungsbestätigung",
+    "period": None,
+    "number": None,
     "target_folder_path": "/Documents/Bank",
-    "suggested_name": "2026.05.13 WIR Bank Kontoeröffnungsbestätigung",
     "confidence_score": 0.9,
 }
 

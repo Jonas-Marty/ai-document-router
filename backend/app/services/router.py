@@ -7,6 +7,7 @@ browser and they can retry. The reverse order would mark a document filed that n
 """
 
 import logging
+from collections.abc import Mapping
 from datetime import date
 
 from sqlmodel import Session, select
@@ -23,7 +24,7 @@ from app.models import (
 )
 from app.services import audit, metrics, naming, searchable
 from app.services.audit import Actor
-from app.services.documents import get_document
+from app.services.documents import get_document, proposal_fields
 from app.services.errors import (
     AppError,
     FilenameCollision,
@@ -44,16 +45,31 @@ def approve(
     webdav: WebDavService,
     app_settings: AppSettings,
     document_id: str,
-    final_name: str,
+    final_name: str | None,
     final_folder_path: str,
     document_date: date | None,
     *,
+    name_fields: Mapping[str, object] | None = None,
     actor: Actor,
 ) -> tuple[Document, HistoryEntry]:
-    """File a document under a new name. Synchronous -- the user is waiting."""
+    """File a document under a new name. Synchronous -- the user is waiting.
+
+    The name is either `name_fields`, assembled here (SPEC 7.1a) so the client's preview is
+    never what gets filed, or a hand-written `final_name`. Exactly one of the two.
+    """
     document = _require_queued(session, app_settings.user_id, document_id)
 
-    stem = naming.validate_stem(final_name)
+    fields: naming.NameFields | None = None
+    if (name_fields is None) == (final_name is None):
+        raise ValidationError("Send either the name's fields or a hand-written name.")
+    if name_fields is not None:
+        fields = naming.clean_fields(name_fields)
+        if document_date is None:
+            raise ValidationError("Document date is required for a name built from fields.")
+        stem = naming.assemble_name(document_date, fields)
+    else:
+        assert final_name is not None
+        stem = naming.validate_stem(final_name)
     # Checked against allowed_root_folders specifically, NOT the WebDAV service's wider
     # permitted set. That set also contains the trash and watch folders, and approving into
     # the watch folder would have the poller re-ingest the file on its next tick, putting
@@ -98,6 +114,7 @@ def approve(
         source_folder_path=source_folder,
         action=HistoryAction.moved,
         document_date=document_date,
+        name_fields=fields,
     )
     document.webdav_path = destination
     document.status = DocumentStatus.moved
@@ -348,6 +365,7 @@ def _record_history(
     source_folder_path: str,
     action: HistoryAction,
     document_date: date | None,
+    name_fields: naming.NameFields | None = None,
 ) -> HistoryEntry:
     """Snapshot the AI's proposal and record what the user actually chose.
 
@@ -368,6 +386,7 @@ def _record_history(
             "confidence_score": proposal.confidence_score,
             "reasoning_text": proposal.reasoning_text,
             "model_name": proposal.model_name,
+            "fields": proposal_fields(proposal),
         }
         if action is HistoryAction.moved:
             proposed_name = f"{proposal.suggested_name}{extension_of(document.original_filename)}"
@@ -392,6 +411,7 @@ def _record_history(
         action=action,
         was_overridden=overridden,
         suggestion_snapshot=snapshot,
+        name_fields=dict(name_fields.to_json()) if name_fields else None,
         processed_at=to_storage(utc_now()),
         revertible=True,
     )

@@ -1,11 +1,12 @@
-"""Filename validation, SPEC 7.1.
+"""Filename validation and assembly from name fields, SPEC 7.1 and 7.1a.
 
 The frontend validates the same rules for feedback; this is the copy that actually protects
 anything (CLAUDE.md rule 6).
 """
 
-import re
 import unicodedata
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date
 
 from app.services.errors import ValidationError
@@ -17,7 +18,7 @@ MAX_FOLDER_NAME_LENGTH = 100
 FORBIDDEN_CHARS = set('/\\:*?"<>|')
 
 # SPEC 7.1: no leading or trailing dot, space, or hyphen.
-_EDGE_CHARS = ". -"
+EDGE_CHARS = ". -"
 
 
 def validate_stem(value: str) -> str:
@@ -56,39 +57,75 @@ def _validate(value: str, max_length: int, label: str) -> str:
         raise ValidationError(f"{label} can't contain control characters.")
     if ".." in name:
         raise ValidationError(f"{label} can't contain '..'")
-    if name != name.strip(_EDGE_CHARS):
+    if name != name.strip(EDGE_CHARS):
         raise ValidationError(f"{label} can't start or end with a dot, space, or hyphen.")
 
     return name
 
 
-# A date-like token at the start of a name, complete or not: "2026", "2026.04", "2026-04-16",
-# "16.04.2026". Only ever replaced when the result then matches the user's own pattern.
-_LEADING_DATE = re.compile(
-    r"^(?:\d{4}(?:[._-]\d{1,2}){0,2}|\d{1,2}[._-]\d{1,2}[._-]\d{4})(?:\s+|$)"
-)
-_DATE_FORMATS = ("%Y.%m.%d", "%Y-%m-%d", "%Y%m%d", "%d.%m.%Y")
+# SPEC 7.1a. The name's parts after the date, in template order, with how they are named in
+# error messages. Fixed until Archive knowledge makes the template editable.
+FIELD_LABELS: dict[str, str] = {
+    "sender": "Sender",
+    "account": "Account",
+    "title": "Title",
+    "period": "Period",
+    "number": "Number",
+}
+REQUIRED_FIELDS = frozenset({"sender", "title"})
+DATE_FORMAT = "%Y.%m.%d"
 
 
-def align_date_prefix(name: str, document_date: date | None, pattern: str | None) -> str:
-    """Put the proposal's own document date at the start of its name, if the pattern wants one.
+@dataclass(frozen=True)
+class NameFields:
+    """A name's parts besides its date (SPEC 7.1a), trimmed; optional ones None, never ""."""
 
-    Small models get the date field right and then write a truncated one into the name
-    ("2026 Helvetia ..." with a document_date of 2026-04-16). The user's filename pattern
-    decides whether a date prefix is wanted and in which format: the name is only changed
-    when it doesn't match the pattern and the dated version does.
+    sender: str
+    title: str
+    account: str | None = None
+    period: str | None = None
+    number: str | None = None
+
+    def to_json(self) -> dict[str, str | None]:
+        return {key: getattr(self, key) for key in FIELD_LABELS}
+
+
+def clean_fields(values: Mapping[str, object]) -> NameFields:
+    """Trim and check each field, naming the field in the error. Raises ValidationError."""
+    cleaned: dict[str, str | None] = {}
+    for key, label in FIELD_LABELS.items():
+        value = values.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValidationError(f"{label} must be text.")
+        text = (value or "").strip()
+        if not text:
+            if key in REQUIRED_FIELDS:
+                raise ValidationError(f"{label} is required.")
+            cleaned[key] = None
+            continue
+        found = FORBIDDEN_CHARS & set(text)
+        if found:
+            raise ValidationError(f"{label} can't contain {' '.join(sorted(found))}")
+        if any(unicodedata.category(char) == "Cc" for char in text):
+            raise ValidationError(f"{label} can't contain control characters.")
+        cleaned[key] = text
+    sender, title = cleaned["sender"], cleaned["title"]
+    assert sender is not None and title is not None  # required above
+    return NameFields(
+        sender=sender,
+        title=title,
+        account=cleaned["account"],
+        period=cleaned["period"],
+        number=cleaned["number"],
+    )
+
+
+def assemble_name(document_date: date | None, fields: NameFields) -> str:
+    """`date sender [account] title [period] [number]`, empty parts skipped, checked by 7.1.
+
+    A missing date leaves it out rather than failing: a model may find none, and the
+    review form asks for one before the name can be approved.
     """
-    if not pattern or document_date is None:
-        return name
-    try:
-        expected = re.compile(pattern)
-    except re.error:
-        return name
-    if expected.search(name):
-        return name
-    rest = _LEADING_DATE.sub("", name, count=1)
-    for date_format in _DATE_FORMATS:
-        candidate = f"{document_date.strftime(date_format)} {rest}".strip()
-        if len(candidate) <= MAX_STEM_LENGTH and expected.search(candidate):
-            return candidate
-    return name
+    parts = [document_date.strftime(DATE_FORMAT) if document_date else None]
+    parts += [getattr(fields, key) for key in FIELD_LABELS]
+    return validate_stem(" ".join(part for part in parts if part))

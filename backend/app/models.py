@@ -140,6 +140,13 @@ class Proposal(SQLModel, table=True):
     reasoning_text: str
     model_name: str
     created_at: datetime
+    # The name's fields (SPEC 7.1a); suggested_name is assembled from them and document_date.
+    # All null on a proposal from before fields existed: its name is a whole, free name.
+    sender: str | None = None
+    account: str | None = None
+    title: str | None = None
+    period: str | None = None
+    number: str | None = None
     # The exact user message built for this proposal (folder tree, sample filenames, naming
     # hint, document text) -- SPEC 8.3.5a. Nullable because proposals stored before this field
     # existed have nothing to backfill it with.
@@ -165,6 +172,9 @@ class HistoryEntry(SQLModel, table=True):
     action: HistoryAction
     was_overridden: bool
     suggestion_snapshot: dict[str, object] = Field(sa_column=Column(JSON))
+    # The approved name fields, kept as examples for later proposals; None for a hand-written
+    # name, which has no fields, and for a trash.
+    name_fields: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
     processed_at: datetime
     revertible: bool
 

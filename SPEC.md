@@ -143,9 +143,11 @@ ai-document-router/
 |---|---|
 | `id` | str (uuid4) PK |
 | `document_id` | FK, unique |
-| `suggested_name` | str — **without** extension |
+| `suggested_name` | str — **without** extension; assembled from the fields below (7.1a), or a whole name for proposals from before fields existed |
 | `target_folder_path` | str |
-| `document_date` | date \| null |
+| `document_date` | date \| null — also the name's `date` field |
+| `sender` / `title` | str \| null — null only on a free-name proposal from before fields existed |
+| `account` / `period` / `number` | str \| null — optional name fields, null when the document has none |
 | `confidence_score` | float 0.0–1.0 |
 | `reasoning_text` | str |
 | `model_name` | str — which model produced it |
@@ -164,6 +166,7 @@ ai-document-router/
 | `action` | enum `moved` \| `trashed` |
 | `was_overridden` | bool |
 | `suggestion_snapshot` | JSON — the AI's original proposal, for future training |
+| `name_fields` | JSON \| null — the approved `{sender, account, title, period, number}`; null for a hand-written name or a trash |
 | `processed_at` | datetime |
 | `revertible` | bool |
 
@@ -284,8 +287,18 @@ snake_case; do not transform keys.
 export type DocumentStatus = "pending" | "skipped" | "moved" | "trashed" | "failed";
 export type ProposalStatus = "pending" | "ready" | "failed";
 
+/** The name's parts besides the date (7.1a). Optional ones are null, never "". */
+export interface NameFields {
+  sender: string;
+  account: string | null;
+  title: string;
+  period: string | null;
+  number: string | null;
+}
+
 export interface AIProposal {
-  suggested_name: string;       // no extension
+  suggested_name: string;       // no extension; assembled from document_date + fields
+  fields: NameFields | null;    // null: a whole name from before fields existed
   target_folder_path: string;
   document_date: string | null; // "YYYY-MM-DD"
   confidence_score: number;     // 0.0–1.0
@@ -504,7 +517,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | GET | `/queue?limit=20` | — | `{ items: Document[], total_pending: number }` |
 | GET | `/documents/{id}` | — | `Document` |
 | GET | `/documents/{id}/content` | — | file bytes, streamed, `Content-Type` per mime |
-| POST | `/documents/{id}/approve` | `{ final_name, final_folder_path, document_date }` | `{ document, history_entry }` |
+| POST | `/documents/{id}/approve` | `{ final_folder_path, document_date, name_fields }` or `{ final_folder_path, document_date, final_name }` — exactly one of the two; with fields the backend assembles the name and `document_date` is required | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
 | POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document every configured way; stores nothing |
@@ -667,21 +680,33 @@ Connecting gives up after 5 seconds; the reply gets the endpoint's own `timeout_
 a reply that timed out is not retried, since the timeout is already the longest allowed,
 and neither is a slower 5xx: that is a proxy such as LiteLLM that has already retried its
 upstream and given up.
-The model must return exactly:
+The model extracts the name's fields; it does not write the name. It must return exactly
+these keys, in this order:
 
 ```json
 {
-  "suggested_name": "2026-08-21_Swisscom_Rechnung",
-  "target_folder_path": "/Documents/Finance/2026",
-  "document_date": "2026-08-21",
-  "confidence_score": 0.91,
-  "reasoning_text": "Invoice header shows Swisscom, dated 21.08.2026..."
+  "reasoning_text": "Letterhead WIR Bank, account 738.953-48.5800, dated 13.05.2026...",
+  "document_date": "2026-05-13",
+  "sender": "WIR Bank",
+  "account": "738.953-48.5800",
+  "title": "Kontoeröffnungsbestätigung",
+  "period": null,
+  "number": null,
+  "target_folder_path": "/Documents/Bank",
+  "confidence_score": 0.91
 }
 ```
 
-Validate the response: name has no extension and no illegal characters, folder is inside an
-allowed root, date parses or is null, confidence is clamped to 0.0–1.0. On any validation
-failure, `proposal_status=failed` with the reason — never store a half-valid proposal.
+The system prompt says what each field is (7.1a), that `sender` is the short everyday name
+rather than the legal one, and that an optional field is left null rather than filled with
+something nearby. The backend assembles `suggested_name` from the fields (7.1a).
+
+Validate the response: `sender` and `title` are non-empty; optional fields that are missing,
+empty or a word for "none" become null; no field contains a character 7.1 forbids; the
+assembled name passes 7.1; the folder is inside an allowed root; the date parses or is null;
+confidence is clamped to 0.0–1.0. On any validation failure, `proposal_status=failed` with
+the reason naming the field — never store a half-valid proposal. A null date is valid: the
+name is assembled without it, and review asks for one.
 
 The exact user message built for the request (folder tree, sample filenames, naming hint,
 document text) is stored on `Proposal.prompt_text` alongside the result, so the review screen
@@ -918,6 +943,32 @@ likely to divide by are created at zero on startup.
   pattern", since the hint is often a long naming guide.
 - Collision with an existing file in the target: **blocking**, approve disabled.
 
+### 7.1a Name fields
+
+A name is assembled from fields, in this order, joined by single spaces, empty ones skipped:
+
+```
+date sender [account] title [period] [number]
+```
+
+| field | required | example |
+|---|---|---|
+| `date` | yes | `2026.01.09` — `document_date` written `YYYY.MM.DD` |
+| `sender` | yes | `ZKB`, `WIR Bank` — the short name, not the legal name |
+| `account` | no | `738.953-48.5800` — IBAN, account, contract or policy the owner holds with the sender |
+| `title` | yes | `Kontoeröffnungsbestätigung` — as printed, the document's language, normal case |
+| `period` | no | `01.09.2026 - 30.09.2026` |
+| `number` | no | `9291491` — invoice or document number |
+
+Each field is trimmed, and a field may not contain a character 7.1 forbids or a control
+character. The assembled name must pass 7.1. The template is fixed until Archive knowledge
+makes it editable. Assembly lives in `services/naming.py` and is mirrored in
+`lib/naming.ts` for the live preview; on approve the backend assembles again from the fields
+it was sent, so the client's preview is never what gets filed.
+
+A **hand-written name** replaces the fields: approve sends `final_name` instead of
+`name_fields`, and the history entry stores no fields.
+
 ### 7.2 Folder
 - Must be inside one of `allowed_root_folders`. Enforced server-side regardless of the UI.
 - New folder names follow the same character rules, 1–100 chars, must not already exist.
@@ -978,8 +1029,14 @@ filename and size shown above, muted.
 
 *Right:* review form, in this order —
 1. Confidence badge + relative scan time.
-2. Document date (date input, clearable).
-3. File name (text input, monospace, with the extension as a fixed chip on the right).
+2. Document date (date input; required unless the name is hand-written).
+3. Name fields (7.1a): Sender and Title required, Account, Period and Number optional — each
+   its own text input, on two columns from the `sm` breakpoint. Below them the assembled name
+   live, monospace, with the extension as a fixed chip, and a "Write the name by hand"
+   checkbox. Ticking it hides the fields and shows the name as an editable input, prefilled
+   with the assembled name; unticking returns to the fields as they were. A proposal from
+   before fields existed opens with the checkbox ticked. Field errors show under the field;
+   7.1 errors on the assembled name show under the preview.
 4. Target folder — breadcrumb display + "Choose folder" button.
 5. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
    "Show more".
@@ -1115,7 +1172,7 @@ fetch. An endpoint that answers but lists nothing is not an error.
 
 ### 8.9 Keyboard shortcuts (desktop only)
 
-`⌘/Ctrl+Enter` approve · `S` skip · `F` folder picker · `N` focus name · `←`/`→` page.
+`⌘/Ctrl+Enter` approve · `S` skip · `F` folder picker · `N` focus the first name field (the name itself when hand-written) · `←`/`→` page.
 Ignored while an input is focused, except the ⌘ combo. `?` opens a cheat sheet.
 
 ### 8.10 Required states

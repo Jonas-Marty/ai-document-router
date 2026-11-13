@@ -51,6 +51,40 @@ export function validateNameCharacters(
   return null;
 }
 
+// SPEC 7.1a: the name's parts after the date, in template order. Mirrors FIELD_LABELS in
+// backend/app/services/naming.py, which assembles the name again on approve.
+export const NAME_FIELDS = ["sender", "account", "title", "period", "number"] as const;
+export type NameFieldKey = (typeof NAME_FIELDS)[number];
+export const FIELD_LABELS: Record<NameFieldKey, string> = {
+  sender: "Sender",
+  account: "Account",
+  title: "Title",
+  period: "Period",
+  number: "Number",
+};
+export const REQUIRED_FIELDS: ReadonlySet<NameFieldKey> = new Set(["sender", "title"]);
+
+/** Checks one name field, as backend naming.clean_fields does. Error message or null. */
+export function validateField(key: NameFieldKey, value: string): string | null {
+  const label = FIELD_LABELS[key];
+  const text = value.trim();
+  if (!text) return REQUIRED_FIELDS.has(key) ? `${label} is required.` : null;
+  const found = [...text].filter((ch) => FORBIDDEN_CHARS.has(ch));
+  if (found.length > 0) return `${label} can't contain ${[...new Set(found)].sort().join(" ")}`;
+  if ([...text].some(isControlChar)) return `${label} can't contain control characters.`;
+  return null;
+}
+
+/** `date sender [account] title [period] [number]`, empty parts skipped. `isoDate` is the
+ * form's YYYY-MM-DD and is written YYYY.MM.DD. Not validated: see validateStem. */
+export function assembleName(isoDate: string, fields: Record<NameFieldKey, string>): string {
+  const date = isoDate.replaceAll("-", ".");
+  return [date, ...NAME_FIELDS.map((key) => fields[key])]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function validateStem(value: string): string | null {
   return validateNameCharacters(value, MAX_STEM_LENGTH, "File name");
 }

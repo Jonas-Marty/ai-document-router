@@ -38,6 +38,7 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
     analysis_stage: null,
     proposal: {
       suggested_name: suggestedName,
+      fields: null,
       target_folder_path: "/Documents/Finance",
       document_date: "2026-05-18",
       confidence_score: 0.9,
@@ -145,6 +146,7 @@ describe("ReviewPage queue overview", () => {
           text_preview: "",
           proposal: {
             suggested_name: "2026.04.16 Helvetia Police",
+            fields: null,
             target_folder_path: "/Documents/Insurance",
             document_date: "2026-04-16",
             confidence_score: 0.95,

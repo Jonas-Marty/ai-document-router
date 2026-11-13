@@ -18,8 +18,20 @@ from app.services.extraction import extension_of
 from app.services.times import from_storage
 
 
+class NameFieldsBody(BaseModel):
+    """SPEC 7.1a. Optional fields are null; the service trims and checks every one."""
+
+    sender: str
+    account: str | None = None
+    title: str
+    period: str | None = None
+    number: str | None = None
+
+
 class AIProposalRead(BaseModel):
     suggested_name: str
+    # None for a proposal from before fields existed; its name is a whole, free name.
+    fields: NameFieldsBody | None = None
     target_folder_path: str
     document_date: date | None
     confidence_score: float
@@ -318,7 +330,9 @@ class ApproveRequest(BaseModel):
     """SPEC 5 deliberately omits the original suggestion: the backend already has the
     proposal and computes `was_overridden` itself, so the client cannot misreport it."""
 
-    final_name: str
+    # Exactly one of these two (SPEC 5): fields the backend assembles, or a hand-written name.
+    name_fields: NameFieldsBody | None = None
+    final_name: str | None = None
     final_folder_path: str
     document_date: date | None = None
 

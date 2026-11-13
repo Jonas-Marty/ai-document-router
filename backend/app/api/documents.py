@@ -14,6 +14,7 @@ from app.schemas import (
     DocumentResponse,
     HistoryEntryRead,
     MethodResultRead,
+    NameFieldsBody,
     QueueResponse,
     RegenerateRequest,
     RetriedResponse,
@@ -147,6 +148,11 @@ def _to_method_read(result: compare_service.MethodResult) -> MethodResultRead:
         proposal=(
             AIProposalRead(
                 suggested_name=proposal.suggested_name,
+                fields=(
+                    NameFieldsBody.model_validate(proposal.fields.to_json())
+                    if proposal.fields
+                    else None
+                ),
                 target_folder_path=proposal.target_folder_path,
                 document_date=proposal.document_date,
                 confidence_score=proposal.confidence_score,
@@ -180,6 +186,7 @@ def approve_document(
         final_name=payload.final_name,
         final_folder_path=payload.final_folder_path,
         document_date=payload.document_date,
+        name_fields=payload.name_fields.model_dump() if payload.name_fields else None,
         actor=Actor.from_user(user),
     )
     return RoutedResponse(

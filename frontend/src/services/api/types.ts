@@ -8,8 +8,18 @@ export type ProposalStatus = "pending" | "ready" | "failed";
 export type OcrStatus = "not_needed" | "pending" | "ready" | "failed";
 export type HistoryAction = "moved" | "trashed";
 
+/** The name's parts besides the date (SPEC 7.1a). Optional ones are null, never "". */
+export interface NameFields {
+  sender: string;
+  account: string | null;
+  title: string;
+  period: string | null;
+  number: string | null;
+}
+
 export interface AIProposal {
-  suggested_name: string; // no extension
+  suggested_name: string; // no extension; assembled from document_date + fields
+  fields: NameFields | null; // null: a whole name from before fields existed
   target_folder_path: string;
   document_date: string | null; // "YYYY-MM-DD"
   confidence_score: number; // 0.0-1.0
@@ -92,11 +102,11 @@ export interface CompareResponse {
   results: MethodResult[];
 }
 
-export interface ApproveRequest {
-  final_name: string;
+/** Exactly one of `name_fields` (assembled by the backend) or a hand-written `final_name`. */
+export type ApproveRequest = {
   final_folder_path: string;
   document_date: string | null;
-}
+} & ({ name_fields: NameFields } | { final_name: string });
 
 export interface HistoryEntry {
   id: string;

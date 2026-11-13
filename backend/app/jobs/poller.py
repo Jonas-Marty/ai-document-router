@@ -584,7 +584,6 @@ def propose_for(
         _fail(session, document, exc.message, meter)
         return False
 
-    proposal = ai.with_date_prefix(proposal, app_settings.filename_pattern)
     winner = answered[0]
     skipped = [step.label for step in chain if step.position < winner.position]
     _store(
@@ -748,6 +747,7 @@ def _store(
             suggested_name=proposal.suggested_name,
             target_folder_path=proposal.target_folder_path,
             document_date=proposal.document_date,
+            **(proposal.fields.to_json() if proposal.fields else {}),
             confidence_score=proposal.confidence_score,
             reasoning_text=proposal.reasoning_text,
             model_name=proposal.model_name,

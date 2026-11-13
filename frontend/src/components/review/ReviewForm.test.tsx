@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useFolderContext } from "@/hooks/useFolders";
 import type { Document, FolderContext, Settings } from "@/services/api/types";
 import { ReviewForm } from "./ReviewForm";
-import { type ReviewFormValues, reviewFormSchema } from "./reviewFormSchema";
+import { formValuesFor, type ReviewFormValues, reviewFormSchema } from "./reviewFormSchema";
 
 vi.mock("@/services/api/client", () => ({
   apiClient: { getFolderContext: vi.fn(), getSettings: vi.fn() },
@@ -29,6 +29,7 @@ const baseDocument: Document = {
   analysis_stage: null,
   proposal: {
     suggested_name: "2026.05.18 Test Invoice",
+    fields: null,
     target_folder_path: "/Documents/Finance",
     document_date: "2026-05-18",
     confidence_score: 0.92,
@@ -83,11 +84,7 @@ function Harness({
   const methods = useForm<ReviewFormValues>({
     resolver: zodResolver(reviewFormSchema),
     mode: "onChange",
-    defaultValues: {
-      documentDate: document.proposal?.document_date ?? "",
-      name: document.proposal?.suggested_name ?? "",
-      folderPath: document.proposal?.target_folder_path ?? "",
-    },
+    defaultValues: formValuesFor(document.proposal),
   });
   return (
     <QueryClientProvider client={queryClient}>
@@ -214,6 +211,7 @@ describe("ReviewForm", () => {
           ...baseDocument,
           proposal: {
             suggested_name: "2026.05.18 Test Invoice",
+            fields: null,
             target_folder_path: "/Documents/Finance",
             document_date: "2026-05-18",
             confidence_score: 0.92,
@@ -241,6 +239,7 @@ describe("ReviewForm", () => {
       ...baseDocument,
       proposal: {
         suggested_name: "2026.05.18 Test Invoice",
+        fields: null,
         target_folder_path: "/Documents/Finance",
         document_date: "2026-05-18",
         confidence_score: 0.4,
@@ -345,6 +344,73 @@ describe("ReviewForm", () => {
     );
 
     expect(screen.getByText(/This PDF is encrypted, so it can't be OCR'd\./)).toBeInTheDocument();
+  });
+
+  describe("name fields (SPEC 7.1a)", () => {
+    const fieldDocument: Document = {
+      ...baseDocument,
+      proposal: baseDocument.proposal && {
+        ...baseDocument.proposal,
+        suggested_name: "2026.05.18 Swisscom Rechnung",
+        fields: {
+          sender: "Swisscom",
+          account: null,
+          title: "Rechnung",
+          period: null,
+          number: null,
+        },
+      },
+    };
+
+    it("prefills each field and shows the assembled name as it is typed", async () => {
+      vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+      vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+      const user = userEvent.setup();
+      render(<Harness document={fieldDocument} />);
+
+      expect(screen.getByLabelText("Sender")).toHaveValue("Swisscom");
+      expect(screen.getByLabelText("Title")).toHaveValue("Rechnung");
+      const preview = screen.getByLabelText("Assembled file name");
+      expect(preview).toHaveTextContent("2026.05.18 Swisscom Rechnung");
+
+      await user.type(screen.getByLabelText(/Number/), "9291491");
+      expect(preview).toHaveTextContent("2026.05.18 Swisscom Rechnung 9291491");
+    });
+
+    it("says which required field is missing", async () => {
+      vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+      vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+      const user = userEvent.setup();
+      render(<Harness document={fieldDocument} />);
+
+      await user.clear(screen.getByLabelText("Sender"));
+
+      expect(await screen.findByText("Sender is required.")).toBeInTheDocument();
+    });
+
+    it("hands the assembled name over to an editable one, and gives the fields back", async () => {
+      vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+      vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+      const user = userEvent.setup();
+      render(<Harness document={fieldDocument} />);
+
+      await user.click(screen.getByLabelText("Write the name by hand"));
+
+      expect(screen.queryByLabelText("Sender")).not.toBeInTheDocument();
+      expect(screen.getByLabelText(/file name/i)).toHaveValue("2026.05.18 Swisscom Rechnung");
+
+      await user.click(screen.getByLabelText("Write the name by hand"));
+      expect(screen.getByLabelText("Sender")).toHaveValue("Swisscom");
+    });
+  });
+
+  it("opens a proposal from before name fields on its whole name, hand-written", () => {
+    vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
+    vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
+    render(<Harness document={baseDocument} />);
+
+    expect(screen.getByLabelText("Write the name by hand")).toBeChecked();
+    expect(screen.queryByLabelText("Sender")).not.toBeInTheDocument();
   });
 
   it("shows a blocking error for a forbidden character as the user types (mode: onChange)", async () => {

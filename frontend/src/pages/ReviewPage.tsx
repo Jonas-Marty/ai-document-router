@@ -13,7 +13,13 @@ import { QueuePanel } from "@/components/review/QueuePanel";
 import { RerunDialog } from "@/components/review/RerunDialog";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
 import { ReviewForm } from "@/components/review/ReviewForm";
-import { type ReviewFormValues, reviewFormSchema } from "@/components/review/reviewFormSchema";
+import {
+  approveRequestFor,
+  effectiveName,
+  formValuesFor,
+  type ReviewFormValues,
+  reviewFormSchema,
+} from "@/components/review/reviewFormSchema";
 import { ShortcutCheatSheet } from "@/components/review/ShortcutCheatSheet";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
@@ -153,26 +159,19 @@ function DocumentReview({
     // ActionBar disables Approve on formState.isValid with no separate submit step -- see
     // reviewFormSchema.ts for why this must be "onChange".
     mode: "onChange",
-    defaultValues: {
-      documentDate: document.proposal?.document_date ?? "",
-      name: document.proposal?.suggested_name ?? "",
-      folderPath: document.proposal?.target_folder_path ?? "",
-    },
+    defaultValues: formValuesFor(document.proposal),
   });
 
   // Regenerate can turn a "failed" proposal into a "ready" one for the *same* document (same
   // key), so the reset also has to watch proposal_status, not just re-run on mount.
   // biome-ignore lint/correctness/useExhaustiveDependencies: methods.reset is stable (RHF)
   useEffect(() => {
-    methods.reset({
-      documentDate: document.proposal?.document_date ?? "",
-      name: document.proposal?.suggested_name ?? "",
-      folderPath: document.proposal?.target_folder_path ?? "",
-    });
+    methods.reset(formValuesFor(document.proposal));
   }, [document.proposal_status]);
 
-  const folderPath = methods.watch("folderPath");
-  const name = methods.watch("name");
+  const values = methods.watch();
+  const folderPath = values.folderPath;
+  const name = effectiveName(values);
   const debouncedFolderPath = useDebouncedValue(folderPath, 300);
   const debouncedFilename = useDebouncedValue(`${name}${document.extension}`, 300);
   const folderContext = useFolderContext(debouncedFolderPath, debouncedFilename);
@@ -206,11 +205,7 @@ function DocumentReview({
     approveMutation.mutate(
       {
         id: document.id,
-        body: {
-          final_name: values.name,
-          final_folder_path: values.folderPath,
-          document_date: values.documentDate || null,
-        },
+        body: approveRequestFor(values),
       },
       {
         onSuccess: (response) => {
@@ -256,7 +251,7 @@ function DocumentReview({
     onApprove: () => canApprove && submitApprove(),
     onSkip: handleSkip,
     onOpenFolderPicker: () => setPickerOpen(true),
-    onFocusName: () => methods.setFocus("name"),
+    onFocusName: () => methods.setFocus(methods.getValues("handWritten") ? "name" : "sender"),
     onPrevPage: () => viewerRef.current?.prevPage(),
     onNextPage: () => viewerRef.current?.nextPage(),
     onOpenCheatSheet: () => setCheatSheetOpen(true),
@@ -369,9 +364,9 @@ function DocumentReview({
           // setValue, not reset: this is an offer to start from, and every field stays
           // editable and validated exactly as if it had been typed.
           const options = { shouldValidate: true, shouldDirty: true };
-          methods.setValue("name", result.proposal.suggested_name, options);
-          methods.setValue("folderPath", result.proposal.target_folder_path, options);
-          methods.setValue("documentDate", result.proposal.document_date ?? "", options);
+          for (const [key, value] of Object.entries(formValuesFor(result.proposal))) {
+            methods.setValue(key as keyof ReviewFormValues, value, options);
+          }
           toast.success(`Filled in from ${result.label}`);
         }}
       />

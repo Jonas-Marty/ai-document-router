@@ -299,6 +299,38 @@ class TestRoutingEndpoints:
         assert body["history_entry"]["final_filename"] == "Filed Name.pdf"
         assert body["history_entry"]["revertible"] is True
 
+    def test_approve_from_fields_assembles_the_name(
+        self, configured: TestClient, fake: FakeWebDav
+    ) -> None:
+        document_id = make_document()
+
+        response = configured.post(
+            f"/api/v1/documents/{document_id}/approve",
+            json={
+                "name_fields": {"sender": "Rega", "title": "Gönnerschaft"},
+                "final_folder_path": ROOT,
+                "document_date": "2026-01-08",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["history_entry"]["final_filename"] == (
+            "2026.01.08 Rega Gönnerschaft.pdf"
+        )
+
+    def test_approve_with_neither_a_name_nor_fields_is_422(
+        self, configured: TestClient, fake: FakeWebDav
+    ) -> None:
+        document_id = make_document()
+
+        response = configured.post(
+            f"/api/v1/documents/{document_id}/approve",
+            json={"final_folder_path": ROOT, "document_date": None},
+        )
+
+        assert response.status_code == 422
+        assert fake.moves == []
+
     def test_approve_collision_is_409(self, configured: TestClient, fake: FakeWebDav) -> None:
         document_id = make_document()
         fake.existing.add(f"{ROOT}/Taken.pdf")

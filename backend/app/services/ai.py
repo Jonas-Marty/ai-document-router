@@ -12,7 +12,7 @@ import math
 import mimetypes
 import time
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import TypeGuard
 
@@ -46,16 +46,29 @@ FORBIDDEN_NAME_CHARS = set('/\\:*?"<>|')
 
 SYSTEM_PROMPT = (
     "You file scanned documents. Given a document's text and the folders available, you "
-    "choose a filename, a destination folder, and the document's date.\n"
+    "pick out the parts its filename is built from and choose a destination folder. You do "
+    "not write the filename: it is assembled from your fields as "
+    "date sender account title period number.\n"
     "Reply with JSON only, with exactly these keys, in this order: reasoning_text, "
-    "document_date, target_folder_path, suggested_name, confidence_score.\n"
+    "document_date, sender, account, title, period, number, target_folder_path, "
+    "confidence_score.\n"
     "- reasoning_text: one or two plain sentences citing what you saw. Not markdown.\n"
-    "- document_date: the date shown on the document as YYYY-MM-DD, or null if absent\n"
+    "- document_date: the date the document was issued, as YYYY-MM-DD, or null if none is "
+    "shown\n"
+    "- sender: who sent it, by its short everyday name (ZKB, Rega, WIR Bank), not the full "
+    "legal name\n"
+    "- account: the IBAN, account, contract or policy number the recipient holds with the "
+    "sender, copied exactly as printed, or null\n"
+    "- title: the document's own title or type as printed, in the document's language and in "
+    "normal case (Rechnung, Kontoeröffnungsbestätigung)\n"
+    "- period: the period the document covers, as printed (01.09.2026 - 30.09.2026), or null\n"
+    "- number: the invoice or document number, or null\n"
     "- target_folder_path: an absolute path chosen from the folder list, nothing invented\n"
-    "- suggested_name: built from the fields above. Where the naming pattern has a date, "
-    "write the full document_date in the pattern's format, never just the year. No file "
-    'extension, and none of these characters: / \\ : * ? " < > |\n'
     "- confidence_score: 0.0 to 1.0\n"
+    "Leave account, period and number null unless the document clearly shows one. Never fill "
+    "them with something nearby: a footer code, a page number or a reference meant for the "
+    "bank is not one of them.\n"
+    'No field may contain any of these characters: / \\ : * ? " < > |\n'
     "The message may include additional instructions from the person whose archive this is. "
     "Follow them, unless they conflict with the reply format above."
 )
@@ -158,12 +171,14 @@ def call_cost(
 
 @dataclass(frozen=True)
 class Proposal:
+    # Assembled by naming.assemble_name from document_date and fields, never by the model.
     suggested_name: str
     target_folder_path: str
     document_date: date | None
     confidence_score: float
     reasoning_text: str
     model_name: str
+    fields: naming.NameFields | None = None
 
 
 @dataclass(frozen=True)
@@ -629,6 +644,19 @@ RESPONSE_FORMATS: list[str | None] = ["json_schema", "json_object", None]
 _known_format: dict[tuple[str, str], str | None] = {}
 
 
+REPLY_KEYS = (
+    "reasoning_text",
+    "document_date",
+    "sender",
+    "account",
+    "title",
+    "period",
+    "number",
+    "target_folder_path",
+    "confidence_score",
+)
+
+
 def proposal_schema(folder_choices: list[str] | None = None) -> dict[str, object]:
     """The reply's JSON schema; with folder choices, the folder must be one of them."""
     folder: dict[str, object] = {"type": "string"}
@@ -636,23 +664,20 @@ def proposal_schema(folder_choices: list[str] | None = None) -> dict[str, object
         folder["enum"] = list(folder_choices)
     return {
         "type": "object",
-        # Order matters: a model writes its reply front to back, so the name comes after the
-        # date and folder it is built from, and after the reasoning that settles them. With
-        # the name first, models wrote "2026 ..." and then the correct full date below it.
+        # Order matters: a model writes its reply front to back, so the reasoning that settles
+        # the fields comes before them, in the order the name is assembled in.
         "properties": {
             "reasoning_text": {"type": "string"},
             "document_date": {"type": ["string", "null"]},
+            "sender": {"type": "string"},
+            "account": {"type": ["string", "null"]},
+            "title": {"type": "string"},
+            "period": {"type": ["string", "null"]},
+            "number": {"type": ["string", "null"]},
             "target_folder_path": folder,
-            "suggested_name": {"type": "string"},
             "confidence_score": {"type": "number"},
         },
-        "required": [
-            "reasoning_text",
-            "document_date",
-            "target_folder_path",
-            "suggested_name",
-            "confidence_score",
-        ],
+        "required": list(REPLY_KEYS),
         "additionalProperties": False,
     }
 
@@ -935,14 +960,48 @@ def _validate(content: str, model_name: str, allowed_roots: list[str]) -> Propos
     if not isinstance(parsed, dict):
         raise ProposalRejected("The model's reply wasn't a JSON object.")
 
+    document_date = _validate_date(parsed.get("document_date"))
+    fields = _validate_fields(parsed)
     return Proposal(
-        suggested_name=_validate_name(parsed.get("suggested_name")),
+        suggested_name=_validate_name(_assemble(document_date, fields)),
         target_folder_path=_validate_folder(parsed.get("target_folder_path"), allowed_roots),
-        document_date=_validate_date(parsed.get("document_date")),
+        document_date=document_date,
         confidence_score=_validate_confidence(parsed.get("confidence_score")),
         reasoning_text=_validate_reasoning(parsed.get("reasoning_text")),
         model_name=model_name,
+        fields=fields,
     )
+
+
+def _validate_fields(parsed: dict[str, object]) -> naming.NameFields:
+    """The name fields, cleaned (SPEC 7.1a). A word for "none" in any field is none.
+
+    Dots, spaces and dashes are trimmed off each field's ends: a title like "Rechnung Nr."
+    is a good answer, and the name it ends would only be refused for its trailing dot.
+    """
+    values: dict[str, object] = {}
+    for key in naming.FIELD_LABELS:
+        value = parsed.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            # An invoice number the model wrote as a JSON number is still the number.
+            value = str(value)
+        if isinstance(value, str):
+            value = value.strip().strip(naming.EDGE_CHARS)
+            if value.lower() in _NULLISH:
+                # In a required field this then reads as missing, which is what it is.
+                value = None
+        values[key] = value
+    try:
+        return naming.clean_fields(values)
+    except AppError as exc:
+        raise ProposalRejected(f"The model's fields were unusable: {exc.message}") from exc
+
+
+def _assemble(document_date: date | None, fields: naming.NameFields) -> str:
+    try:
+        return naming.assemble_name(document_date, fields)
+    except AppError as exc:
+        raise ProposalRejected(f"The name built from the model's fields: {exc.message}") from exc
 
 
 def _validate_name(value: object) -> str:
@@ -1015,15 +1074,3 @@ def _validate_reasoning(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip()
-
-
-def with_date_prefix(proposal: Proposal, pattern: str | None) -> Proposal:
-    """See naming.align_date_prefix; says so in the reasoning when it changed the name."""
-    name = naming.align_date_prefix(proposal.suggested_name, proposal.document_date, pattern)
-    if name == proposal.suggested_name:
-        return proposal
-    return replace(
-        proposal,
-        suggested_name=name,
-        reasoning_text=f"{proposal.reasoning_text} (Name dated from the document date.)",
-    )
