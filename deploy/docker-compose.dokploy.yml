@@ -30,7 +30,8 @@ services:
       # Same volume, same reason: the `./data/ocr` default is relative to WORKDIR /app,
       # which the non-root user cannot write and which does not survive the container.
       OCR_CACHE_DIR: /data/ocr
-      THUMBNAIL_CACHE_DIR: /data/thumbnails
+      # Not on the volume on purpose: re-renderable, so kept out of the backups.
+      THUMBNAIL_CACHE_DIR: /tmp/thumbnails
       # Deploy fails immediately with this message if the variable is unset, rather than
       # starting an API that cannot decrypt the stored AI API key.
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in the Dokploy Environment tab}

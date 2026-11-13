@@ -90,8 +90,9 @@ seconds. The API container applies database migrations on every start before Uvi
 there is no separate migration step. Open <http://localhost:8080>.
 
 `DATABASE_URL`, `OCR_CACHE_DIR` and `THUMBNAIL_CACHE_DIR` are all overridden inside the compose
-file, so the values in `.env` only affect native development — the container always writes to
-its volume.
+file, so the values in `.env` only affect native development. The first two live on the
+volume; thumbnails go to `/tmp` in the container, so they stay out of backups and are rebuilt
+after a redeploy.
 
 Useful commands:
 

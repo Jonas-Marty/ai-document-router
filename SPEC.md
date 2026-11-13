@@ -1071,8 +1071,10 @@ gets only `missing_date`:
   cards on the page, and silently left out when the Nextcloud cannot be reached; sorting by
   `needs_check` does not count it.
 
-**Thumbnail.** First page rendered to JPEG, cached on the data volume by content hash
-(`THUMBNAIL_CACHE_DIR`), so a file is downloaded and rendered once. Images are scaled
+**Thumbnail.** First page rendered to JPEG, cached by content hash in
+`THUMBNAIL_CACHE_DIR`, so a file is downloaded and rendered once while the cache lasts. In the
+container that is `/tmp/thumbnails`, outside the data volume: never backed up, gone when the
+container is recreated, and rendered again on demand. Images are scaled
 directly; anything else answers 404 and the card shows an icon.
 
 **Estimate.** For an "Analyse with…" choice: which of the open documents still need a vision

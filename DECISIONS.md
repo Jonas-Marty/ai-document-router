@@ -1179,9 +1179,10 @@ meaningful. One line of "why" each; not a full ADR log.
   every Ready document on each refetch. Sorting by "needs a check" therefore ignores it.
 - Unusual folder compares against the sender and account's patterns when that pair has
   approved history, otherwise the sender's. Reverted approvals teach nothing.
-- Thumbnails are cached as JPEG files on the data volume by content hash
-  (`THUMBNAIL_CACHE_DIR`), not in a database column: no migration, nothing to back up that
-  cannot be re-rendered, and the same file shared by two accounts renders once. Images are
+- Thumbnails are cached as JPEG files by content hash (`THUMBNAIL_CACHE_DIR`), not in a
+  database column: no migration, and the same file shared by two accounts renders once. In
+  the container they live in `/tmp/thumbnails`, outside the backed-up data volume, at the
+  owner's request: losing them on a redeploy costs only a re-render. Images are
   scaled; other files get an icon.
 - The estimate averages past calls per analysis run for the same feature and model, falling
   back to any model of that feature. Rough by design; the dialog says when there is nothing
