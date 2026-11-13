@@ -10,9 +10,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import db
-from app.models import AiCall, AiEndpoint, AiTask, AiTaskStep
+from app.models import AiCall, AiConfiguration, AiEndpoint, AiTask
 from app.services import ai, ai_usage
-from app.services.ai_tasks import ResolvedStep
+from app.services.connections import ResolvedStep
 from tests.conftest import signed_in_user_id
 
 OWNER = "owner-1"
@@ -28,14 +28,13 @@ def session() -> Iterator[Session]:
         yield s
 
 
-def step(position: int = 0, endpoint_id: str = "ep", name: str = "Tower") -> ResolvedStep:
+def step(endpoint_id: str = "ep", name: str = "Tower") -> ResolvedStep:
     return ResolvedStep(
         endpoint_name=name,
         endpoint_url="http://ai.test/v1",
         api_key=None,
         model_name="qwen3",
         endpoint_id=endpoint_id,
-        position=position,
     )
 
 
@@ -50,8 +49,8 @@ def at(session: Session, when: datetime) -> None:
 class TestStore:
     def test_one_row_per_call_with_what_it_is_grouped_by(self, session: Session) -> None:
         meter = ai.UsageMeter()
-        step(0).usage(meter, AiTask.filing).record_failure(1500)
-        step(1, "hosted", "Hosted").usage(meter, AiTask.filing).record(
+        step().usage(meter, AiTask.filing).record_failure(1500)
+        step("hosted", "Hosted").usage(meter, AiTask.filing).record(
             ai.TokenUsage(800, 40, cached_tokens=300), 900
         )
 
@@ -60,7 +59,8 @@ class TestStore:
 
         failed, answered = sorted(session.exec(select(AiCall)).all(), key=lambda c: c.failed)[::-1]
         assert (failed.connection, failed.failed, failed.fallback) == ("Tower", 1, 0)
-        assert (answered.connection, answered.model, answered.fallback) == ("Hosted", "qwen3", 1)
+        # Nothing falls back since configurations replaced chains (SPEC 6.3a).
+        assert (answered.connection, answered.model, answered.fallback) == ("Hosted", "qwen3", 0)
         assert (answered.prompt_tokens, answered.cached_tokens) == (800, 300)
         assert answered.feature == "filing"
         assert failed.run_id == answered.run_id
@@ -83,8 +83,12 @@ class TestReport:
             )
         )
         session.add(
-            AiTaskStep(
-                user_id=OWNER, task=AiTask.filing, position=0, endpoint_id="ep", model_name="qwen3"
+            AiConfiguration(
+                user_id=OWNER,
+                name="Daily",
+                filing_endpoint_id="ep",
+                filing_model_name="qwen3",
+                created_at=datetime(2026, 1, 1),
             )
         )
         for _ in range(2):
@@ -106,7 +110,7 @@ class TestReport:
             2000,
         )
         assert (filing.without_usage, filing.timed) == (2, 2)
-        # Configured means "still in one of the chains", whichever task it is used for.
+        # Configured means "still in a configuration", whichever step uses it.
         assert filing.connection_exists and filing.model_configured
 
     def test_leaves_out_other_accounts_and_other_days(self, session: Session) -> None:

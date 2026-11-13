@@ -17,8 +17,10 @@ from pypdf.errors import PdfReadError
 
 logger = logging.getLogger(__name__)
 
-# SPEC 6.3: the model sees the first 6000 characters.
+# SPEC 6.3: by default the model sees the first 6000 characters; a configuration can send
+# up to READ_TEXT_CHARS, so the text layer is read that far.
 MAX_TEXT_CHARS = 6000
+READ_TEXT_CHARS = 30_000
 
 # Below this, a "text layer" is scanner noise -- a stray glyph or a page number -- and not
 # enough to identify a document. One real sample in the survey extracted 26 characters of
@@ -145,7 +147,7 @@ def extract(
     if len(text) < MIN_MEANINGFUL_TEXT_CHARS:
         return build(page_count=page_count, text=text, text_error=NO_TEXT_LAYER_MESSAGE)
 
-    return build(page_count=page_count, text=text[:MAX_TEXT_CHARS], text_error=None)
+    return build(page_count=page_count, text=text[:READ_TEXT_CHARS], text_error=None)
 
 
 def _extract_text(reader: PdfReader, filename: str) -> str:
@@ -164,6 +166,6 @@ def _extract_text(reader: PdfReader, filename: str) -> str:
             continue
         parts.append(page_text)
         total += len(page_text)
-        if total >= MAX_TEXT_CHARS:
+        if total >= READ_TEXT_CHARS:
             break
     return "\n".join(parts).strip()

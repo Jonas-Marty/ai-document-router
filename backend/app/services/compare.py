@@ -5,9 +5,9 @@ reading of the same scan would have done better. This runs the alternatives agai
 document and hands back what each produced, without changing anything: nothing here writes
 a proposal, and the review form is still where a filename is chosen.
 
-Every method files through the filing chain, so what is being compared is the *reading* --
-flat text layer, Tesseract, a vision model's markdown -- with the model that chooses the
-filename held constant.
+Every method files through the filing step of the document's configuration, so what is
+being compared is the *reading* -- flat text layer, Tesseract, a vision model's markdown --
+with the model that chooses the filename held constant.
 
 Deliberately synchronous and on demand. Every method costs an LLM call, so this is a thing
 someone asks for while looking at a document, never something the poller does on a tick.
@@ -19,10 +19,20 @@ from dataclasses import dataclass
 
 from sqlmodel import Session
 
-from app.models import AiTask, AppSettings, AuditAction, Document
-from app.services import ai, ai_tasks, ai_usage, audit, extraction, folders, ocr, transcribe
+from app.models import AppSettings, AuditAction, Document, ReadingMethod
+from app.services import (
+    ai,
+    ai_usage,
+    analysis,
+    audit,
+    configurations,
+    extraction,
+    folders,
+    ocr,
+    transcribe,
+)
 from app.services.audit import Actor
-from app.services.errors import AppError
+from app.services.errors import AppError, ValidationError
 from app.services.webdav import WebDavService
 
 logger = logging.getLogger(__name__)
@@ -30,10 +40,6 @@ logger = logging.getLogger(__name__)
 TEXT_LAYER = "text_layer"
 OCR = "ocr"
 MARKDOWN = "markdown"
-
-# The text handed to the model is capped the same way the production path caps it, so a
-# method is not flattered by being allowed a longer prompt than the real one gets.
-MAX_TEXT_CHARS = extraction.MAX_TEXT_CHARS
 
 
 @dataclass(frozen=True)
@@ -66,11 +72,13 @@ def compare(
     image" is exactly the finding someone comparing methods needs to see, and dropping it
     would leave them wondering whether it had been tried.
     """
+    configuration = configurations.for_document(session, document)
+    if configuration is None:
+        raise ValidationError("There is no configuration yet — create one in the Lab.")
+    plan = configurations.plan(session, configuration)
     data = b"".join(webdav.read_stream(document.webdav_path))
-    filing = ai_tasks.resolve_chain(session, app_settings.user_id, AiTask.filing)
-    extracting = ai_tasks.resolve_chain(session, app_settings.user_id, AiTask.extraction)
-    filing_label = filing[0].label if filing else "no filing endpoint"
-    folder_tree, sample_filenames = folders.prompt_context(webdav, app_settings)
+    filing_label = plan.filing_step.label if plan.filing_step else "no filing connection"
+    context = folders.prompt_context(webdav, app_settings)
 
     results: list[MethodResult] = []
     meters: list[ai.UsageMeter] = []
@@ -80,32 +88,10 @@ def compare(
         if meter not in meters:
             meters.append(meter)
         started = time.monotonic()
-        prompt = ai.build_prompt(
-            text,
-            folder_tree,
-            sample_filenames,
-            app_settings.filename_pattern_hint,
-            app_settings.filing_instructions,
-        )
         proposal: ai.Proposal | None = None
         error: str | None = None
         try:
-            proposal = ai_tasks.run_chain(
-                filing,
-                lambda step: ai.request_proposal(
-                    endpoint_url=step.endpoint_url,
-                    model_name=step.model_name,
-                    api_key=step.api_key,
-                    prompt=prompt,
-                    allowed_roots=list(app_settings.allowed_root_folders),
-                    usage=step.usage(meter, AiTask.filing),
-                    timeout=step.timeout_seconds,
-                    context_limit=step.context_limit,
-                    json_mode=step.json_mode,
-                    folder_choices=ai.prompt_folders(folder_tree),
-                ),
-                AiTask.filing,
-            )
+            proposal = analysis.file_text(plan, text, context, app_settings, meter).proposal
         except ai.ProposalRejected as exc:
             error = exc.reason
         except AppError as exc:
@@ -116,7 +102,9 @@ def compare(
                 method=method,
                 model_name=filing_label,
                 label=label,
-                text_preview=text[:MAX_TEXT_CHARS],
+                # Capped as the filing prompt caps it, so a method is not flattered by being
+                # shown more than the model was given.
+                text_preview=text[: plan.max_text_chars],
                 proposal=proposal,
                 error=error,
                 duration_ms=int((time.monotonic() - started) * 1000),
@@ -162,25 +150,31 @@ def compare(
                     )
                 )
 
-    # 3. The production two-stage path: a vision model transcribes, the filing chain reads
-    #    that markdown. This is the one that tells you whether stage one is earning its keep.
-    label = "Markdown extraction"
-    if not extracting:
+    # 3. The configuration's vision reading, filed the same way. This is the one that tells
+    #    you whether a vision model is earning its keep.
+    label = "Vision reading"
+    step = plan.reading_step
+    if plan.reading_method != ReadingMethod.vision or step is None:
         results.append(
             _skipped(
                 MARKDOWN,
                 filing_label,
                 label,
-                "No endpoint is assigned to the extraction task.",
+                f"The configuration '{plan.configuration_name}' doesn't read with a model.",
             )
         )
     else:
-        label = f"Markdown · {extracting[0].label}"
+        label = f"Markdown · {step.label}"
         meter = ai.UsageMeter()
         meters.append(meter)
         try:
             transcription = transcribe.transcribe(
-                data, extracting, app_settings.extraction_instructions, meter
+                data,
+                step,
+                system_prompt=plan.reading_system_prompt,
+                instructions=plan.reading_instructions,
+                parameters=plan.reading_parameters,
+                meter=meter,
             )
         except (AppError, extraction.RenderUnavailable) as exc:
             reason = exc.message if isinstance(exc, AppError) else str(exc)

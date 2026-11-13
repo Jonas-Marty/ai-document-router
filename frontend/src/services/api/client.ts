@@ -5,10 +5,6 @@ import type {
   AiEndpointWrite,
   AiModelsRequest,
   AiModelsResponse,
-  AiTask,
-  AiTaskChain,
-  AiTaskChainUpdate,
-  AiTaskContext,
   AiUsageReport,
   ApiErrorBody,
   ApproveRequest,
@@ -17,7 +13,11 @@ import type {
   AuditUsage,
   AuthConfig,
   AuthUser,
+  BuiltinPrompts,
   CompareResponse,
+  Configuration,
+  ConfigurationPreviewCall,
+  ConfigurationWrite,
   CreateFolderRequest,
   Credentials,
   Document,
@@ -74,9 +74,14 @@ export interface ApiClient {
   createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint>;
   updateAiEndpoint(id: string, body: AiEndpointWrite): Promise<AiEndpoint>;
   deleteAiEndpoint(id: string): Promise<void>;
-  listAiTasks(): Promise<AiTaskChain[]>;
-  updateAiTask(task: AiTask, body: AiTaskChainUpdate): Promise<AiTaskChain>;
-  getAiContext(): Promise<AiTaskContext[]>;
+  listConfigurations(): Promise<Configuration[]>;
+  getBuiltinPrompts(): Promise<BuiltinPrompts>;
+  createConfiguration(body: ConfigurationWrite): Promise<Configuration>;
+  updateConfiguration(id: string, body: ConfigurationWrite): Promise<Configuration>;
+  deleteConfiguration(id: string): Promise<void>;
+  duplicateConfiguration(id: string): Promise<Configuration>;
+  makeDefaultConfiguration(id: string): Promise<Configuration>;
+  previewConfiguration(id: string): Promise<ConfigurationPreviewCall[]>;
   getAuthConfig(): Promise<AuthConfig>;
   getCurrentUser(): Promise<AuthUser>;
   login(body: Credentials): Promise<AuthUser>;
@@ -218,16 +223,42 @@ export class HttpApiClient implements ApiClient {
     return this.request<void>("DELETE", `/ai/endpoints/${id}`);
   }
 
-  listAiTasks(): Promise<AiTaskChain[]> {
-    return this.request<AiTaskChain[]>("GET", "/ai/tasks");
+  listConfigurations(): Promise<Configuration[]> {
+    return this.request<Configuration[]>("GET", "/configurations");
   }
 
-  getAiContext(): Promise<AiTaskContext[]> {
-    return this.request<AiTaskContext[]>("GET", "/ai/context");
+  getBuiltinPrompts(): Promise<BuiltinPrompts> {
+    return this.request<BuiltinPrompts>("GET", "/configurations/prompts");
   }
 
-  updateAiTask(task: AiTask, body: AiTaskChainUpdate): Promise<AiTaskChain> {
-    return this.request<AiTaskChain>("PUT", `/ai/tasks/${task}`, body);
+  createConfiguration(body: ConfigurationWrite): Promise<Configuration> {
+    return this.request<Configuration>("POST", "/configurations", body);
+  }
+
+  updateConfiguration(id: string, body: ConfigurationWrite): Promise<Configuration> {
+    return this.request<Configuration>("PUT", `/configurations/${encodeURIComponent(id)}`, body);
+  }
+
+  deleteConfiguration(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/configurations/${encodeURIComponent(id)}`);
+  }
+
+  duplicateConfiguration(id: string): Promise<Configuration> {
+    return this.request<Configuration>(
+      "POST",
+      `/configurations/${encodeURIComponent(id)}/duplicate`,
+    );
+  }
+
+  makeDefaultConfiguration(id: string): Promise<Configuration> {
+    return this.request<Configuration>("POST", `/configurations/${encodeURIComponent(id)}/default`);
+  }
+
+  previewConfiguration(id: string): Promise<ConfigurationPreviewCall[]> {
+    return this.request<ConfigurationPreviewCall[]>(
+      "GET",
+      `/configurations/${encodeURIComponent(id)}/preview`,
+    );
   }
 
   getAuthConfig(): Promise<AuthConfig> {

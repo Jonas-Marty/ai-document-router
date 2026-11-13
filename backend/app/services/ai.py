@@ -18,7 +18,7 @@ from typing import TypeGuard
 
 import httpx
 
-from app.models import AiJsonMode
+from app.models import AiJsonMode, AiThinking
 from app.services import metrics, naming
 from app.services.errors import AppError
 from app.services.paths import is_within, normalize_path
@@ -73,6 +73,46 @@ SYSTEM_PROMPT = (
     "Follow them, unless they conflict with the reply format above."
 )
 
+# Two calls (SPEC 6.3 strategy): the fields first, then the folder with those fields known.
+# A small model does each job better alone than both at once.
+FIELDS_SYSTEM_PROMPT = (
+    "You read scanned documents and pick out the parts their filename is built from. You do "
+    "not write the filename: it is assembled from your fields as "
+    "date sender account title period number.\n"
+    "Reply with JSON only, with exactly these keys, in this order: reasoning_text, "
+    "document_date, sender, account, title, period, number, confidence_score.\n"
+    "- reasoning_text: one or two plain sentences citing what you saw. Not markdown.\n"
+    "- document_date: the date the document was issued, as YYYY-MM-DD, or null if none is "
+    "shown\n"
+    "- sender: who sent it, by its short everyday name (ZKB, Rega, WIR Bank), not the full "
+    "legal name\n"
+    "- account: the IBAN, account, contract or policy number the recipient holds with the "
+    "sender, copied exactly as printed, or null\n"
+    "- title: the document's own title or type as printed, in the document's language and in "
+    "normal case (Rechnung, Kontoeröffnungsbestätigung)\n"
+    "- period: the period the document covers, as printed (01.09.2026 - 30.09.2026), or null\n"
+    "- number: the invoice or document number, or null\n"
+    "- confidence_score: 0.0 to 1.0\n"
+    "Leave account, period and number null unless the document clearly shows one. Never fill "
+    "them with something nearby: a footer code, a page number or a reference meant for the "
+    "bank is not one of them.\n"
+    'No field may contain any of these characters: / \\ : * ? " < > |\n'
+    "The message may include additional instructions from the person whose archive this is. "
+    "Follow them, unless they conflict with the reply format above."
+)
+
+FOLDER_SYSTEM_PROMPT = (
+    "You file scanned documents. Given a document, what it is, and the folders available, "
+    "you choose the folder it belongs in.\n"
+    "Reply with JSON only, with exactly these keys, in this order: reasoning_text, "
+    "target_folder_path, confidence_score.\n"
+    "- reasoning_text: one or two plain sentences on why this folder. Not markdown.\n"
+    "- target_folder_path: an absolute path chosen from the folder list, nothing invented\n"
+    "- confidence_score: 0.0 to 1.0\n"
+    "The message may include additional instructions from the person whose archive this is. "
+    "Follow them, unless they conflict with the reply format above."
+)
+
 INSTRUCTIONS_HEADING = "Additional instructions from the person whose archive this is:"
 
 
@@ -82,13 +122,16 @@ class AIUnavailable(AppError):
 
 
 class PromptTooLong(AIUnavailable):
-    """The prompt would not fit the connection's context limit, so it was never sent.
-
-    An AIUnavailable so a chain moves on to an endpoint that may hold more, but not a fact
-    about the endpoint's health: run_chain puts no step into cooldown for it.
-    """
+    """The prompt would not fit the connection's context limit, so it was never sent."""
 
     code = "prompt_too_long"
+
+
+class Unreachable(AIUnavailable):
+    """No connection could be made, or it dropped before a reply: the computer is off, or
+    the network is. The one failure a document waits out rather than fails on (SPEC 6.3a)."""
+
+    code = "ai_unreachable"
 
 
 class ReplyCutOff(AppError):
@@ -108,11 +151,11 @@ class ProposalRejected(Exception):
 
 @dataclass(frozen=True)
 class TaskParameters:
-    """What every call for one task sends besides the prompt (SPEC 6.3b).
+    """What every call of one step sends besides the prompt (SPEC 6.3b).
 
-    Fixed per task until configurations own them. Low temperature because both tasks copy
-    from the page rather than invent; an explicit output limit because a server's own default
-    can be small enough to cut a two-page transcription off mid-table.
+    Set per configuration step; these defaults are the built-in ones. Low temperature because
+    both steps copy from the page rather than invent; an explicit output limit because a
+    server's own default can be small enough to cut a two-page transcription off mid-table.
     """
 
     temperature: float
@@ -120,6 +163,36 @@ class TaskParameters:
     # The smallest reply worth asking for. A prompt that leaves less than this of the context
     # limit is refused rather than sent to come back cut off.
     min_reply_tokens: int
+    thinking: AiThinking = AiThinking.default
+
+    def with_settings(
+        self, temperature: float, max_tokens: int, thinking: AiThinking
+    ) -> "TaskParameters":
+        """A step's own settings, keeping this task's minimum reply (or the step's output
+        limit, when that is lower -- a smaller reply than the limit is never needed)."""
+        return TaskParameters(
+            temperature=temperature,
+            max_tokens=max_tokens,
+            min_reply_tokens=min(self.min_reply_tokens, max_tokens),
+            thinking=thinking,
+        )
+
+    def apply(self, payload: dict[str, object], max_tokens: int) -> None:
+        payload["temperature"] = self.temperature
+        payload["max_tokens"] = max_tokens
+        effort = _REASONING_EFFORT.get(self.thinking)
+        if effort is not None:
+            payload["reasoning_effort"] = effort
+
+
+# Ollama's OpenAI-compatible API maps reasoning_effort "none" to think=false for models that
+# can switch thinking off; hosted APIs take the levels as they are.
+_REASONING_EFFORT = {
+    AiThinking.off: "none",
+    AiThinking.low: "low",
+    AiThinking.medium: "medium",
+    AiThinking.high: "high",
+}
 
 
 FILING_PARAMETERS = TaskParameters(temperature=0.1, max_tokens=2048, min_reply_tokens=512)
@@ -372,23 +445,30 @@ def build_prompt(
     sample_filenames: list[str],
     filename_pattern_hint: str | None,
     instructions: str | None = None,
+    *,
+    max_folders: int = MAX_TREE_FOLDERS,
+    max_examples: int = MAX_SAMPLE_FILENAMES,
+    with_folders: bool = True,
 ) -> str:
     """Assemble the user message per SPEC 6.3.
 
     The person's instructions go here rather than into the system prompt. This message is
     what gets stored as `Proposal.prompt_text`, so the review screen shows the instructions
-    that were in force for *that* proposal. The system prompt stays one fixed constant.
+    that were in force for *that* proposal. `with_folders=False` is the fields call of the
+    two-call strategy, which leaves the folder to the second call.
     """
-    sections = [
-        "Folders available (choose exactly one):",
-        "\n".join(_render_tree(folder_tree)) or "(none)",
-    ]
+    sections: list[str] = []
+    if with_folders:
+        sections += [
+            "Folders available (choose exactly one):",
+            "\n".join(_render_tree(folder_tree, max_folders)) or "(none)",
+        ]
 
-    if sample_filenames:
+    if sample_filenames and max_examples > 0:
         sections += [
             "",
             "Existing filenames, so you can match the naming convention:",
-            "\n".join(f"  {name}" for name in sample_filenames[:MAX_SAMPLE_FILENAMES]),
+            "\n".join(f"  {name}" for name in sample_filenames[:max_examples]),
         ]
 
     if filename_pattern_hint:
@@ -398,10 +478,38 @@ def build_prompt(
         sections += ["", INSTRUCTIONS_HEADING, instructions]
 
     sections += ["", "Document text:", text or "(no text could be extracted)"]
+    return "\n".join(sections).lstrip("\n")
+
+
+def build_folder_prompt(
+    text: str,
+    folder_tree: list[str],
+    document_date: date | None,
+    fields: naming.NameFields,
+    instructions: str | None = None,
+    *,
+    max_folders: int = MAX_TREE_FOLDERS,
+) -> str:
+    """The second call of the two-call strategy: the folder, with the fields already known."""
+    described = [f"Date: {document_date.isoformat() if document_date else 'unknown'}"] + [
+        f"{naming.FIELD_LABELS[key]}: {value}"
+        for key, value in fields.to_json().items()
+        if value is not None
+    ]
+    sections = [
+        "Folders available (choose exactly one):",
+        "\n".join(_render_tree(folder_tree, max_folders)) or "(none)",
+        "",
+        "What the document is:",
+        "\n".join(described),
+    ]
+    if instructions:
+        sections += ["", INSTRUCTIONS_HEADING, instructions]
+    sections += ["", "Document text:", text or "(no text could be extracted)"]
     return "\n".join(sections)
 
 
-def prompt_folders(paths: list[str]) -> list[str]:
+def prompt_folders(paths: list[str], max_folders: int = MAX_TREE_FOLDERS) -> list[str]:
     """The folders the prompt lists, capped at MAX_TREE_DEPTH and MAX_TREE_FOLDERS, sorted.
 
     When the count cap bites, shallower folders are kept: they are the plausible filing
@@ -412,13 +520,13 @@ def prompt_folders(paths: list[str]) -> list[str]:
     Also the `enum` of the JSON schema, so the model is offered exactly what it was shown.
     """
     within_depth = sorted({path for path in paths if path.count("/") - 1 < MAX_TREE_DEPTH})
-    return sorted(sorted(within_depth, key=lambda p: (p.count("/"), p))[:MAX_TREE_FOLDERS])
+    return sorted(sorted(within_depth, key=lambda p: (p.count("/"), p))[:max_folders])
 
 
-def _render_tree(paths: list[str]) -> list[str]:
+def _render_tree(paths: list[str], max_folders: int = MAX_TREE_FOLDERS) -> list[str]:
     """Render absolute paths as an indented list of prompt_folders, noting what was dropped."""
     within_depth = {path for path in paths if path.count("/") - 1 < MAX_TREE_DEPTH}
-    kept = prompt_folders(paths)
+    kept = prompt_folders(paths, max_folders)
 
     rendered = [f"{'  ' * (path.count('/') - 1)}{path}" for path in kept]
     dropped = len(within_depth) - len(kept)
@@ -442,38 +550,170 @@ def request_proposal(
     context_limit: int | None = None,
     json_mode: AiJsonMode = AiJsonMode.auto,
     folder_choices: list[str] | None = None,
+    system_prompt: str = SYSTEM_PROMPT,
 ) -> Proposal:
-    """Call the model and validate its reply.
+    """Ask for the fields and the folder in one reply, and validate it.
 
     `images` sends rendered pages alongside the prompt, for a document whose text could not
-    be extracted -- the model reads the scan itself instead of being handed a transcription.
-    It is the same call either way: one request that returns a proposal, not an OCR step
-    bolted in front of a second one.
+    be extracted -- the model reads the scan itself.
 
     `folder_choices` become the schema's enum for the folder: what the prompt listed.
 
     Raises PromptTooLong before any request when the prompt would not fit `context_limit`,
-    AIUnavailable if the endpoint could not be reached, or ProposalRejected if it replied with
-    something unusable.
+    Unreachable when no connection could be made, AIUnavailable if the endpoint failed
+    otherwise, or ProposalRejected if it replied with something unusable.
     """
+    parsed = _request_json(
+        _JsonCall(endpoint_url, model_name, api_key, system_prompt, prompt, images),
+        schema=proposal_schema(folder_choices),
+        client=client,
+        usage=usage,
+        timeout=timeout,
+        parameters=parameters,
+        context_limit=context_limit,
+        json_mode=json_mode,
+    )
+    document_date = _validate_date(parsed.get("document_date"))
+    fields = _validate_fields(parsed)
+    return Proposal(
+        suggested_name=_validate_name(_assemble(document_date, fields)),
+        target_folder_path=_validate_folder(parsed.get("target_folder_path"), allowed_roots),
+        document_date=document_date,
+        confidence_score=_validate_confidence(parsed.get("confidence_score")),
+        reasoning_text=_validate_reasoning(parsed.get("reasoning_text")),
+        model_name=model_name,
+        fields=fields,
+    )
+
+
+@dataclass(frozen=True)
+class FieldsReply:
+    """The first reply of the two-call strategy."""
+
+    document_date: date | None
+    fields: naming.NameFields
+    suggested_name: str
+    confidence_score: float
+    reasoning_text: str
+
+
+def request_fields(
+    *,
+    endpoint_url: str,
+    model_name: str,
+    api_key: str | None,
+    prompt: str,
+    client: httpx.Client | None = None,
+    usage: UsageRecorder | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+    parameters: TaskParameters = FILING_PARAMETERS,
+    context_limit: int | None = None,
+    json_mode: AiJsonMode = AiJsonMode.auto,
+    system_prompt: str = FIELDS_SYSTEM_PROMPT,
+) -> FieldsReply:
+    """Ask for the name fields alone. Raises as request_proposal does."""
+    parsed = _request_json(
+        _JsonCall(endpoint_url, model_name, api_key, system_prompt, prompt, None),
+        schema=fields_schema(),
+        client=client,
+        usage=usage,
+        timeout=timeout,
+        parameters=parameters,
+        context_limit=context_limit,
+        json_mode=json_mode,
+    )
+    document_date = _validate_date(parsed.get("document_date"))
+    fields = _validate_fields(parsed)
+    return FieldsReply(
+        document_date=document_date,
+        fields=fields,
+        suggested_name=_validate_name(_assemble(document_date, fields)),
+        confidence_score=_validate_confidence(parsed.get("confidence_score")),
+        reasoning_text=_validate_reasoning(parsed.get("reasoning_text")),
+    )
+
+
+def request_folder(
+    *,
+    endpoint_url: str,
+    model_name: str,
+    api_key: str | None,
+    prompt: str,
+    allowed_roots: list[str],
+    fields: FieldsReply,
+    client: httpx.Client | None = None,
+    usage: UsageRecorder | None = None,
+    timeout: float = REQUEST_TIMEOUT_SECONDS,
+    parameters: TaskParameters = FILING_PARAMETERS,
+    context_limit: int | None = None,
+    json_mode: AiJsonMode = AiJsonMode.auto,
+    folder_choices: list[str] | None = None,
+    system_prompt: str = FOLDER_SYSTEM_PROMPT,
+) -> Proposal:
+    """Ask for the folder, given the fields of the first call, and combine both into one
+    proposal: reasoning joined, confidence the lower of the two (SPEC 6.3)."""
+    parsed = _request_json(
+        _JsonCall(endpoint_url, model_name, api_key, system_prompt, prompt, None),
+        schema=folder_schema(folder_choices),
+        client=client,
+        usage=usage,
+        timeout=timeout,
+        parameters=parameters,
+        context_limit=context_limit,
+        json_mode=json_mode,
+    )
+    reasoning = [fields.reasoning_text, _validate_reasoning(parsed.get("reasoning_text"))]
+    return Proposal(
+        suggested_name=fields.suggested_name,
+        target_folder_path=_validate_folder(parsed.get("target_folder_path"), allowed_roots),
+        document_date=fields.document_date,
+        confidence_score=min(
+            fields.confidence_score, _validate_confidence(parsed.get("confidence_score"))
+        ),
+        reasoning_text="\n".join(part for part in reasoning if part),
+        model_name=model_name,
+        fields=fields.fields,
+    )
+
+
+@dataclass(frozen=True)
+class _JsonCall:
+    endpoint_url: str
+    model_name: str
+    api_key: str | None
+    system_prompt: str
+    prompt: str
+    images: list[bytes] | None
+
+
+def _request_json(
+    call: _JsonCall,
+    *,
+    schema: dict[str, object],
+    client: httpx.Client | None,
+    usage: UsageRecorder | None,
+    timeout: float,
+    parameters: TaskParameters,
+    context_limit: int | None,
+    json_mode: AiJsonMode,
+) -> dict[str, object]:
+    """Send one JSON-mode request and return the reply's object, or raise."""
     max_tokens = reply_budget(
-        estimate_prompt_tokens(SYSTEM_PROMPT, prompt, len(images or [])),
+        estimate_prompt_tokens(call.system_prompt, call.prompt, len(call.images or [])),
         parameters,
         context_limit,
     )
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    url = f"{endpoint_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {call.api_key}"} if call.api_key else {}
+    url = f"{call.endpoint_url.rstrip('/')}/chat/completions"
     started = time.monotonic()
-    schema = proposal_schema(folder_choices)
 
     owned = client is None
     http = client or _client(timeout)
     try:
-        formats = _formats_to_try(json_mode, (url, model_name))
+        formats = _formats_to_try(json_mode, (url, call.model_name))
         for position, response_format in enumerate(formats):
-            payload = _payload(model_name, prompt, images, response_format, schema)
-            payload["temperature"] = parameters.temperature
-            payload["max_tokens"] = max_tokens
+            payload = _payload(call, response_format, schema)
+            parameters.apply(payload, max_tokens)
             try:
                 body = _post_with_retry(url, payload, headers, http)
             except _Rejected as rejected:
@@ -489,7 +729,7 @@ def request_proposal(
                 )
                 continue
             if json_mode == AiJsonMode.auto:
-                _known_format[(url, model_name)] = response_format
+                _known_format[(url, call.model_name)] = response_format
             break
     except AIUnavailable:
         _record_failure(usage, started)
@@ -503,8 +743,7 @@ def request_proposal(
         raise ProposalRejected(
             f"The model's reply was cut off at the output limit of {max_tokens:,} tokens."
         )
-    content = _extract_message_content(body)
-    return _validate(content, model_name, allowed_roots)
+    return _parse_object(_extract_message_content(body))
 
 
 def _formats_to_try(json_mode: AiJsonMode, cache_key: tuple[str, str]) -> list[str | None]:
@@ -566,9 +805,8 @@ def request_completion(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _user_content(prompt, images)},
         ],
-        "temperature": parameters.temperature,
-        "max_tokens": max_tokens,
     }
+    parameters.apply(payload, max_tokens)
 
     started = time.monotonic()
     owned = client is None
@@ -657,43 +895,78 @@ REPLY_KEYS = (
 )
 
 
-def proposal_schema(folder_choices: list[str] | None = None) -> dict[str, object]:
-    """The reply's JSON schema; with folder choices, the folder must be one of them."""
-    folder: dict[str, object] = {"type": "string"}
-    if folder_choices:
-        folder["enum"] = list(folder_choices)
+_FIELD_PROPERTIES: dict[str, dict[str, object]] = {
+    "document_date": {"type": ["string", "null"]},
+    "sender": {"type": "string"},
+    "account": {"type": ["string", "null"]},
+    "title": {"type": "string"},
+    "period": {"type": ["string", "null"]},
+    "number": {"type": ["string", "null"]},
+}
+
+
+def _schema(properties: dict[str, dict[str, object]]) -> dict[str, object]:
     return {
         "type": "object",
-        # Order matters: a model writes its reply front to back, so the reasoning that settles
-        # the fields comes before them, in the order the name is assembled in.
-        "properties": {
-            "reasoning_text": {"type": "string"},
-            "document_date": {"type": ["string", "null"]},
-            "sender": {"type": "string"},
-            "account": {"type": ["string", "null"]},
-            "title": {"type": "string"},
-            "period": {"type": ["string", "null"]},
-            "number": {"type": ["string", "null"]},
-            "target_folder_path": folder,
-            "confidence_score": {"type": "number"},
-        },
-        "required": list(REPLY_KEYS),
+        "properties": properties,
+        "required": list(properties),
         "additionalProperties": False,
     }
 
 
+def _folder_property(folder_choices: list[str] | None) -> dict[str, object]:
+    folder: dict[str, object] = {"type": "string"}
+    if folder_choices:
+        folder["enum"] = list(folder_choices)
+    return folder
+
+
+def proposal_schema(folder_choices: list[str] | None = None) -> dict[str, object]:
+    """The reply's JSON schema; with folder choices, the folder must be one of them.
+
+    Order matters: a model writes its reply front to back, so the reasoning that settles the
+    fields comes before them, in the order the name is assembled in.
+    """
+    return _schema(
+        {
+            "reasoning_text": {"type": "string"},
+            **_FIELD_PROPERTIES,
+            "target_folder_path": _folder_property(folder_choices),
+            "confidence_score": {"type": "number"},
+        }
+    )
+
+
+def fields_schema() -> dict[str, object]:
+    """The first reply of the two-call strategy: the fields without the folder."""
+    return _schema(
+        {
+            "reasoning_text": {"type": "string"},
+            **_FIELD_PROPERTIES,
+            "confidence_score": {"type": "number"},
+        }
+    )
+
+
+def folder_schema(folder_choices: list[str] | None = None) -> dict[str, object]:
+    """The second reply of the two-call strategy."""
+    return _schema(
+        {
+            "reasoning_text": {"type": "string"},
+            "target_folder_path": _folder_property(folder_choices),
+            "confidence_score": {"type": "number"},
+        }
+    )
+
+
 def _payload(
-    model_name: str,
-    prompt: str,
-    images: list[bytes] | None,
-    response_format: str | None,
-    schema: dict[str, object],
+    call: "_JsonCall", response_format: str | None, schema: dict[str, object]
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "model": model_name,
+        "model": call.model_name,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": _user_content(prompt, images)},
+            {"role": "system", "content": call.system_prompt},
+            {"role": "user", "content": _user_content(call.prompt, call.images)},
         ],
     }
     if response_format == "json_object":
@@ -838,6 +1111,8 @@ def _post_with_retry(
     so the caller can decide whether the request itself is worth adjusting.
     """
     last_error = ""
+    # Whether the last attempt failed for want of a connection rather than with an answer.
+    unreachable = False
     for attempt in (1, 2):
         started = time.monotonic()
         try:
@@ -852,8 +1127,10 @@ def _post_with_retry(
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             last_error = f"the request timed out or the host was unreachable ({exc})"
             logger.warning("AI request attempt %d failed: %s", attempt, exc)
+            unreachable = True
             continue
 
+        unreachable = False
         if response.status_code >= 500:
             detail = _provider_detail(response)
             last_error = f"the model server returned {response.status_code}" + (
@@ -878,7 +1155,36 @@ def _post_with_retry(
             raise AIUnavailable("The AI endpoint returned an unexpected response shape.")
         return parsed
 
+    if unreachable:
+        raise Unreachable(f"Couldn't reach the AI endpoint: {last_error}.")
     raise AIUnavailable(f"Couldn't reach the AI endpoint: {last_error}.")
+
+
+PROBE_TIMEOUT_SECONDS = 10.0
+
+
+def probe(*, endpoint_url: str, api_key: str | None, client: httpx.Client | None = None) -> bool:
+    """Whether the server answers `/models` with any HTTP status (SPEC 6.3a).
+
+    Cheap and quick on purpose: it runs before a batch's first call to a connection, so a
+    computer that is switched off costs five seconds once per tick, not a reply timeout per
+    document.
+    """
+    url = f"{endpoint_url.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    owned = client is None
+    http = client or httpx.Client(
+        timeout=httpx.Timeout(PROBE_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS)
+    )
+    try:
+        http.get(url, headers=headers)
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        logger.info("AI endpoint %s is unreachable: %s", endpoint_url, exc)
+        return False
+    finally:
+        if owned:
+            http.close()
+    return True
 
 
 def _provider_detail(response: httpx.Response) -> str:
@@ -949,7 +1255,7 @@ def _strip_code_fence(content: str) -> str:
     return (body if fence else after_opening).strip()
 
 
-def _validate(content: str, model_name: str, allowed_roots: list[str]) -> Proposal:
+def _parse_object(content: str) -> dict[str, object]:
     try:
         parsed = json.loads(_strip_code_fence(content))
     except ValueError as exc:
@@ -959,18 +1265,7 @@ def _validate(content: str, model_name: str, allowed_roots: list[str]) -> Propos
         parsed = parsed[0]
     if not isinstance(parsed, dict):
         raise ProposalRejected("The model's reply wasn't a JSON object.")
-
-    document_date = _validate_date(parsed.get("document_date"))
-    fields = _validate_fields(parsed)
-    return Proposal(
-        suggested_name=_validate_name(_assemble(document_date, fields)),
-        target_folder_path=_validate_folder(parsed.get("target_folder_path"), allowed_roots),
-        document_date=document_date,
-        confidence_score=_validate_confidence(parsed.get("confidence_score")),
-        reasoning_text=_validate_reasoning(parsed.get("reasoning_text")),
-        model_name=model_name,
-        fields=fields,
-    )
+    return parsed
 
 
 def _validate_fields(parsed: dict[str, object]) -> naming.NameFields:

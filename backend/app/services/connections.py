@@ -1,13 +1,11 @@
-"""Endpoints, the chains that assign them to tasks, and running a call down a chain.
+"""Connections (AI endpoints): storing them, and calling one model on one of them.
 
-SPEC 6.3a. A task is configured as an ordered list of (endpoint, model) steps, and a call
-walks that list until one answers. That is the whole point of the feature: the machine at
-home is first because it is free and private, and a hosted provider sits behind it so a
-document still gets read on the days that machine is off.
+SPEC 6.3a. A connection is an OpenAI-compatible server the person named. Which model on
+which connection does what is a configuration's business (services/configurations.py);
+this module only knows how to reach one, and never tries another on its own.
 """
 
 import logging
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,66 +13,27 @@ from dataclasses import dataclass
 from sqlmodel import Session, select
 
 from app.config import settings as config
-from app.models import AiEndpoint, AiJsonMode, AiTask, AiTaskStep, AuditAction
+from app.models import AiConfiguration, AiEndpoint, AiJsonMode, AiTask, AuditAction
 from app.services import ai, audit, crypto, metrics, progress, urls
-from app.services.ai import AIUnavailable, PromptTooLong
+from app.services.ai import AIUnavailable, PromptTooLong, Unreachable
 from app.services.audit import Actor
 from app.services.errors import NotFoundError, ValidationError
 from app.services.times import utc_now
 
 logger = logging.getLogger(__name__)
 
-# An endpoint that just failed to answer is skipped for this long. Without it every document
-# in a batch waits out the same reply timeout before falling back: ten documents, twenty
-# minutes, against a computer that was switched off for all of them.
-COOLDOWN_SECONDS = 300.0
-# (endpoint id, model) -> monotonic time until which it is skipped. Per model, not per
-# endpoint: a local model that times out says nothing about the other model on the same
-# machine, and a machine that is off costs only a 5-second connect failure per model.
-# In memory: a restart forgets it, which costs at most one more wait.
-_cooling: dict[tuple[str, str], float] = {}
-_cooling_lock = threading.Lock()
-
-
-def _is_cooling(step: "ResolvedStep") -> bool:
-    key = _cooling_key(step)
-    with _cooling_lock:
-        until = _cooling.get(key)
-        if until is not None and until <= time.monotonic():
-            del _cooling[key]
-            return False
-        return until is not None
-
-
-def _cool_down(step: "ResolvedStep") -> None:
-    with _cooling_lock:
-        _cooling[_cooling_key(step)] = time.monotonic() + COOLDOWN_SECONDS
-
-
-def _cooling_key(step: "ResolvedStep") -> tuple[str, str]:
-    return (step.endpoint_id or step.endpoint_url, step.model_name)
-
-
-def clear_cooldown(endpoint_id: str) -> None:
-    """After the person edits an endpoint (a longer timeout, a fixed URL), try it again now."""
-    with _cooling_lock:
-        for key in [key for key in _cooling if key[0] == endpoint_id]:
-            del _cooling[key]
-
-
 _VERBS = {AiTask.extraction: "Reading the document", AiTask.filing: "Choosing a name and folder"}
 
 
 @dataclass(frozen=True)
 class ResolvedStep:
-    """A step with its endpoint's connection details already decrypted, ready to call."""
+    """A connection and model with the key already decrypted, ready to call."""
 
     endpoint_name: str
     endpoint_url: str
     api_key: str | None
     model_name: str
     endpoint_id: str | None = None
-    position: int = 0
     timeout_seconds: float = ai.REQUEST_TIMEOUT_SECONDS
     context_limit: int | None = None
     json_mode: AiJsonMode = AiJsonMode.auto
@@ -82,14 +41,13 @@ class ResolvedStep:
     price_output: float | None = None
 
     @classmethod
-    def of(cls, endpoint: AiEndpoint, model_name: str, position: int = 0) -> "ResolvedStep":
+    def of(cls, endpoint: AiEndpoint, model_name: str) -> "ResolvedStep":
         return cls(
             endpoint_name=endpoint.name,
             endpoint_url=endpoint.base_url,
             api_key=decrypt_key(endpoint),
             model_name=model_name,
             endpoint_id=endpoint.id,
-            position=position,
             timeout_seconds=endpoint.timeout_seconds,
             context_limit=endpoint.context_limit,
             json_mode=endpoint.json_mode,
@@ -110,139 +68,65 @@ class ResolvedStep:
             endpoint_id=self.endpoint_id,
             connection=self.endpoint_name,
             model=self.model_name,
-            fallback=self.position > 0,
             price_input=self.price_input,
             price_output=self.price_output,
         )
 
 
-@dataclass(frozen=True)
-class ChainStep:
-    """A step as the settings screen shows it. No key: nothing here is going to call anything."""
+def call_step[T](step: ResolvedStep, call: Callable[[ResolvedStep], T], task: AiTask) -> T:
+    """Make one step's call, saying so on the review screen, in the log and in /metrics.
 
-    endpoint_id: str
-    endpoint_name: str
-    model_name: str
-
-
-class NoStepsConfigured(AIUnavailable):
-    """The task has no endpoints assigned, so there was nothing to try."""
-
-
-def chain_for(session: Session, user_id: str, task: AiTask) -> list[ChainStep]:
-    return [
-        ChainStep(endpoint_id=endpoint.id, endpoint_name=endpoint.name, model_name=step.model_name)
-        for step, endpoint in _rows(session, user_id, task)
-    ]
-
-
-def resolve_chain(session: Session, user_id: str, task: AiTask) -> list[ResolvedStep]:
-    """Every step of one user's chain for a task, in the order they should be tried."""
-    return [
-        ResolvedStep.of(endpoint, step.model_name, position)
-        for position, (step, endpoint) in enumerate(_rows(session, user_id, task))
-    ]
-
-
-def resolve_single(
-    session: Session, user_id: str, endpoint_id: str, model_name: str
-) -> list[ResolvedStep]:
-    """One explicitly chosen (endpoint, model) as a chain of one: no fallback, because the
-    person picked this model on purpose and a silent substitute would answer a different
-    question than the one they asked."""
-    return [ResolvedStep.of(get_endpoint(session, user_id, endpoint_id), model_name)]
-
-
-def _rows(session: Session, user_id: str, task: AiTask) -> list[tuple[AiTaskStep, AiEndpoint]]:
-    return list(
-        session.exec(
-            select(AiTaskStep, AiEndpoint)
-            .join(AiEndpoint, AiEndpoint.id == AiTaskStep.endpoint_id)  # type: ignore[arg-type]
-            .where(AiTaskStep.user_id == user_id, AiTaskStep.task == task)
-            .order_by(AiTaskStep.position)  # type: ignore[arg-type]
-        ).all()
-    )
-
-
-def run_chain[T](steps: list[ResolvedStep], call: Callable[[ResolvedStep], T], task: AiTask) -> T:
-    """Try each step in turn, returning the first result.
-
-    Only AIUnavailable moves to the next step -- that is an endpoint problem, which is exactly
-    what the next endpoint is for. Anything else (a reply that failed validation, say) is the
-    model having answered, and re-asking a different one would hide a problem the person needs
-    to see while spending a second call to do it.
+    Exceptions pass through unchanged: what a failure means for the document (wait, or fail
+    with the reason) is the caller's decision, never a reason to try somewhere else.
     """
-    if not steps:
-        raise NoStepsConfigured(
-            f"No AI endpoint is assigned to the {task} task yet — set one in Settings."
+    progress.report(f"{_VERBS.get(task, str(task))} with {step.label}…")
+    started = time.monotonic()
+    try:
+        result = call(step)
+    except PromptTooLong as exc:
+        _observe(task, step, "too_long", started)
+        logger.warning("%s via %s not sent: %s", task, step.label, exc.message)
+        raise
+    except Unreachable as exc:
+        _observe(task, step, "unreachable", started)
+        logger.warning("%s via %s unreachable: %s", task, step.label, exc.message)
+        raise
+    except AIUnavailable as exc:
+        _observe(task, step, "unavailable", started)
+        logger.warning(
+            "%s via %s failed after %.1fs: %s",
+            task,
+            step.label,
+            time.monotonic() - started,
+            exc.message,
         )
-
-    failures: list[str] = []
-    unanswered: list[str] = []
-    too_long: list[str] = []
-    skipped = [step.label for step in steps if _is_cooling(step)]
-    # Every step cooling down: try them all anyway rather than fail without asking anyone.
-    live = [step for step in steps if not _is_cooling(step)] or steps
-    if live is steps:
-        skipped = []
-    for position, step in enumerate(live):
-        notes = (
-            [f"{label} didn't answer" for label in unanswered]
-            + [f"prompt too long for {label}" for label in too_long]
-            + [f"{label} skipped, didn't answer a moment ago" for label in skipped]
+        raise
+    except Exception as exc:
+        _observe(task, step, "rejected", started)
+        # The line that says which model produced the unusable reply -- the exception itself
+        # only says what was wrong with it.
+        logger.info(
+            "%s via %s answered in %.1fs, unusably: %s",
+            task,
+            step.label,
+            time.monotonic() - started,
+            getattr(exc, "reason", None) or getattr(exc, "message", None) or exc,
         )
-        progress.report(
-            f"{_VERBS.get(task, str(task))} with {step.label}…"
-            + (f" ({'; '.join(notes)})" if notes else "")
-        )
-        started = time.monotonic()
-        try:
-            result = call(step)
-        except PromptTooLong as exc:
-            # Nothing was sent, and the next document may well fit: no cooldown.
-            _observe_step(task, step, "too_long", started)
-            logger.warning("%s via %s not sent: %s", task, step.label, exc.message)
-            failures.append(f"{step.label} ({exc.message})")
-            too_long.append(step.label)
-            continue
-        except AIUnavailable as exc:
-            _observe_step(task, step, "unavailable", started)
-            _cool_down(step)
-            if position < len(live) - 1:
-                metrics.ai_fallbacks.labels(task).inc()
-            logger.warning(
-                "%s via %s unavailable after %.1fs: %s",
-                task,
-                step.label,
-                time.monotonic() - started,
-                exc.message,
-            )
-            failures.append(f"{step.label} ({exc.message})")
-            unanswered.append(step.label)
-            continue
-        except Exception as exc:
-            _observe_step(task, step, "rejected", started)
-            # Not a fallback case (see above), but still the line that says which model
-            # produced the unusable reply -- the exception itself only says what was wrong.
-            logger.info(
-                "%s via %s answered in %.1fs, unusably: %s",
-                task,
-                step.label,
-                time.monotonic() - started,
-                getattr(exc, "reason", None) or getattr(exc, "message", None) or exc,
-            )
-            raise
-        _observe_step(task, step, "ok", started)
-        logger.info("%s via %s answered in %.1fs", task, step.label, time.monotonic() - started)
-        return result
-
-    metrics.ai_chain_exhausted.labels(task).inc()
-    raise AIUnavailable(f"Every {task} endpoint failed. Tried: {'; '.join(failures)}")
+        raise
+    _observe(task, step, "ok", started)
+    logger.info("%s via %s answered in %.1fs", task, step.label, time.monotonic() - started)
+    return result
 
 
-def _observe_step(task: AiTask, step: ResolvedStep, outcome: str, started: float) -> None:
+def _observe(task: AiTask, step: ResolvedStep, outcome: str, started: float) -> None:
     metrics.ai_requests.labels(task, step.label, outcome).inc()
     metrics.ai_request_duration.labels(task, step.label).observe(time.monotonic() - started)
+
+
+def is_reachable(step: ResolvedStep) -> bool:
+    """Whether the connection answers at all (SPEC 6.3a). Any HTTP reply counts: a wrong key
+    is a reason for the call to fail with that reason, not for the document to wait."""
+    return ai.probe(endpoint_url=step.endpoint_url, api_key=step.api_key)
 
 
 def decrypt_key(endpoint: AiEndpoint) -> str | None:
@@ -268,65 +152,15 @@ def list_endpoints(session: Session, user_id: str) -> list[AiEndpoint]:
     )
 
 
-def endpoint_in_use(session: Session, endpoint_id: str) -> list[AiTask]:
-    """Which tasks would lose a step if this endpoint went away."""
-    steps = session.exec(select(AiTaskStep).where(AiTaskStep.endpoint_id == endpoint_id)).all()
-    return sorted({step.task for step in steps})
-
-
-def replace_chain(
-    session: Session,
-    user_id: str,
-    task: AiTask,
-    steps: list[tuple[str, str]],
-    *,
-    actor: Actor,
-    commit: bool = True,
-) -> None:
-    """Set a task's chain to exactly these (endpoint_id, model_name) pairs, in order.
-
-    Replaced wholesale rather than diffed: the chain is an ordered list the user edits as a
-    whole, and reconciling it row by row would be work in service of nothing.
-    """
-    new_labels = []
-    for endpoint_id, model_name in steps:
-        endpoint = get_endpoint(session, user_id, endpoint_id)
-        if not model_name.strip():
-            raise ValidationError("Every step needs a model name.")
-        new_labels.append(f"{endpoint.name} · {model_name.strip()}")
-    old_labels = [
-        f"{step.endpoint_name} · {step.model_name}" for step in chain_for(session, user_id, task)
-    ]
-
-    for existing in session.exec(
-        select(AiTaskStep).where(AiTaskStep.user_id == user_id, AiTaskStep.task == task)
-    ).all():
-        session.delete(existing)
-    session.flush()
-
-    for position, (endpoint_id, model_name) in enumerate(steps):
-        session.add(
-            AiTaskStep(
-                user_id=user_id,
-                task=task,
-                position=position,
-                endpoint_id=endpoint_id,
-                model_name=model_name.strip(),
-            )
+def endpoint_in_use(session: Session, endpoint_id: str) -> list[str]:
+    """Names of the configurations that use this endpoint for either step."""
+    rows = session.exec(
+        select(AiConfiguration.name).where(
+            (AiConfiguration.reading_endpoint_id == endpoint_id)
+            | (AiConfiguration.filing_endpoint_id == endpoint_id)
         )
-    audit.record(
-        session,
-        AuditAction.ai_task_updated,
-        actor=actor,
-        summary=(
-            f"Set the {task} chain to {' → '.join(new_labels)}"
-            if new_labels
-            else f"Cleared the {task} chain"
-        ),
-        details={"task": str(task), "from": old_labels, "to": new_labels},
-    )
-    if commit:
-        session.commit()
+    ).all()
+    return sorted(rows)
 
 
 def create_endpoint(
@@ -385,7 +219,6 @@ def update_endpoint(
     """A blank key leaves the stored one alone -- the form is never given it back to resend.
     Capabilities are replaced as given: the form always sends all of them."""
     endpoint = get_endpoint(session, user_id, endpoint_id)
-    clear_cooldown(endpoint_id)
     caps = (capabilities or Capabilities()).validated()
     before: dict[str, object] = {
         "name": endpoint.name,
@@ -499,13 +332,14 @@ def _validate_timeout(value: int | None) -> int:
 
 
 def delete_endpoint(session: Session, user_id: str, endpoint_id: str, *, actor: Actor) -> None:
-    """Refused while a task still points at it, rather than quietly shortening that chain."""
+    """Refused while a configuration still uses it, rather than leaving that one broken."""
     endpoint = get_endpoint(session, user_id, endpoint_id)
     in_use = endpoint_in_use(session, endpoint_id)
     if in_use:
-        tasks = " and ".join(str(task) for task in in_use)
+        names = ", ".join(f"'{name}'" for name in in_use)
         raise ValidationError(
-            f"'{endpoint.name}' is still assigned to the {tasks} task. Remove it there first."
+            f"'{endpoint.name}' is still used by the configuration {names}. "
+            "Change or delete that first."
         )
 
     session.delete(endpoint)

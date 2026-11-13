@@ -20,9 +20,9 @@ from app.jobs import poller
 from app.models import AiTask, AppSettings, DocumentStatus, ProposalStatus
 from app.services import ai, webdav
 from app.services import router as router_service
-from app.services.ai import AIUnavailable
-from app.services.ai_tasks import ResolvedStep, run_chain
+from app.services.ai import Unreachable
 from app.services.audit import Actor
+from app.services.connections import ResolvedStep, call_step
 from app.services.errors import WebDAVUnreachable
 from tests.test_router import OWNER, ROOT, TRASH, FakeWebDav, add_proposal, make_document
 
@@ -89,8 +89,9 @@ class TestEndpoint:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/plain")
         assert "docrouter_analyses_total" in response.text
-        # Primed at zero, so a ratio alert has a denominator on a quiet instance.
-        assert 'docrouter_analyses_total{outcome="failed"} 0.0' in response.text
+        # Primed, so a ratio alert has a denominator on a quiet instance. The value is
+        # whatever earlier tests in this process left in the shared registry.
+        assert 'docrouter_analyses_total{outcome="failed"}' in response.text
 
     def test_counts_documents_from_the_database_at_scrape_time(
         self, anonymous_client: TestClient, token: str
@@ -218,30 +219,23 @@ class TestAi:
         assert change == 80
         assert sample("docrouter_ai_tokens_total", kind="prompt", **labels) - before_prompt == 1200
 
-    def test_a_fallback_and_an_exhausted_chain_are_both_counted(self) -> None:
+    def test_an_unreachable_connection_is_counted_as_such(self) -> None:
         def unreachable(s: ResolvedStep) -> str:
-            raise AIUnavailable(f"{s.endpoint_name} is down.")
+            raise Unreachable(f"{s.endpoint_name} is down.")
 
-        def exhaust() -> None:
-            with pytest.raises(AIUnavailable):
-                run_chain([step("m-local"), step("m-cloud")], unreachable, AiTask.filing)
+        def call() -> None:
+            with pytest.raises(Unreachable):
+                call_step(step("m-local"), unreachable, AiTask.filing)
 
-        fallbacks_before = sample("docrouter_ai_fallbacks_total", task="filing")
-        change = delta("docrouter_ai_chain_exhausted_total", exhaust, task="filing")
+        change = delta(
+            "docrouter_ai_requests_total",
+            call,
+            task="filing",
+            step="m-local · m",
+            outcome="unreachable",
+        )
 
         assert change == 1
-        # Moving from the first step to the second is a fallback; running out after the last
-        # is not another one.
-        assert sample("docrouter_ai_fallbacks_total", task="filing") - fallbacks_before == 1
-        assert (
-            sample(
-                "docrouter_ai_requests_total",
-                task="filing",
-                step="m-cloud · m",
-                outcome="unavailable",
-            )
-            >= 1
-        )
 
 
 class TestWebDav:

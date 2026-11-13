@@ -3,17 +3,13 @@ import { Button } from "@/components/ui/button";
 import type { Document } from "@/services/api/types";
 import { PromptBlock } from "./PromptDetails";
 
-/** What the extraction task read off the pages -- the text filing was actually given. Lets
- * someone tell a misread scan from a bad filing decision. Collapsed by default, like
- * PromptDetails: it is long, and most reviews never need it. */
+/** The reading the latest analysis filed from -- the text the filing step was actually
+ * given. Lets someone tell a misread scan from a bad filing decision. Collapsed by default,
+ * like PromptDetails: it is long, and most reviews never need it. */
 export function ExtractedText({ document }: { document: Document }) {
   const [expanded, setExpanded] = useState(false);
-  const {
-    extracted_markdown: markdown,
-    extraction_model: model,
-    extraction_error: error,
-  } = document;
-  if (!markdown && !error) return null;
+  const { reading } = document;
+  if (!reading) return null;
 
   return (
     <div className="space-y-1.5">
@@ -25,18 +21,9 @@ export function ExtractedText({ document }: { document: Document }) {
         aria-expanded={expanded}
         onClick={() => setExpanded((value) => !value)}
       >
-        {expanded ? "Hide extracted text" : "Show extracted text"}
+        {expanded ? "Hide the text filing read" : "Show the text filing read"}
       </Button>
-      {expanded && (
-        <div className="space-y-2">
-          {error && (
-            <p className="text-sm text-destructive">
-              Extraction failed, so filing used the text layer instead: {error}
-            </p>
-          )}
-          {markdown && <PromptBlock label={model ? `Read by ${model}` : "Read"} text={markdown} />}
-        </div>
-      )}
+      {expanded && <PromptBlock label={`Read by ${reading.label}`} text={reading.text} />}
     </div>
   );
 }

@@ -38,8 +38,8 @@ const proposal: AIProposal = {
   reasoning_text: "",
   model_name: "m",
   connection_name: null,
-  chosen_by_user: false,
-  fallback_from: null,
+  configuration_name: null,
+  reading_label: null,
   prompt_text: null,
   system_prompt: "",
 };

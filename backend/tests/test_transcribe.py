@@ -8,9 +8,10 @@ from typing import Any
 
 import pytest
 
+from app.models import AiThinking
 from app.services import ai, extraction, transcribe
-from app.services.ai import AIUnavailable
-from app.services.ai_tasks import ResolvedStep
+from app.services.ai import Unreachable
+from app.services.connections import ResolvedStep
 
 
 def step(name: str = "local") -> ResolvedStep:
@@ -38,7 +39,7 @@ class TestInstructions:
 
         monkeypatch.setattr(ai, "request_completion", completion)
 
-        transcribe.transcribe(b"%PDF", [step()], "Mostly German. Keep the umlauts.")
+        transcribe.transcribe(b"%PDF", step(), instructions="Mostly German. Keep the umlauts.")
 
         assert len(prompts) == 2
         assert all(p.startswith(transcribe.USER_PROMPT) for p in prompts)
@@ -60,7 +61,7 @@ class TestTranscribe:
 
         monkeypatch.setattr(ai, "request_completion", completion)
 
-        result = transcribe.transcribe(b"%PDF", [step()])
+        result = transcribe.transcribe(b"%PDF", step())
 
         # Three pages, two per request: one full batch and one remainder.
         assert sent == [[b"page-1", b"page-2"], [b"page-3"]]
@@ -75,27 +76,40 @@ class TestTranscribe:
             ai, "request_completion", lambda **kwargs: "```markdown\n# Invoice\n\nTotal\n```"
         )
 
-        assert transcribe.transcribe(b"%PDF", [step()]).markdown == "# Invoice\n\nTotal"
+        assert transcribe.transcribe(b"%PDF", step()).markdown == "# Invoice\n\nTotal"
 
-    def test_falls_through_to_the_next_endpoint_when_the_first_is_down(
+    def test_an_unreachable_connection_is_not_replaced_by_another(
         self, pages: list[bytes], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(extraction, "render_pages", lambda data, max_pages: [b"page-1"])
 
         def completion(**kwargs: Any) -> str:
-            if kwargs["endpoint_url"] == "https://local/v1":
-                raise AIUnavailable("Connection refused.")
-            return "# Read by the fallback"
+            raise Unreachable("Connection refused.")
 
         monkeypatch.setattr(ai, "request_completion", completion)
 
-        result = transcribe.transcribe(b"%PDF", [step("local"), step("cloud")])
+        with pytest.raises(Unreachable):
+            transcribe.transcribe(b"%PDF", step("local"))
 
-        assert result.markdown == "# Read by the fallback"
-        assert result.model_label == "cloud · qwen-vl"
+    def test_sends_the_steps_own_prompt_and_parameters(
+        self, pages: list[bytes], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def completion(**kwargs: Any) -> str:
+            seen.append(kwargs)
+            return "text"
+
+        monkeypatch.setattr(ai, "request_completion", completion)
+        parameters = ai.EXTRACTION_PARAMETERS.with_settings(0.3, 1000, AiThinking.off)
+
+        transcribe.transcribe(b"%PDF", step(), system_prompt="Read it.", parameters=parameters)
+
+        assert {call["system_prompt"] for call in seen} == {"Read it."}
+        assert {call["parameters"] for call in seen} == {parameters}
 
     def test_a_file_with_no_renderable_pages_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(extraction, "render_pages", lambda data, max_pages: [])
 
         with pytest.raises(extraction.RenderUnavailable):
-            transcribe.transcribe(b"not a pdf", [step()])
+            transcribe.transcribe(b"not a pdf", step())

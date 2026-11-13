@@ -18,8 +18,8 @@ export function useUpdateSettings() {
       queryClient.setQueryData(queryKeys.settings, settings);
       // allowed_root_folders can change what the picker and proposals see.
       queryClient.invalidateQueries({ queryKey: queryKeys.folderTree() });
-      // Folders, the naming hint and the instructions are all part of what the models are sent.
-      queryClient.invalidateQueries({ queryKey: queryKeys.aiContext });
+      // The folders and the naming hint are part of what each configuration's calls are sent.
+      queryClient.invalidateQueries({ queryKey: queryKeys.configurationPreviews });
     },
   });
 }
@@ -49,7 +49,7 @@ export function useUpdateNextcloud() {
       // rather than on its next poll.
       queryClient.invalidateQueries({ queryKey: queryKeys.health });
       queryClient.invalidateQueries({ queryKey: queryKeys.folderTree() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.aiContext });
+      queryClient.invalidateQueries({ queryKey: queryKeys.configurationPreviews });
     },
   });
 }

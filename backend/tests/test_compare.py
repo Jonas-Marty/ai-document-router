@@ -14,7 +14,7 @@ from pypdf import PdfWriter
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.models import AiEndpoint, AiTask, AiTaskStep, AppSettings
+from app.models import AiConfiguration, AiEndpoint, AppSettings, ReadingMethod
 from app.services import ai, compare, extraction, ocr
 from app.services.audit import Actor
 from app.services.times import utc_now
@@ -54,7 +54,7 @@ def settings(**overrides: Any) -> AppSettings:
 
 @pytest.fixture
 def session() -> Iterator[Session]:
-    """A filing chain, and no extraction chain unless a test adds one."""
+    """A default configuration that reads the text layer, unless a test switches it to vision."""
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -70,12 +70,14 @@ def session() -> Iterator[Session]:
             )
         )
         s.add(
-            AiTaskStep(
+            AiConfiguration(
                 user_id=OWNER,
-                task=AiTask.filing,
-                position=0,
-                endpoint_id="ep",
-                model_name="text-model",
+                id="config",
+                name="Daily",
+                is_default=True,
+                filing_endpoint_id="ep",
+                filing_model_name="text-model",
+                created_at=utc_now(),
             )
         )
         s.commit()
@@ -83,15 +85,12 @@ def session() -> Iterator[Session]:
 
 
 def with_extraction(session: Session, model_name: str = "qwen-vl") -> None:
-    session.add(
-        AiTaskStep(
-            user_id=OWNER,
-            task=AiTask.extraction,
-            position=0,
-            endpoint_id="ep",
-            model_name=model_name,
-        )
-    )
+    configuration = session.get(AiConfiguration, "config")
+    assert configuration is not None
+    configuration.reading_method = ReadingMethod.vision
+    configuration.reading_endpoint_id = "ep"
+    configuration.reading_model_name = model_name
+    session.add(configuration)
     session.commit()
 
 
@@ -113,6 +112,7 @@ class FakeDocument:
         self.webdav_path = f"/Test-Inbox/{filename}"
         self.original_filename = filename
         self.mime_type = mime_type
+        self.configuration_id = None
 
 
 def run(
@@ -160,7 +160,7 @@ def test_reports_a_result_for_every_method(
     monkeypatch.setattr(
         compare.transcribe,
         "transcribe",
-        lambda data, steps, instructions=None, meter=None: compare.transcribe.Transcription(
+        lambda data, step, **kwargs: compare.transcribe.Transcription(
             markdown="# Helvetia", model_label="Local · qwen-vl"
         ),
     )
@@ -209,7 +209,7 @@ def test_the_markdown_method_files_from_the_transcription(
     monkeypatch.setattr(
         compare.transcribe,
         "transcribe",
-        lambda data, steps, instructions=None, meter=None: compare.transcribe.Transcription(
+        lambda data, step, **kwargs: compare.transcribe.Transcription(
             markdown="# Helvetia\n\n| Premium | 480.00 |", model_label="Local · qwen-vl"
         ),
     )
@@ -230,7 +230,7 @@ def test_each_method_reports_its_own_cost(
     monkeypatch.setattr(ocr, "is_available", lambda: False)
     with_extraction(session)
 
-    def read(data: bytes, steps: Any, instructions: Any = None, meter: Any = None) -> Any:
+    def read(data: bytes, step: Any, *, meter: Any, **kwargs: Any) -> Any:
         meter.scope("extraction", "Local · qwen-vl").record(ai.TokenUsage(2000, 400), 5)
         return compare.transcribe.Transcription(
             markdown="# Helvetia", model_label="Local · qwen-vl"
@@ -255,7 +255,7 @@ def test_each_method_reports_its_own_cost(
     assert markdown.usage.total_tokens == 3250
 
 
-def test_the_markdown_method_says_when_no_extraction_endpoint_is_assigned(
+def test_the_markdown_method_says_when_the_configuration_reads_without_a_model(
     monkeypatch: pytest.MonkeyPatch, session: Session
 ) -> None:
     monkeypatch.setattr(ocr, "is_available", lambda: False)
@@ -263,7 +263,19 @@ def test_the_markdown_method_says_when_no_extraction_endpoint_is_assigned(
 
     markdown = next(r for r in results if r.method == compare.MARKDOWN)
     assert markdown.proposal is None
-    assert "extraction task" in (markdown.error or "")
+    assert "doesn't read with a model" in (markdown.error or "")
+
+
+def test_without_a_configuration_there_is_nothing_to_compare_with(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    from app.services.errors import ValidationError
+
+    session.delete(session.get(AiConfiguration, "config"))
+    session.commit()
+
+    with pytest.raises(ValidationError, match="Lab"):
+        run(monkeypatch, session, data=blank_pdf(), app_settings=settings())
 
 
 def test_ocr_text_is_proposed_with_the_configured_text_model(

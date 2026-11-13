@@ -194,7 +194,7 @@ function DocumentReview({
   function openComparison() {
     setCompareOpen(true);
     // Reopening shows the last run rather than paying for another one; "Run again" inside
-    // the overlay is there for when Settings changed since.
+    // the overlay is there for when the configuration changed since.
     if (!compareMutation.data && !compareMutation.isPending) {
       compareMutation.mutate(document.id);
     }
@@ -265,8 +265,8 @@ function DocumentReview({
         onChooseFolder={() => setPickerOpen(true)}
       />
       <div className="flex flex-wrap items-center gap-4">
-        {/* Offered for a ready proposal too: after changing a model or the instructions in
-            Settings, the existing proposal is stale and this is how to get a fresh one. */}
+        {/* Offered for a ready proposal too: after changing a configuration in the Lab, the
+            existing proposal is stale and this is how to get a fresh one. */}
         <button
           type="button"
           className="text-sm font-medium text-primary underline-offset-4 hover:underline"
@@ -302,7 +302,7 @@ function DocumentReview({
   const pendingSkeleton = (
     <div className="space-y-3" aria-busy="true">
       <p className="text-sm text-muted-foreground" aria-live="polite">
-        {document.analysis_stage ?? "Waiting for the AI proposal…"}
+        {document.analysis_stage ?? document.waiting_reason ?? "Waiting for the AI proposal…"}
       </p>
       <Skeleton className="h-9 w-full" />
       <Skeleton className="h-9 w-full" />
@@ -337,6 +337,7 @@ function DocumentReview({
         open={rerunOpen}
         onOpenChange={setRerunOpen}
         isPending={regenerateMutation.isPending}
+        currentConfigurationName={document.configuration_name}
         onRun={(choice) =>
           regenerateMutation.mutate(
             { id: document.id, choice },

@@ -310,68 +310,94 @@ class TestRegenerate:
     def test_unknown_id_is_a_404(self, client: TestClient) -> None:
         assert client.post("/api/v1/documents/nope/regenerate").status_code == 404
 
-    def test_a_chosen_connection_and_model_are_stored_for_the_poller(
-        self, client: TestClient
-    ) -> None:
-        endpoint_id = client.post(
-            "/api/v1/ai/endpoints", json={"name": "Hosted", "base_url": "https://h.test/v1"}
-        ).json()["id"]
+    def configuration(self, client: TestClient, name: str) -> str:
+        endpoint = client.get("/api/v1/ai/endpoints").json()
+        endpoint_id = (
+            endpoint[0]["id"]
+            if endpoint
+            else client.post(
+                "/api/v1/ai/endpoints", json={"name": "Hosted", "base_url": "https://h.test/v1"}
+            ).json()["id"]
+        )
+        response = client.post(
+            "/api/v1/configurations",
+            json={
+                "name": name,
+                "reading_method": "text_layer",
+                "reading": {"temperature": 0.1, "max_tokens": 4096},
+                "filing_strategy": "one_call",
+                "filing": {
+                    "endpoint_id": endpoint_id,
+                    "model_name": "big",
+                    "temperature": 0.1,
+                    "max_tokens": 2048,
+                },
+                "max_examples": 8,
+                "max_folders": 250,
+                "max_text_chars": 6000,
+            },
+        )
+        assert response.status_code == 201, response.text
+        return str(response.json()["id"])
+
+    def queued(self) -> str:
         with Session(db.engine) as session:
             document = make_document("scan.pdf")
             session.add(document)
             session.commit()
-            document_id = document.id
+            return document.id
+
+    def test_a_picked_configuration_is_kept_for_the_document(self, client: TestClient) -> None:
+        self.configuration(client, "Daily")
+        careful = self.configuration(client, "Careful")
+        document_id = self.queued()
 
         response = client.post(
-            f"/api/v1/documents/{document_id}/regenerate",
-            json={"endpoint_id": endpoint_id, "model_name": " big "},
+            f"/api/v1/documents/{document_id}/regenerate", json={"configuration_id": careful}
         )
 
         assert response.status_code == 200
         with Session(db.engine) as session:
             stored = session.get(Document, document_id)
             assert stored is not None
-            assert (stored.rerun_endpoint_id, stored.rerun_model_name) == (endpoint_id, "big")
+            assert stored.configuration_id == careful
 
-    def test_a_plain_rerun_clears_an_earlier_choice(self, client: TestClient) -> None:
+    def test_picking_the_default_clears_an_earlier_pick(self, client: TestClient) -> None:
+        """So the document follows the default when someone later changes which one it is."""
+        daily = self.configuration(client, "Daily")
+        careful = self.configuration(client, "Careful")
+        document_id = self.queued()
+        client.post(
+            f"/api/v1/documents/{document_id}/regenerate", json={"configuration_id": careful}
+        )
+
+        client.post(f"/api/v1/documents/{document_id}/regenerate", json={"configuration_id": daily})
+
         with Session(db.engine) as session:
-            document = make_document("scan.pdf")
-            document.rerun_endpoint_id = "e"
-            document.rerun_model_name = "m"
-            session.add(document)
-            session.commit()
-            document_id = document.id
+            stored = session.get(Document, document_id)
+            assert stored is not None
+            assert stored.configuration_id is None
+
+    def test_a_plain_rerun_keeps_the_pick(self, client: TestClient) -> None:
+        self.configuration(client, "Daily")
+        careful = self.configuration(client, "Careful")
+        document_id = self.queued()
+        client.post(
+            f"/api/v1/documents/{document_id}/regenerate", json={"configuration_id": careful}
+        )
 
         client.post(f"/api/v1/documents/{document_id}/regenerate")
 
         with Session(db.engine) as session:
             stored = session.get(Document, document_id)
             assert stored is not None
-            assert stored.rerun_endpoint_id is None and stored.rerun_model_name is None
+            assert stored.configuration_id == careful
 
-    def test_a_connection_without_a_model_is_rejected(self, client: TestClient) -> None:
-        with Session(db.engine) as session:
-            document = make_document("scan.pdf")
-            session.add(document)
-            session.commit()
-            document_id = document.id
+    def test_an_unknown_configuration_is_a_404(self, client: TestClient) -> None:
+        document_id = self.queued()
 
         response = client.post(
-            f"/api/v1/documents/{document_id}/regenerate", json={"endpoint_id": "x"}
-        )
-
-        assert response.status_code == 422
-
-    def test_an_unknown_connection_is_a_404(self, client: TestClient) -> None:
-        with Session(db.engine) as session:
-            document = make_document("scan.pdf")
-            session.add(document)
-            session.commit()
-            document_id = document.id
-
-        response = client.post(
-            f"/api/v1/documents/{document_id}/regenerate",
-            json={"endpoint_id": "nope", "model_name": "m"},
+            f"/api/v1/documents/{document_id}/regenerate", json={"configuration_id": "nope"}
         )
 
         assert response.status_code == 404

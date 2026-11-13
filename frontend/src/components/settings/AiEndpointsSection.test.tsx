@@ -55,9 +55,9 @@ describe("AiEndpointsSection", () => {
     vi.clearAllMocks();
   });
 
-  it("lists each endpoint with whether a key is stored and which tasks use it", async () => {
+  it("lists each endpoint with whether a key is stored and which configurations use it", async () => {
     vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
-      endpoint({ api_key_set: true, used_by: ["extraction", "filing"] }),
+      endpoint({ api_key_set: true, used_by: ["Daily", "Careful"] }),
       endpoint({ id: "ep-2", name: "Infomaniak", base_url: "https://api.infomaniak.com/v1" }),
     ]);
     renderSection();
@@ -65,8 +65,8 @@ describe("AiEndpointsSection", () => {
     expect(await screen.findByText("Workshop PC")).toBeInTheDocument();
     expect(screen.getByText("http://192.168.1.50:11434/v1")).toBeInTheDocument();
     expect(screen.getByText("Key saved")).toBeInTheDocument();
-    expect(screen.getByText("Extraction")).toBeInTheDocument();
-    expect(screen.getByText("Filing")).toBeInTheDocument();
+    expect(screen.getByText("Daily")).toBeInTheDocument();
+    expect(screen.getByText("Careful")).toBeInTheDocument();
     expect(screen.getByText("Infomaniak")).toBeInTheDocument();
   });
 
@@ -232,12 +232,12 @@ describe("AiEndpointsSection", () => {
     expect(apiClient.createAiEndpoint).not.toHaveBeenCalled();
   });
 
-  it("confirms before removing, and surfaces the backend's refusal when a task still uses it", async () => {
-    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint({ used_by: ["filing"] })]);
+  it("confirms before removing, and surfaces the backend's refusal when a configuration still uses it", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint({ used_by: ["Daily"] })]);
     vi.mocked(apiClient.deleteAiEndpoint).mockRejectedValue(
       new ApiError(
         "validation_error",
-        "'Workshop PC' is still assigned to the filing task. Remove it there first.",
+        "'Workshop PC' is still used by the configuration 'Daily'. Change or delete that first.",
         422,
       ),
     );
@@ -252,7 +252,7 @@ describe("AiEndpointsSection", () => {
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(
-        "'Workshop PC' is still assigned to the filing task. Remove it there first.",
+        "'Workshop PC' is still used by the configuration 'Daily'. Change or delete that first.",
       ),
     );
     expect(screen.getByText("Workshop PC")).toBeInTheDocument();

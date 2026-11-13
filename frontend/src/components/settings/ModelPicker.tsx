@@ -17,7 +17,7 @@ export function optionsWithCurrent(models: string[] | undefined, current: string
   return current && !known.includes(current) ? [current, ...known] : known;
 }
 
-/** One model dropdown, used once per step of every task chain. Fetching is lazy -- opening
+/** One model dropdown, used once per model step of a configuration. Fetching is lazy -- opening
  * the dropdown is what triggers it -- so `onOpen` fires every time and it is up to the caller
  * to no-op once that endpoint's list has arrived. Free text stays reachable behind a toggle:
  * an endpoint that cannot be reached, or one that does not list the model you actually want,

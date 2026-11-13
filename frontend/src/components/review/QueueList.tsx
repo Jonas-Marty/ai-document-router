@@ -1,4 +1,4 @@
-import { CircleAlert, Loader2, RotateCw } from "lucide-react";
+import { CircleAlert, Clock, Loader2, RotateCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -101,10 +101,19 @@ function title(document: Document): string {
 /** Why a row is or is not ready to approve, in the same words the review form uses. */
 function QueueRowStatus({ document }: { document: Document }) {
   if (document.proposal_status === "pending") {
+    // Waiting on a connection that is off is not progress, so no spinner for it.
+    if (document.waiting_reason) {
+      return (
+        <span className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Clock className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1">{document.waiting_reason}</span>
+        </span>
+      );
+    }
     return (
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden="true" />
-        Waiting for the AI proposal…
+        {document.analysis_stage ?? "Waiting for the AI proposal…"}
       </span>
     );
   }

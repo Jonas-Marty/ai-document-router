@@ -24,7 +24,7 @@ export function ErrorState({
       <AlertCircle className="size-6 text-destructive" aria-hidden="true" />
       <p className="text-sm text-muted-foreground">{message}</p>
       {onRetry && (
-        <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
+        <Button type="button" variant="outline" size="sm" className="mt-2" onClick={onRetry}>
           Try again
         </Button>
       )}

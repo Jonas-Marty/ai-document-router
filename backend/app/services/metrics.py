@@ -52,8 +52,9 @@ http_request_duration = Histogram(
 
 ai_requests = Counter(
     "docrouter_ai_requests_total",
-    "Chain steps tried, by outcome: ok, rejected (answered unusably), unavailable, or "
-    "too_long (not sent: the prompt would not fit the context limit).",
+    "Model calls, by outcome: ok, rejected (answered unusably), unavailable, unreachable "
+    "(no connection; the document waits), or too_long (not sent: the prompt would not fit "
+    "the context limit).",
     ["task", "step", "outcome"],
 )
 ai_request_duration = Histogram(
@@ -72,17 +73,6 @@ ai_unreported_calls = Counter(
     "Model replies that carried no token counts, so the token total is a minimum.",
     ["task", "step"],
 )
-ai_fallbacks = Counter(
-    "docrouter_ai_fallbacks_total",
-    "Times a task moved on to its next endpoint because one could not be reached.",
-    ["task"],
-)
-ai_chain_exhausted = Counter(
-    "docrouter_ai_chain_exhausted_total",
-    "Times every endpoint in a task's chain was unreachable.",
-    ["task"],
-)
-
 # --- Pipeline --------------------------------------------------------------------------------
 
 analyses = Counter(

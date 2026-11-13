@@ -456,7 +456,8 @@ function UsageChart({
   );
 }
 
-/** Fallback use, a model no longer in any chain, a deleted connection. */
+/** Fallback use (from before configurations), a model no configuration uses, a deleted
+ * connection. */
 function Markers({
   rows,
   sum,
@@ -480,7 +481,7 @@ function Markers({
       )}
       {retired && (
         <span className={cn(pill, "border border-border text-muted-foreground")}>
-          no longer in a chain
+          not in a configuration
         </span>
       )}
       {deleted && level === "group" && (

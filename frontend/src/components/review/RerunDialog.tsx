@@ -1,6 +1,6 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ModelPicker, optionsWithCurrent } from "@/components/settings/ModelPicker";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -18,43 +18,42 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useAiEndpoints, useAiTasks } from "@/hooks/useAiConfig";
-import { useModelsByEndpoint } from "@/hooks/useModelsByEndpoint";
+import { useConfigurations } from "@/hooks/useAiConfig";
 import type { RegenerateChoice } from "@/services/api/types";
 
 export interface RerunDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   isPending: boolean;
+  /** The configuration picked for this document, or null when it follows the default. */
+  currentConfigurationName: string | null;
   onRun: (choice: RegenerateChoice) => void;
 }
 
-/** Pick the connection and model for one re-run of the analysis.
+/** Pick the configuration to analyse this document with.
  *
- * Starts on the first step of the configured filing chain, so confirming without touching
- * anything repeats what the poller would have done. A pick is for this run only and does not
- * fall back to the chain: the point of choosing is to find out what *that* model says. */
-export function RerunDialog({ open, onOpenChange, isPending, onRun }: RerunDialogProps) {
-  const endpoints = useAiEndpoints();
-  const tasks = useAiTasks();
-  const models = useModelsByEndpoint();
-  const [endpointId, setEndpointId] = useState("");
-  const [modelName, setModelName] = useState("");
-  const [manual, setManual] = useState(false);
-
-  const firstStep = tasks.data?.find((chain) => chain.task === "filing")?.steps[0];
-  const defaultEndpoint = firstStep?.endpoint_id ?? endpoints.data?.[0]?.id ?? "";
-  const defaultModel = firstStep?.model_name ?? "";
+ * Starts on the one the document uses now, so confirming without touching anything repeats
+ * the analysis. The pick stays with the document (SPEC 6.3a); picking the default puts it
+ * back to following the default. Nothing falls back to another configuration. */
+export function RerunDialog({
+  open,
+  onOpenChange,
+  isPending,
+  currentConfigurationName,
+  onRun,
+}: RerunDialogProps) {
+  const configurations = useConfigurations();
+  const [configurationId, setConfigurationId] = useState("");
+  const list = configurations.data ?? [];
+  const current =
+    list.find((row) => row.name === currentConfigurationName) ?? list.find((row) => row.is_default);
+  const currentId = current?.id ?? "";
 
   useEffect(() => {
-    if (!open) return;
-    setEndpointId(defaultEndpoint);
-    setModelName(defaultModel);
-    setManual(false);
-  }, [open, defaultEndpoint, defaultModel]);
+    if (open) setConfigurationId(currentId);
+  }, [open, currentId]);
 
-  const endpoint = endpoints.data?.find((candidate) => candidate.id === endpointId);
-  const canRun = endpoint !== undefined && modelName.trim() !== "" && !isPending;
+  const canRun = configurationId !== "" && !isPending;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -62,57 +61,34 @@ export function RerunDialog({ open, onOpenChange, isPending, onRun }: RerunDialo
         <DialogHeader>
           <DialogTitle>Re-run analysis</DialogTitle>
           <DialogDescription>
-            Choose which connection and model should propose the name and folder this time. Only the
-            chosen model is asked — there is no fallback to the others.
+            Choose the configuration that reads and files this document. It keeps that choice for
+            later re-runs; nothing falls back to another configuration.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="rerun-endpoint">Connection</Label>
-            <Select
-              value={endpointId}
-              onValueChange={(value) => {
-                setEndpointId(value);
-                setModelName(value === defaultEndpoint ? defaultModel : "");
-              }}
-            >
-              <SelectTrigger id="rerun-endpoint" className="w-full">
-                <SelectValue placeholder="Choose a connection" />
-              </SelectTrigger>
-              <SelectContent>
-                {(endpoints.data ?? []).map((candidate) => (
-                  <SelectItem key={candidate.id} value={candidate.id}>
-                    {candidate.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {endpoints.data?.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                No connections yet — add one in Settings first.
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="rerun-model">Model</Label>
-            <ModelPicker
-              id="rerun-model"
-              value={modelName}
-              onChange={setModelName}
-              options={optionsWithCurrent(
-                endpoint ? models.byEndpoint[endpoint.id] : undefined,
-                modelName,
-              )}
-              disabled={endpoint === undefined}
-              isPending={endpoint !== undefined && models.loadingId === endpoint.id}
-              errorMessage={endpoint ? (models.errors[endpoint.id] ?? null) : null}
-              onOpen={() => endpoint && models.load(endpoint)}
-              manualMode={manual}
-              onToggleManual={() => setManual((current) => !current)}
-            />
-          </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="rerun-configuration">Configuration</Label>
+          <Select value={configurationId} onValueChange={setConfigurationId}>
+            <SelectTrigger id="rerun-configuration" className="w-full">
+              <SelectValue placeholder="Choose a configuration" />
+            </SelectTrigger>
+            <SelectContent>
+              {list.map((row) => (
+                <SelectItem key={row.id} value={row.id}>
+                  {row.is_default ? `${row.name} (default)` : row.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {configurations.isSuccess && list.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No configurations yet —{" "}
+              <Link to="/lab" className="underline underline-offset-4">
+                create one in the Lab
+              </Link>
+              .
+            </p>
+          )}
         </div>
 
         <DialogFooter>
@@ -122,7 +98,7 @@ export function RerunDialog({ open, onOpenChange, isPending, onRun }: RerunDialo
           <Button
             type="button"
             disabled={!canRun}
-            onClick={() => onRun({ endpoint_id: endpointId, model_name: modelName.trim() })}
+            onClick={() => onRun({ configuration_id: configurationId })}
           >
             {isPending && <Loader2 className="animate-spin" aria-hidden="true" />}
             Run analysis

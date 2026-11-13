@@ -1,8 +1,6 @@
 import { useCallback, useState } from "react";
-import { AiContextSection } from "@/components/settings/AiContextSection";
 import { AiEndpointsSection } from "@/components/settings/AiEndpointsSection";
-import { AiInstructionsSection } from "@/components/settings/AiInstructionsSection";
-import { AiTasksSection } from "@/components/settings/AiTasksSection";
+import { AnalysisSection } from "@/components/settings/AnalysisSection";
 import { FoldersSection } from "@/components/settings/FoldersSection";
 import { NamingSection } from "@/components/settings/NamingSection";
 import { NextcloudSection } from "@/components/settings/NextcloudSection";
@@ -13,14 +11,7 @@ import { useSetNavigationGuard } from "@/hooks/useNavigationGuard";
 import { useSettings } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
 
-type SectionName =
-  | "nextcloud"
-  | "folders"
-  | "naming"
-  | "endpoints"
-  | "tasks"
-  | "instructions"
-  | "ocr";
+type SectionName = "nextcloud" | "folders" | "naming" | "endpoints" | "analysis" | "ocr";
 
 export default function SettingsPage() {
   const settings = useSettings();
@@ -29,8 +20,7 @@ export default function SettingsPage() {
     folders: false,
     naming: false,
     endpoints: false,
-    tasks: false,
-    instructions: false,
+    analysis: false,
     ocr: false,
   });
 
@@ -53,12 +43,8 @@ export default function SettingsPage() {
     (dirty: boolean) => setDirtySections((prev) => ({ ...prev, endpoints: dirty })),
     [],
   );
-  const onTasksDirtyChange = useCallback(
-    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, tasks: dirty })),
-    [],
-  );
-  const onInstructionsDirtyChange = useCallback(
-    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, instructions: dirty })),
+  const onAnalysisDirtyChange = useCallback(
+    (dirty: boolean) => setDirtySections((prev) => ({ ...prev, analysis: dirty })),
     [],
   );
   const onOcrDirtyChange = useCallback(
@@ -85,12 +71,7 @@ export default function SettingsPage() {
           <FoldersSection settings={settings.data} onDirtyChange={onFoldersDirtyChange} />
           <NamingSection settings={settings.data} onDirtyChange={onNamingDirtyChange} />
           <AiEndpointsSection onDirtyChange={onEndpointsDirtyChange} />
-          <AiTasksSection onDirtyChange={onTasksDirtyChange} />
-          <AiInstructionsSection
-            settings={settings.data}
-            onDirtyChange={onInstructionsDirtyChange}
-          />
-          <AiContextSection />
+          <AnalysisSection settings={settings.data} onDirtyChange={onAnalysisDirtyChange} />
           <OcrSection settings={settings.data} onDirtyChange={onOcrDirtyChange} />
         </>
       ) : null}

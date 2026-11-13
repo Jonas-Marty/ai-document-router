@@ -14,8 +14,8 @@ function proposal(overrides: Partial<AIProposal> = {}): AIProposal {
     reasoning_text: "Invoice header.",
     model_name: "test-model",
     connection_name: null,
-    chosen_by_user: false,
-    fallback_from: null,
+    configuration_name: null,
+    reading_label: null,
     prompt_text: null,
     system_prompt: "You file scanned documents.",
     ...overrides,
@@ -40,9 +40,9 @@ function doc(id: string, overrides: Partial<Document> = {}): Document {
     ocr_status: "not_needed",
     ocr_error: null,
     analysis_usage: null,
-    extracted_markdown: null,
-    extraction_model: null,
-    extraction_error: null,
+    waiting_reason: null,
+    configuration_name: null,
+    reading: null,
     ...overrides,
   };
 }

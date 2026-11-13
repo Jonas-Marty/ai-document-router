@@ -108,8 +108,7 @@ def regenerate_proposal(
         user.id,
         document_id,
         actor=Actor.from_user(user),
-        endpoint_id=chosen.endpoint_id,
-        model_name=chosen.model_name,
+        configuration_id=chosen.configuration_id,
     )
     # Someone is watching the screen for this one; do not make them wait out the interval.
     poller.kick()

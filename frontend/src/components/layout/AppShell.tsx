@@ -1,4 +1,4 @@
-import { Activity, FileStack, History, LogOut, Settings } from "lucide-react";
+import { Activity, FileStack, FlaskConical, History, LogOut, Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { ThemeToggle } from "./ThemeToggle";
 const NAV_ITEMS = [
   { to: "/", label: "Review", icon: FileStack, end: true },
   { to: "/history", label: "History", icon: History, end: false },
+  { to: "/lab", label: "Lab", icon: FlaskConical, end: false },
   { to: "/activity", label: "Activity", icon: Activity, end: false },
   { to: "/settings", label: "Settings", icon: Settings, end: false },
 ] as const;

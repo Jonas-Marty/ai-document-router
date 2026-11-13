@@ -36,11 +36,6 @@ import { ApiError } from "@/services/api/errors";
 import type { AiEndpoint, AiJsonMode } from "@/services/api/types";
 import { type EndpointFormValues, endpointFormSchema, optionalNumber } from "./settingsSchemas";
 
-const TASK_LABELS: Record<string, string> = {
-  extraction: "Extraction",
-  filing: "Filing",
-};
-
 const JSON_MODE_LABELS: Record<AiJsonMode, string> = {
   auto: "Automatic",
   json_schema: "JSON schema",
@@ -59,7 +54,7 @@ function priceLabel(endpoint: AiEndpoint): string | null {
  *
  * Not a SectionCard: an endpoint is its own resource with its own create/update/delete, so
  * each one saves when *it* is saved rather than sharing a single Save button with the rest of
- * the section. What tasks do with these endpoints is the next card down (AiTasksSection). */
+ * the section. Which model each step uses is set per configuration, in the Lab. */
 export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const endpoints = useAiEndpoints();
   const deleteEndpoint = useDeleteAiEndpoint();
@@ -96,7 +91,7 @@ export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: b
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Every place this app can send a model request — the machine under your desk, a hosted
-          provider, or both. Name them here, then assign them to tasks below.
+          provider, or both. Name them here, then use them in configurations in the Lab.
         </p>
 
         {endpoints.isLoading ? (
@@ -144,9 +139,9 @@ export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: b
                       {priceLabel(endpoint) && (
                         <Badge variant="secondary">{priceLabel(endpoint)}</Badge>
                       )}
-                      {endpoint.used_by.map((task) => (
-                        <Badge key={task} variant="outline">
-                          {TASK_LABELS[task] ?? task}
+                      {endpoint.used_by.map((name) => (
+                        <Badge key={name} variant="outline">
+                          {name}
                         </Badge>
                       ))}
                     </div>
@@ -369,9 +364,9 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
           <p className="text-sm text-destructive">{errors.timeout_seconds.message}</p>
         ) : (
           <p id={`${timeoutId}-help`} className="text-sm text-muted-foreground">
-            How long to wait for an answer before trying the next endpoint. A local model that loads
-            cold and thinks first needs minutes; a hosted API, much less. Connecting gives up after
-            5 seconds either way.
+            How long to wait for an answer before the call fails. A local model that loads cold and
+            thinks first needs minutes; a hosted API, much less. Connecting gives up after 5 seconds
+            either way.
           </p>
         )}
       </div>

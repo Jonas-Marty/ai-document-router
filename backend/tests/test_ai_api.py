@@ -1,4 +1,4 @@
-"""Tests for the endpoint and task-chain API (SPEC 6.3a, 8.7).
+"""Tests for the connection API (SPEC 6.3a, 8.7).
 
 CLAUDE.md rule 5 is the one that most needs holding here: an endpoint's key goes in and is
 never handed back, only the fact that one is set.
@@ -12,14 +12,37 @@ from sqlmodel import Session, select
 
 from app import db
 from app.config import settings as app_config
-from app.models import AiEndpoint, AiTask
-from app.services import ai, ai_tasks, crypto
+from app.models import AiConfiguration, AiEndpoint
+from app.services import ai, configurations, crypto
 
 
 def add(client: TestClient, name: str = "Local", **overrides: Any) -> dict[str, Any]:
     payload = {"name": name, "base_url": "http://192.168.1.50:11434/v1", **overrides}
     response = client.post("/api/v1/ai/endpoints", json=payload)
     assert response.status_code == 200, response.text
+    return response.json()
+
+
+def configure(client: TestClient, endpoint_id: str, model_name: str = "qwen") -> dict[str, Any]:
+    response = client.post(
+        "/api/v1/configurations",
+        json={
+            "name": "Daily",
+            "reading_method": "text_layer",
+            "reading": {"temperature": 0.1, "max_tokens": 4096},
+            "filing_strategy": "one_call",
+            "filing": {
+                "endpoint_id": endpoint_id,
+                "model_name": model_name,
+                "temperature": 0.1,
+                "max_tokens": 2048,
+            },
+            "max_examples": 8,
+            "max_folders": 250,
+            "max_text_chars": 6000,
+        },
+    )
+    assert response.status_code == 201, response.text
     return response.json()
 
 
@@ -93,77 +116,23 @@ class TestEndpoints:
         assert client.delete(f"/api/v1/ai/endpoints/{created['id']}").status_code == 200
         assert client.get("/api/v1/ai/endpoints").json() == []
 
-    def test_deleting_one_a_task_still_uses_is_refused(self, client: TestClient) -> None:
+    def test_deleting_one_a_configuration_uses_is_refused(self, client: TestClient) -> None:
         created = add(client)
-        client.put(
-            "/api/v1/ai/tasks/filing",
-            json={"steps": [{"endpoint_id": created["id"], "model_name": "qwen"}]},
-        )
+        configure(client, created["id"])
 
         response = client.delete(f"/api/v1/ai/endpoints/{created['id']}")
 
         assert response.status_code == 422
-        assert "filing" in response.json()["error"]["message"]
+        assert "'Daily'" in response.json()["error"]["message"]
+
+    def test_an_endpoint_reports_the_configurations_using_it(self, client: TestClient) -> None:
+        created = add(client)
+        configure(client, created["id"])
+
+        assert client.get("/api/v1/ai/endpoints").json()[0]["used_by"] == ["Daily"]
 
     def test_a_missing_endpoint_is_a_404(self, client: TestClient) -> None:
         assert client.delete("/api/v1/ai/endpoints/nope").status_code == 404
-
-
-class TestChains:
-    def test_both_tasks_start_empty(self, client: TestClient) -> None:
-        chains = client.get("/api/v1/ai/tasks").json()
-
-        assert [chain["task"] for chain in chains] == ["extraction", "filing"]
-        assert all(chain["steps"] == [] for chain in chains)
-
-    def test_a_chain_keeps_the_order_it_was_given(self, client: TestClient) -> None:
-        local = add(client, "Local")
-        hosted = add(client, "Hosted", base_url="https://api.example.com/v1")
-
-        response = client.put(
-            "/api/v1/ai/tasks/filing",
-            json={
-                "steps": [
-                    {"endpoint_id": local["id"], "model_name": "qwen2.5"},
-                    {"endpoint_id": hosted["id"], "model_name": "gpt-4o"},
-                ]
-            },
-        )
-
-        assert response.status_code == 200
-        assert [(s["endpoint_name"], s["model_name"]) for s in response.json()["steps"]] == [
-            ("Local", "qwen2.5"),
-            ("Hosted", "gpt-4o"),
-        ]
-
-    def test_an_endpoint_in_a_chain_reports_what_uses_it(self, client: TestClient) -> None:
-        local = add(client)
-        client.put(
-            "/api/v1/ai/tasks/extraction",
-            json={"steps": [{"endpoint_id": local["id"], "model_name": "got-ocr"}]},
-        )
-
-        assert client.get("/api/v1/ai/endpoints").json()[0]["used_by"] == ["extraction"]
-
-    def test_rejects_a_step_pointing_at_no_endpoint(self, client: TestClient) -> None:
-        response = client.put(
-            "/api/v1/ai/tasks/filing",
-            json={"steps": [{"endpoint_id": "gone", "model_name": "m"}]},
-        )
-
-        assert response.status_code == 404
-
-    def test_rejects_a_blank_model_name(self, client: TestClient) -> None:
-        local = add(client)
-        response = client.put(
-            "/api/v1/ai/tasks/filing",
-            json={"steps": [{"endpoint_id": local["id"], "model_name": " "}]},
-        )
-
-        assert response.status_code == 422
-
-    def test_an_unknown_task_is_rejected(self, client: TestClient) -> None:
-        assert client.put("/api/v1/ai/tasks/summarising", json={"steps": []}).status_code == 422
 
 
 class TestModelListing:
@@ -315,15 +284,13 @@ class TestCapabilities:
 
     def test_a_steps_resolved_call_carries_them(self, client: TestClient) -> None:
         created = add(client, context_limit=8192, price_output_per_million=2.0)
-        client.put(
-            "/api/v1/ai/tasks/filing",
-            json={"steps": [{"endpoint_id": created["id"], "model_name": "qwen3"}]},
-        )
+        configure(client, created["id"], "qwen3")
 
         with Session(db.engine) as session:
-            user_id = session.exec(select(AiEndpoint)).one().user_id
-            (step,) = ai_tasks.resolve_chain(session, user_id, AiTask.filing)
+            configuration = session.exec(select(AiConfiguration)).one()
+            step = configurations.plan(session, configuration).filing_step
 
+        assert step is not None
         assert (step.context_limit, step.price_output) == (8192, 2.0)
 
     @pytest.mark.parametrize(

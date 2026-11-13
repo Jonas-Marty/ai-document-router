@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Document, FolderContext, Settings } from "@/services/api/types";
+import type { Configuration, Document, FolderContext, Settings } from "@/services/api/types";
 import ReviewPage from "./ReviewPage";
 
 vi.mock("@/services/api/client", () => ({
@@ -15,13 +15,37 @@ vi.mock("@/services/api/client", () => ({
     retryFailedProposals: vi.fn(),
     compareDocument: vi.fn(),
     regenerateDocument: vi.fn(),
-    listAiEndpoints: vi.fn(),
-    listAiTasks: vi.fn(),
-    listAiModels: vi.fn(),
+    listConfigurations: vi.fn(),
   },
 }));
 
 import { apiClient } from "@/services/api/client";
+
+function configuration(id: string, name: string, isDefault: boolean): Configuration {
+  const step = {
+    endpoint_id: null,
+    endpoint_name: null,
+    model_name: null,
+    system_prompt: null,
+    instructions: null,
+    temperature: 0.1,
+    max_tokens: 2048,
+    thinking: "default" as const,
+  };
+  return {
+    id,
+    name,
+    is_default: isDefault,
+    reading_method: "text_layer",
+    reading: step,
+    filing_strategy: "one_call",
+    filing: { ...step, endpoint_id: "ep1", endpoint_name: "Workshop PC", model_name: "qwen3" },
+    folder_system_prompt: null,
+    max_examples: 8,
+    max_folders: 250,
+    max_text_chars: 6000,
+  };
+}
 
 function doc(id: string, suggestedName: string, overrides: Partial<Document> = {}): Document {
   return {
@@ -45,8 +69,8 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
       reasoning_text: "Invoice header.",
       model_name: "test-model",
       connection_name: null,
-      chosen_by_user: false,
-      fallback_from: null,
+      configuration_name: null,
+      reading_label: null,
       prompt_text: null,
       system_prompt: "You file scanned documents.",
     },
@@ -54,9 +78,9 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
     ocr_status: "not_needed",
     ocr_error: null,
     analysis_usage: null,
-    extracted_markdown: null,
-    extraction_model: null,
-    extraction_error: null,
+    waiting_reason: null,
+    configuration_name: null,
+    reading: null,
     ...overrides,
   };
 }
@@ -68,8 +92,6 @@ const SETTINGS: Settings = {
   filename_pattern: null,
   filename_pattern_hint: null,
   store_ocr_text: true,
-  filing_instructions: null,
-  extraction_instructions: null,
   proposal_batch_size: 10,
 };
 
@@ -153,8 +175,8 @@ describe("ReviewPage queue overview", () => {
             reasoning_text: "Reads the letterhead directly.",
             model_name: "qwen2.5vl:7b",
             connection_name: null,
-            chosen_by_user: false,
-            fallback_from: null,
+            configuration_name: null,
+            reading_label: null,
             prompt_text: null,
             system_prompt: "You file scanned documents.",
           },
@@ -227,43 +249,13 @@ describe("ReviewPage queue overview", () => {
     ).toBeInTheDocument();
   });
 
-  it("re-runs on the connection and model picked in the dialog", async () => {
-    // After a model or instruction change in Settings, a ready proposal is stale.
+  it("re-runs with the configuration picked in the dialog", async () => {
+    // After a configuration changed in the Lab, a ready proposal is stale.
     renderReview([doc("1", "2026.05.18 Swisscom Rechnung")]);
-    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([
-      {
-        id: "ep1",
-        name: "Workshop PC",
-        base_url: "http://a/v1",
-        api_key_set: false,
-        timeout_seconds: 60,
-        context_limit: null,
-        json_mode: "auto",
-        price_input_per_million: null,
-        price_output_per_million: null,
-        used_by: ["filing"],
-      },
-      {
-        id: "ep2",
-        name: "Infomaniak",
-        base_url: "https://b/v1",
-        api_key_set: true,
-        timeout_seconds: 60,
-        context_limit: null,
-        json_mode: "auto",
-        price_input_per_million: null,
-        price_output_per_million: null,
-        used_by: [],
-      },
+    vi.mocked(apiClient.listConfigurations).mockResolvedValue([
+      configuration("c1", "Daily", true),
+      configuration("c2", "Careful", false),
     ]);
-    vi.mocked(apiClient.listAiTasks).mockResolvedValue([
-      {
-        task: "filing",
-        steps: [{ endpoint_id: "ep1", endpoint_name: "Workshop PC", model_name: "qwen3" }],
-      },
-      { task: "extraction", steps: [] },
-    ]);
-    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["gpt-4o", "gpt-4o-mini"] });
     vi.mocked(apiClient.regenerateDocument).mockResolvedValue(
       doc("1", "2026.05.18 Swisscom Rechnung", { proposal_status: "pending", proposal: null }),
     );
@@ -272,23 +264,48 @@ describe("ReviewPage queue overview", () => {
     await user.click(await screen.findByRole("button", { name: /re-run analysis/i }));
     const dialog = await screen.findByRole("dialog");
 
-    // Starts on the configured filing step, so confirming alone repeats the default.
+    // Starts on the default, which this document follows, so confirming alone repeats it.
     await waitFor(() =>
-      expect(within(dialog).getByRole("combobox", { name: /connection/i })).toHaveTextContent(
-        "Workshop PC",
+      expect(within(dialog).getByRole("combobox", { name: /configuration/i })).toHaveTextContent(
+        "Daily (default)",
       ),
     );
-    await user.click(within(dialog).getByRole("combobox", { name: /connection/i }));
-    await user.click(await screen.findByRole("option", { name: "Infomaniak" }));
-    await user.click(within(dialog).getByRole("combobox", { name: /model/i }));
-    await user.click(await screen.findByRole("option", { name: "gpt-4o-mini" }));
+    await user.click(within(dialog).getByRole("combobox", { name: /configuration/i }));
+    await user.click(await screen.findByRole("option", { name: "Careful" }));
     await user.click(within(dialog).getByRole("button", { name: /run analysis/i }));
 
     await waitFor(() =>
-      expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1", {
-        endpoint_id: "ep2",
-        model_name: "gpt-4o-mini",
-      }),
+      expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1", { configuration_id: "c2" }),
     );
+  });
+
+  it("starts the dialog on the configuration picked for the document earlier", async () => {
+    renderReview([doc("1", "2026.05.18 Swisscom Rechnung", { configuration_name: "Careful" })]);
+    vi.mocked(apiClient.listConfigurations).mockResolvedValue([
+      configuration("c1", "Daily", true),
+      configuration("c2", "Careful", false),
+    ]);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /re-run analysis/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole("combobox", { name: /configuration/i })).toHaveTextContent(
+        "Careful",
+      ),
+    );
+  });
+
+  it("says why a document is waiting rather than showing it as in progress", async () => {
+    renderReview([
+      doc("1", "unused", {
+        proposal_status: "pending",
+        proposal: null,
+        waiting_reason: "Waiting for Tower to read",
+      }),
+    ]);
+
+    expect(await screen.findAllByText("Waiting for Tower to read")).not.toHaveLength(0);
   });
 });

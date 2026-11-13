@@ -9,7 +9,7 @@ from app import db
 from app.config import settings as config
 from app.main import app
 from app.models import AppSettings, User
-from app.services import ai, ai_tasks, webdav
+from app.services import ai, connections, webdav
 from app.services import settings as settings_service
 
 
@@ -25,13 +25,18 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def reachable_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The analysis probes each connection before using it; in tests every one answers.
+    Tests about waiting pass their own probe to analysis.run_batch."""
+    monkeypatch.setattr(connections, "is_reachable", lambda step: True)
+
+
+@pytest.fixture(autouse=True)
 def fresh_response_formats() -> Iterator[None]:
     """ai remembers which response_format each endpoint accepted; no test inherits that."""
     ai._known_format.clear()
-    ai_tasks._cooling.clear()
     yield
     ai._known_format.clear()
-    ai_tasks._cooling.clear()
 
 
 @pytest.fixture(autouse=True)

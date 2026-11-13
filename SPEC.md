@@ -70,15 +70,17 @@ ai-document-router/
 │       │   ├── audit.py       # the Activity page's events and usage, admin only
 │       │   ├── metrics.py     # Prometheus exposition, bearer-token gated
 │       │   ├── cursors.py     # (timestamp, id) page cursors, shared by history and audit
-│       │   ├── ai.py         # endpoints + task chains
+│       │   ├── ai.py         # connections and AI usage
+│       │   ├── configurations.py # configurations, their previews and built-in prompts
 │       │   └── settings.py
 │       ├── services/
 │       │   ├── webdav.py      # all WebDAV I/O
 │       │   ├── extraction.py  # pypdf text + metadata
 │       │   ├── ai.py          # LLM call, prompt, response parsing
-│       │   ├── ai_tasks.py    # named endpoints, task chains, fallback
-│       │   ├── transcribe.py  # pages -> markdown (the extraction task)
-│       │   ├── ai_context.py  # what each task is sent, previewed for Settings
+│       │   ├── connections.py # named endpoints, their capabilities, one step's call
+│       │   ├── configurations.py # configurations, default, setups, previews
+│       │   ├── analysis.py    # reading and filing per configuration, readings, waiting
+│       │   ├── transcribe.py  # pages -> markdown (the vision reading)
 │       │   ├── audit.py       # the audit log: record, list, usage totals, retention
 │       │   ├── crypto.py      # Fernet encrypt/decrypt for stored secrets
 │       │   ├── metrics.py     # every Prometheus metric, and the scrape-time document counts
@@ -131,9 +133,9 @@ ai-document-router/
 | `proposal_error` | str \| null | |
 | `ocr_status` | enum | `not_needed` \| `pending` \| `ready` \| `failed` — see 6.2a |
 | `ocr_error` | str \| null | why no searchable copy could be made |
-| `extracted_markdown` | str \| null | what the extraction task read off the pages (6.3a) |
-| `extraction_model` | str \| null | which endpoint · model read it |
-| `extraction_error` | str \| null | why extraction was skipped or failed; filing falls back to the text layer |
+| `configuration_id` | FK ai_configuration.id \| null | the configuration to analyse with; null = the user's default (6.3a) |
+| `reading_id` | str \| null | id of the reading the latest analysis filed from; not a foreign key, since `reading` already references `document` |
+| `waiting_reason` | str \| null | while `proposal_status=pending`: why the analysis is waiting, e.g. "Read · waiting for Tower to file"; null when it simply has not run yet |
 | `analysis_usage` | JSON \| null | tokens the most recent analysis spent, per task — `UsageSummary` (6.3); set on failure too |
 | `error_message` | str \| null | set when `status = failed` |
 
@@ -152,6 +154,11 @@ ai-document-router/
 | `reasoning_text` | str |
 | `model_name` | str — which model produced it |
 | `created_at` | datetime |
+| `prompt_text` | str \| null — the user message(s) sent (8.3.5a) |
+| `system_prompt` | str \| null — the system prompt(s) sent; null on proposals from before configurations, which used the built-in one |
+| `endpoint_name` | str \| null — the filing connection's name at the time |
+| `configuration_id` / `configuration_name` | str \| null — which configuration produced it; not a FK, the name is a copy |
+| `reading_label` | str \| null — how the document was read: "Text layer", "Tesseract", or "Connection · model" |
 
 **`history_entry`**
 
@@ -184,8 +191,6 @@ ai-document-router/
 | `filename_pattern` | str \| null — regex, soft validation |
 | `filename_pattern_hint` | str \| null |
 | `store_ocr_text` | bool, default true — file a searchable copy of a scan (6.2a) |
-| `filing_instructions` | str \| null — the person's own instructions for filing, ≤ 2000 chars (6.3) |
-| `extraction_instructions` | str \| null — the same for extraction, ≤ 2000 chars (6.3a) |
 | `proposal_batch_size` | int, default 10 — documents read then filed per poll tick, 1–50 (6.2) |
 
 **`ai_endpoint`** — one place a model request can be sent. Any number of them (6.3a).
@@ -203,16 +208,47 @@ ai-document-router/
 | `price_input_per_million` / `price_output_per_million` | float \| null, ≥ 0 — what a million prompt / reply tokens cost on this connection; null = no price |
 | `created_at` | datetime |
 
-**`ai_task_step`** — one rung of one task's fallback chain.
+**`ai_configuration`** — a named recipe for analysing a document: a reading step and a filing
+step (6.3a). Any number per user; exactly one is the default once any exists.
 
 | column | type |
 |---|---|
 | `id` | str (uuid4) PK |
 | `user_id` | FK user.id |
-| `task` | enum `extraction` \| `filing` |
-| `position` | int — 0 is tried first |
-| `endpoint_id` | FK ai_endpoint.id |
-| `model_name` | str |
+| `name` | str, unique per user, ≤ 80 |
+| `is_default` | bool — exactly one true per user who has any |
+| `reading_method` | `text_layer` \| `tesseract` \| `vision` |
+| `reading_endpoint_id` / `reading_model_name` | FK ai_endpoint.id / str, both null unless `vision` |
+| `reading_system_prompt` | str \| null, ≤ 20,000 — null = the built-in prompt |
+| `reading_instructions` | str \| null, ≤ 2000 — added to the request under the instructions heading |
+| `reading_temperature` | float 0–2, default 0.1 |
+| `reading_max_tokens` | int 256–32,768, default 4096 — per page batch |
+| `reading_thinking` | `default` \| `off` \| `low` \| `medium` \| `high` (6.3b) |
+| `filing_endpoint_id` / `filing_model_name` | FK ai_endpoint.id / str — required on save; null only on a configuration migrated from an empty chain |
+| `filing_strategy` | `one_call` \| `two_calls` (6.3) |
+| `filing_system_prompt` | str \| null — null = built-in; the fields-and-folder prompt, or the fields prompt with `two_calls` |
+| `folder_system_prompt` | str \| null — null = built-in; the folder prompt, used only with `two_calls` |
+| `filing_instructions` | str \| null, ≤ 2000 |
+| `filing_temperature` | float 0–2, default 0.1 |
+| `filing_max_tokens` | int 256–32,768, default 2048 |
+| `filing_thinking` | as `reading_thinking` |
+| `max_examples` | int 0–20, default 8 — example filenames in the filing prompt |
+| `max_folders` | int 10–1000, default 250 — folders listed in the filing prompt |
+| `max_text_chars` | int 1000–30,000, default 6000 — document text in the filing prompt |
+| `created_at` | datetime |
+
+**`reading`** — what one reading setup read off one document, kept for reuse (6.3a).
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
+| `document_id` | FK document.id; unique together with `setup_key` |
+| `setup_key` | str — sha256 over everything that changes the result (6.3a) |
+| `method` | as `reading_method` |
+| `label` | str — "Text layer", "Tesseract", or "Connection · model" |
+| `text` | str |
+| `created_at` | datetime |
 
 **`user`** — password and OIDC are two ways into the same row.
 
@@ -274,7 +310,7 @@ the analysis or comparison that made it; not subject to audit retention.
 | `connection` / `model` | str — the endpoint's name and the model, as they were |
 | `requests` | int — 1, or a stage's call count for usage carried over from the audit log |
 | `prompt_tokens` / `completion_tokens` / `cached_tokens` | int |
-| `without_usage` / `failed` / `fallback` | int — of `requests`: no token counts in the reply, no reply, made by a step after the first |
+| `without_usage` / `failed` / `fallback` | int — of `requests`: no token counts in the reply, no reply, made by a fallback step (always 0 since configurations replaced fallback chains) |
 | `duration_ms` / `timed` | int — summed duration over `timed` calls |
 | `cost` | float \| null — from reported tokens and the connection's prices at the time of the call; null without a price or without token counts |
 
@@ -304,6 +340,17 @@ export interface AIProposal {
   confidence_score: number;     // 0.0–1.0
   reasoning_text: string;       // plain text, may contain newlines — not markdown
   model_name: string;
+  connection_name: string | null;    // the filing connection; null on old proposals
+  configuration_name: string | null; // which configuration produced it; null on old proposals
+  reading_label: string | null;      // how the document was read
+  prompt_text: string | null;
+  system_prompt: string;             // as sent, or the built-in one for old proposals
+}
+
+/** The reading the latest analysis filed from. */
+export interface DocumentReading {
+  label: string;                // "Text layer", "Tesseract", "Tower · qwen2.5vl"
+  text: string;
 }
 
 export interface Document {
@@ -322,6 +369,10 @@ export interface Document {
   ocr_status: OcrStatus;
   ocr_error: string | null;
   analysis_usage: UsageSummary | null;
+  analysis_stage: string | null;    // what the poller is doing right now
+  waiting_reason: string | null;    // why a pending analysis waits (6.3a)
+  configuration_name: string | null;// a configuration picked for this document; null = default
+  reading: DocumentReading | null;
 }
 
 export interface StageUsage {
@@ -379,14 +430,10 @@ export interface Settings {
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
   store_ocr_text: boolean;
-  filing_instructions: string | null;
-  extraction_instructions: string | null;
   proposal_batch_size: number;
 }
 
 export type SettingsUpdate = Settings;
-
-export type AiTask = "extraction" | "filing";
 
 export interface AiEndpoint {
   id: string;
@@ -398,7 +445,7 @@ export interface AiEndpoint {
   json_mode: AiJsonMode;
   price_input_per_million: number | null;
   price_output_per_million: number | null;
-  used_by: AiTask[];            // tasks that would lose a step if this were removed
+  used_by: string[];            // names of the configurations that use it
 }
 
 export type AiJsonMode = "auto" | "json_schema" | "json_object" | "none";
@@ -414,27 +461,54 @@ export interface AiEndpointWrite {
   price_output_per_million: number | null;
 }
 
-export interface AiTaskStep {
-  endpoint_id: string;
-  endpoint_name: string;
-  model_name: string;
+export type ReadingMethod = "text_layer" | "tesseract" | "vision";
+export type FilingStrategy = "one_call" | "two_calls";
+export type AiThinking = "default" | "off" | "low" | "medium" | "high";
+
+/** One step's model settings. endpoint_id and model_name are null for a reading that
+ * needs no model. A null system_prompt means the built-in one. */
+export interface ConfigurationStep {
+  endpoint_id: string | null;
+  endpoint_name: string | null; // read-only
+  model_name: string | null;
+  system_prompt: string | null;
+  instructions: string | null;
+  temperature: number;
+  max_tokens: number;
+  thinking: AiThinking;
 }
 
-/** A task's endpoints in the order they are tried: the first that answers wins. */
-export interface AiTaskChain {
-  task: AiTask;
-  steps: AiTaskStep[];
+export interface AiConfiguration {
+  id: string;
+  name: string;
+  is_default: boolean;
+  reading_method: ReadingMethod;
+  reading: ConfigurationStep;
+  filing_strategy: FilingStrategy;
+  filing: ConfigurationStep;
+  folder_system_prompt: string | null; // two_calls only; null = built-in
+  max_examples: number;
+  max_folders: number;
+  max_text_chars: number;
 }
 
-export interface AiTaskChainUpdate {
-  steps: { endpoint_id: string; model_name: string }[];
+export type AiConfigurationWrite = Omit<AiConfiguration, "id" | "is_default">;
+// endpoint_name is ignored on write.
+
+/** The built-in system prompts a null prompt stands for. */
+export interface BuiltinPrompts {
+  reading: string;
+  filing_one_call: string;
+  filing_fields: string;        // two_calls, first call
+  filing_folder: string;        // two_calls, second call
 }
 
-export interface AiTaskContext {
-  task: AiTask;
-  chain: string[];        // "Endpoint · model", in the order tried
-  system_prompt: string;
-  user_prompt: string;    // built from current settings; the document is a placeholder
+/** What one call of a saved configuration is sent, the document a placeholder. */
+export interface ConfigurationPreview {
+  step: string;                 // "Reading", "Filing", "Fields", "Folder"
+  model_label: string | null;   // "Connection · model"; null for a reading without a model
+  system_prompt: string | null; // null for a reading without a model
+  user_prompt: string | null;
   note: string;
 }
 
@@ -520,9 +594,9 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/documents/{id}/approve` | `{ final_folder_path, document_date, name_fields }` or `{ final_folder_path, document_date, final_name }` — exactly one of the two; with fields the backend assembles the name and `document_date` is required | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
-| POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document every configured way; stores nothing |
+| POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document three ways and files each with its configuration's filing step; stores nothing |
 | POST | `/documents/retry-failed` | — | `{ retried: number }` — every failed proposal still in the queue goes back to `pending` |
-| POST | `/documents/{id}/regenerate` | — | `{ document }` — re-runs the AI proposal |
+| POST | `/documents/{id}/regenerate` | `{ configuration_id? }` | `{ document }` — re-runs the analysis; with `configuration_id`, with that configuration from now on (the default's id clears the pick) |
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
 | POST | `/folders` | `{ parent_path, name }` | `FolderNode` |
 | GET | `/folders/context?path=..&filename=..` | — | `FolderContext` |
@@ -538,11 +612,16 @@ Base path `/api/v1`. JSON in, JSON out.
 | GET | `/ai/endpoints` | — | `AiEndpoint[]`, by name |
 | POST | `/ai/endpoints` | `AiEndpointWrite` | `AiEndpoint` |
 | PUT | `/ai/endpoints/{id}` | `AiEndpointWrite` | `AiEndpoint` |
-| DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a task still references it |
-| GET | `/ai/tasks` | — | `AiTaskChain[]`, one per task |
+| DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a configuration uses it |
 | GET | `/ai/usage?start=YYYY-MM-DD&end=YYYY-MM-DD` | — | `{ rows, analyses, comparisons }` — the caller's calls summed per UTC day, connection, model and feature, both ends inclusive, at most three years |
-| PUT | `/ai/tasks/{task}` | `AiTaskChainUpdate` | `AiTaskChain` — replaces the chain wholesale |
-| GET | `/ai/context` | — | `AiTaskContext[]` — what each task is sent right now; walks WebDAV for the folder tree |
+| GET | `/configurations` | — | `AiConfiguration[]`, default first, then by name |
+| POST | `/configurations` | `AiConfigurationWrite` | `AiConfiguration`, 201 — the first one becomes the default |
+| PUT | `/configurations/{id}` | `AiConfigurationWrite` | `AiConfiguration` |
+| DELETE | `/configurations/{id}` | — | 204; 422 for the default; documents that picked it go back to the default |
+| POST | `/configurations/{id}/duplicate` | — | `AiConfiguration`, 201 — named "… (copy)", never the default |
+| POST | `/configurations/{id}/default` | — | `AiConfiguration` — makes it the default |
+| GET | `/configurations/{id}/preview` | — | `ConfigurationPreview[]` — what each call is sent; walks WebDAV for the folder tree |
+| GET | `/configurations/prompts` | — | `BuiltinPrompts` |
 | POST | `/ai/models` | `AiModelsRequest` | `{ models: string[] }` — the endpoint's OpenAI-compatible model list |
 | GET | `/health` | — | `{ status, webdav_configured, webdav_reachable, queue_depth }` — unauthenticated; with a session cookie, about that user's Nextcloud and queue, otherwise `false, null, 0` |
 | GET | `/metrics` | — | Prometheus text format; `Authorization: Bearer <METRICS_TOKEN>`, 404 while unset |
@@ -604,7 +683,8 @@ back and logged, and the next user's pass runs regardless.
 1. List the watch folder (`watch_folder_path`; skipped while it is empty). For each file not already tracked (by path + `content_hash`),
    create a `document` with `status=pending`, `proposal_status=pending`.
 2. For each queued document with `ocr_status=pending`, produce a searchable copy (6.2a).
-3. For each document with `proposal_status=pending`, generate a proposal (6.3).
+3. For each document with `proposal_status=pending`, run its configuration's reading and
+   filing steps (6.3a), each as soon as the connection it needs is reachable.
 4. Skip files still being written: ignore anything whose last-modified is under 10 seconds
    old, and anything with a `.part`/`.tmp`/`.crdownload` extension.
 5. Never delete or move anything on the server. The poller only reads. The searchable copy
@@ -613,7 +693,7 @@ back and logged, and the next user's pass runs regardless.
 
 Jobs are serialized (`max_instances=1`) so a slow LLM call can't stack runs. Each phase is
 capped per tick: `POLLER_INGEST_BATCH` (20), `POLLER_OCR_BATCH` (2), and proposals by each
-user's `proposal_batch_size` (default 10, 1–50, set in Settings → AI instructions). OCR gets the smallest cap because it is the slowest by an order of magnitude.
+user's `proposal_batch_size` (default 10, 1–50, set in Settings → Analysis). OCR gets the smallest cap because it is the slowest by an order of magnitude.
 
 ### 6.2a Searchable copies (`services/searchable.py`)
 
@@ -636,38 +716,33 @@ Only when `store_ocr_text` is on, and only for a PDF whose pages carry no text.
 
 ### 6.3 Proposal generation (`services/ai.py`)
 
-Filing is the second stage of the workflow in 6.3a; extraction is the first.
-Each poll runs extraction for its whole batch of pending documents first, then filing for
-all of them: on a single home GPU the two models rarely fit together, and alternating per
-document would reload both models for each one.
+Filing is the second step of a configuration (6.3a); reading is the first.
 
-The reply's keys are asked for in the order reasoning_text, document_date,
-target_folder_path, suggested_name, confidence_score (system prompt and json_schema alike):
-a model writes front to back, so the name is written after the date and folder it is built
-from. When the name still fails `filename_pattern` but would match with `document_date` as
-its leading date, the backend rewrites that date (DECISIONS.md).
-
-Input assembled by the backend:
-- The document's text, first 6000 characters. Preferred source is `extracted_markdown` from
-  the extraction task, so the model sees headings, tables and line items rather than one
-  flat blob. When extraction is unconfigured or fails, fall back to `pypdf` over the
-  searchable copy (6.2a) if one was made, else over the file on the server, and record why
-  in `extraction_error`. If there is still no text at all, set `proposal_status=failed` and
-  `proposal_error` to the OCR failure's own reason when there is one, else
-  `"No text layer found in this document."` The document stays fully approvable by hand
-  either way.
-- The folder tree under the allowed roots, as an indented path list, depth-capped at 4.
-- Up to 8 example filenames sampled from across those folders, so the model can see the
-  naming convention. With a `filename_pattern` set, only names that match it (without
-  their extension) are sent.
+Input assembled by the backend, with the limits of the document's configuration:
+- The reading's text, first `max_text_chars` characters (default 6000). If the reading has no
+  text at all, set `proposal_status=failed` and `proposal_error` to the OCR failure's own
+  reason when there is one, else `"No text layer found in this document."` The document
+  stays fully approvable by hand either way.
+- The folder tree under the allowed roots, as an indented path list, depth-capped at 4 and
+  capped at `max_folders` (default 250), shallower folders kept first.
+- Up to `max_examples` (default 8) example filenames sampled from across those folders, so the
+  model can see the naming convention. With a `filename_pattern` set, only names that match
+  it (without their extension) are sent.
 - `filename_pattern_hint` if set.
-- `filing_instructions` if set, under "Additional instructions from the person whose archive
-  this is:", before the document text. In the user message rather than the system prompt, so
-  they are part of `prompt_text` and the review screen shows the instructions that were in
-  force for that proposal. The system prompt says to follow them unless they conflict with the
-  reply format.
+- The configuration's `filing_instructions` if set, under "Additional instructions from the
+  person whose archive this is:", before the document text. In the user message rather than
+  the system prompt, so they are part of `prompt_text`. The built-in system prompt says to
+  follow them unless they conflict with the reply format.
 
-Call: `POST {endpoint.base_url}/chat/completions` for the first step of the filing chain,
+The system prompt is the configuration's own, or the built-in one when it has none.
+
+**Strategy.** `one_call` asks for the fields and the folder in one reply. `two_calls` asks the
+same model twice: first for the fields (the keys below without `target_folder_path`), then,
+with the folder list, the fields it just gave and the document text, for `reasoning_text`,
+`target_folder_path` and `confidence_score`. The proposal's reasoning joins both replies and
+its confidence is the lower of the two. A failure in either call fails the analysis.
+
+Call: `POST {endpoint.base_url}/chat/completions` on the configuration's filing connection,
 OpenAI-compatible, with the call parameters in 6.3b. How JSON output is asked for follows the
 endpoint's `json_mode`. `auto` asks with `response_format` `json_schema` first, then
 `json_object`, then none, each tried only after the previous one was refused with a 400; the
@@ -709,65 +784,86 @@ the reason naming the field — never store a half-valid proposal. A null date i
 name is assembled without it, and review asks for one.
 
 The exact user message built for the request (folder tree, sample filenames, naming hint,
-document text) is stored on `Proposal.prompt_text` alongside the result, so the review screen
-can show what was actually sent (8.3.5a). `null` for proposals stored before this field
-existed. The system prompt is a fixed constant, not stored per row — the API always returns
-its current text.
+document text) is stored on `Proposal.prompt_text` alongside the result, and the system prompt
+on `Proposal.system_prompt`, so the review screen can show what was actually sent (8.3.5a).
+With `two_calls` both messages are stored, separated by a line naming the second call.
+Proposals from before configurations have no stored system prompt; the API returns the
+built-in one for them.
 
 **Token usage.** Every reply's OpenAI `usage` block (`prompt_tokens`, `completion_tokens`) is
 recorded the moment the reply arrives — before validation, because a rejected reply was paid
 for too. A server that sends no usable block still counts as a call, as `unreported_calls`.
-One analysis (every extraction batch, every fallback step that answered, and filing) is added
+One analysis (every reading batch and every filing call) is added
 up per task into a `UsageSummary`, stored on `Document.analysis_usage` whether the proposal
 succeeded or failed, and logged in one line with the outcome. A reused extraction costs
 nothing and shows as `extraction: null`. When the connection has prices, each call's cost is
 computed from its reported tokens and stored on `ai_call.cost`; a call without token counts or
 without a price has no cost, never a cost of 0.
 
-### 6.3a AI workflow (`services/ai_tasks.py`, `services/transcribe.py`)
+### 6.3a Configurations and analysis (`services/configurations.py`, `services/analysis.py`)
 
-Reading a document and naming it are two different jobs wanting two different models, so they
-are two **tasks**:
+Reading a document and filing it are two different jobs that may want two different models.
+A **configuration** names one way of doing both (4.1 `ai_configuration`):
 
-- **`extraction`** — pages rendered by `pypdfium2` and sent to a vision model (GOT-OCR 2.0,
-  Qwen-VL, and similar) as OpenAI content parts, two pages per request, asked for markdown.
-  The parts are stitched with a blank line and stored on `Document.extracted_markdown`. No
-  JSON mode and no schema: the reply is prose, and only a wrapping ```` ```markdown ```` fence
-  is stripped.
-  `extraction_instructions`, if set, follow the fixed request under the same heading filing uses.
-- **`filing`** — 6.3, given that markdown.
+- **Reading** turns the document into text. `text_layer`: `pypdf` over the searchable copy
+  (6.2a) if one was made, else over the file on the server. `tesseract`: pages rendered by
+  `pypdfium2`, read by the `tesseract` CLI (`deu+eng`). `vision`: pages rendered and sent to
+  a vision model as OpenAI content parts, two pages per request, asked for markdown with the
+  step's system prompt and instructions; the parts are stitched with a blank line and only a
+  wrapping ```` ```markdown ```` fence is stripped.
+- **Filing** reads that text and proposes the fields and folder (6.3).
 
-Extraction runs on **every** document, not only scans without a text layer: a markdown reading
-of a table beats a flat one whether or not the PDF happens to carry text. It is never fatal —
-an unconfigured, unreachable or failing extraction records its reason in `extraction_error`
-and filing proceeds from the text layer.
+Each user has at most one **default configuration**, used for every document that has not
+been given another. The first configuration a user creates becomes the default; the default
+cannot be deleted, only replaced by making another one the default. Changing the default
+affects documents still waiting for an analysis; a document that already has a proposal keeps
+it. Re-running an analysis with a configuration (`/regenerate` with `configuration_id`) sets
+`document.configuration_id`, which every later analysis of that document uses until another
+is picked; picking the default clears it. Deleting a configuration returns the documents that
+picked it to the default. A connection used by any configuration cannot be deleted.
 
-Each task is configured as an **ordered chain** of `(endpoint, model)` steps. A call walks the
-chain and returns the first answer. That is the whole point: the machine at home is first
-because it is free and private, and a hosted provider sits behind it so a document still gets
-read on the days that machine is off.
+**Stored readings.** A successful reading is stored per document and **reading setup**: the
+method, the connection and model, the effective system prompt, the instructions, the
+temperature, output limit and thinking setting, and for `text_layer` whether a searchable copy
+existed. Their sha256 is `reading.setup_key`. An analysis whose setup already has a reading
+reuses it, so changing only the filing step never reads the pages again. A failed reading is
+not stored. `document.reading_id` points at the reading the latest analysis filed from.
 
-**Only `AIUnavailable` moves to the next step** — an endpoint problem is exactly what the next
-endpoint is for. A reply that failed validation is the model having *answered*; re-asking a
-different one would hide a problem the person needs to see and spend a second call doing it.
-An exhausted chain raises with every step's failure named. An empty chain raises
-`NoStepsConfigured`, which reads as "no endpoint is assigned to this task yet".
-A step that raised `AIUnavailable` is skipped by every chain for the next 5 minutes (keyed
-by endpoint and model, in memory), unless every step is cooling down; saving the endpoint in
-Settings ends its cooldown. The review screen names the skipped step.
+**No automatic fallback.** Nothing switches to another connection, model or reading method on
+its own. A reading that fails fails the analysis with the reason; the person picks another
+configuration if they want one.
 
-Endpoints are named, and the name is what appears in failure messages and on the review
-screen (`"Workshop PC · qwen3"`). Deleting one is **refused** while any task still references
-it, rather than quietly shortening that chain. A chain is replaced wholesale on save, not
-diffed — it is an ordered list the user edits as a whole.
+**Steps run independently, when their connection is reachable.** Each tick takes the pending
+documents of one user (up to `proposal_batch_size`, oldest first) and works in two phases:
+
+1. Read every document whose setup has no stored reading. `text_layer` and `tesseract` need no
+   connection and run first; `vision` readings are grouped by connection and model, so each
+   model is loaded once per tick on a GPU that holds one at a time.
+2. File every document that now has a reading, grouped by filing connection and model.
+
+Before the first call of a group, the connection is probed once per tick (`GET /models`,
+5-second connect, 10-second reply; any HTTP answer counts as reachable). An unreachable one
+leaves its documents `pending` with a `waiting_reason`: "Waiting for Tower to read", or
+"Read · waiting for Tower to file". A call whose connection cannot be reached at all (refused,
+no route, DNS) does the same for its document and every later one in that group; the next
+tick probes again. Any other failure — a timeout, a refused request, an unusable reply, a
+prompt too long — fails the analysis with the reason (8.8 `Try again`). A user with no
+configuration waits with "Waiting for a configuration — create one in the Lab".
+`waiting_reason` is cleared when the analysis ends either way.
+
+Every proposal records the configuration that produced it (id and name), how the document
+was read (`reading_label`), and the filing connection and model.
 
 ### 6.3b Call parameters and context limit (`services/ai.py`)
 
-Every model call sends `temperature` and `max_tokens`. Until configurations exist they are
-fixed per task: filing 0.1 and 2048 tokens, extraction 0.1 and 4096 tokens per page batch.
+Every model call sends `temperature` and `max_tokens` from its configuration step (defaults:
+filing 0.1 and 2048 tokens, reading 0.1 and 4096 tokens per page batch). The step's
+`thinking` setting sends `reasoning_effort`: `off` as `"none"` (Ollama turns thinking off for
+models that can), `low`/`medium`/`high` as themselves, `default` not at all. A server that
+refuses the parameter fails the call with its own reason.
 A reply that stopped at the output limit (`finish_reason: "length"`) is a readable failure,
-never parsed as if it were complete: for filing a rejected proposal, for extraction a failed
-reading (filing proceeds from the text layer, as for any failed extraction).
+never parsed as if it were complete: for filing a rejected proposal, for reading a failed
+analysis.
 
 OpenAI-compatible servers cannot be told a context size per request, and Ollama silently cuts
 a prompt that does not fit, from the start, where the instructions sit. So each endpoint
@@ -775,11 +871,12 @@ carries the `context_limit` its server is configured with (for Ollama,
 `OLLAMA_CONTEXT_LENGTH` or a Modelfile's `num_ctx`), and before sending, the backend estimates
 the prompt: a character count divided by 3 for the system prompt and message, plus a fixed
 1600 tokens per page image. The estimate errs high on purpose. When the estimate plus a
-minimum reply (filing 512, extraction 1024 tokens) exceeds the limit, the call is not made
-and fails with `PromptTooLong`, naming the estimate and the limit. Otherwise `max_tokens` is
-lowered to what is left of the limit, if that is less than the task's output limit.
-`PromptTooLong` is an `AIUnavailable`, so the chain moves to the next step, but it puts no step
-into cooldown (6.3a): it is about this prompt, not about the endpoint.
+minimum reply (filing 512, reading 1024 tokens, or the step's output limit if that is lower)
+exceeds the limit, the call is not made and fails with `PromptTooLong`, naming the estimate
+and the limit. Otherwise `max_tokens` is lowered to what is left of the limit, if that is less
+than the step's output limit.
+The context size itself is the connection's, not a configuration's: an OpenAI-compatible
+request cannot set it, so it is whatever the server was started with.
 
 ### 6.4 Approve, trash, revert (`services/router.py`)
 
@@ -812,11 +909,12 @@ against one document and reports what each proposed, so a person can judge:
 - **Text layer** — `pypdf`, flat.
 - **Tesseract OCR** — pages rendered by `pypdfium2`, read by the `tesseract` CLI (`deu+eng`).
   Not ocrmypdf: this wants characters, not a rewritten PDF.
-- **Markdown extraction** — the production two-stage path: the extraction chain transcribes
-  the pages (6.3a), and that markdown is what gets filed.
+- **Vision reading** — the document's configuration's vision model transcribes the pages
+  (6.3a), when that configuration reads with one; otherwise skipped with the reason.
 
-All three file through the **same** filing chain, so what is being compared is the *reading*,
-with the model that chooses the filename held constant.
+All three file through the **same** filing step, the document's configuration's (or the
+default's), so what is being compared is the *reading*, with the model that chooses the
+filename held constant.
 
 Synchronous and on demand — one model call per method. Nothing is stored: the document's
 own proposal is untouched, and choosing a result only fills the review form. A method that
@@ -854,8 +952,8 @@ forking it. Failures redirect to `/login?error=…` rather than rendering JSON.
 
 ### 6.5a Ownership
 
-Every document, history entry, proposal, AI endpoint, task chain, settings row and audit
-event belongs to exactly one user, and every service function that reads or changes them
+Every document, history entry, proposal, reading, AI endpoint, configuration, settings row
+and audit event belongs to exactly one user, and every service function that reads or changes them
 takes that user's id. Another user's id answers **404**, never 403: whether it exists is
 none of the caller's business. There is no shared data and no admin override — `is_admin`
 only matters for registration.
@@ -880,7 +978,7 @@ unhandled exception is logged with its traceback under that id and answered with
 `internal_error` quoting it.
 
 What is logged: each tick's summary (INFO when it did anything, DEBUG when idle), each AI step's
-outcome and duration, fallbacks, sign-ins and failed sign-ins (the address, never the
+outcome and duration, waiting documents, sign-ins and failed sign-ins (the address, never the
 password), the names of settings that changed, and at DEBUG every WebDAV operation with its
 duration. Never logged: API keys, passwords, session tokens, document contents. The frontend
 logs failed API calls to the console with the request id; debug lines only in development.
@@ -900,7 +998,7 @@ from a route, `Actor.system()` from the poller.
 |---|---|
 | Documents | `document.ingested`, `document.ocr_completed`, `document.ocr_failed`, `document.regenerate_requested`, `documents.retry_failed`, `document.approved` (from, to, whether the proposal was overridden), `document.skipped`, `document.trashed`, `history.reverted` |
 | AI | `document.analyzed` (outcome, the proposal or the error, the usage breakdown, token columns), `document.compared` (per method usage, token columns) |
-| Settings | `settings.updated` (each changed field, old → new), `ai_endpoint.created` / `updated` / `deleted` (name, URL, `api_key_changed: bool` — never the key), `ai_task.updated` (old chain → new) |
+| Settings | `settings.updated` (each changed field, old → new), `ai_endpoint.created` / `updated` / `deleted` (name, URL, `api_key_changed: bool` — never the key), `configuration.created` / `updated` / `deleted` / `defaulted` (name; changed fields, old → new) |
 | Sign-ins | `auth.registered`, `auth.login` (password or oidc), `auth.login_failed` (the address tried, never the password), `auth.logout` |
 
 `GET /audit` pages on `(occurred_at, id)` like History; `GET /audit/usage` sums the token
@@ -917,7 +1015,7 @@ time — Prometheus cannot hold a session cookie. It is not in the OpenAPI schem
 | Area | Metrics (all prefixed `docrouter_`) |
 |---|---|
 | HTTP | `http_requests_total{method,route,status}`, `http_request_duration_seconds{method,route}` — `route` is the template under `/api/v1` (`/documents/{document_id}`), or `unmatched` |
-| AI | `ai_requests_total{task,step,outcome}` (`ok` \| `rejected` \| `unavailable`, one per chain step tried), `ai_request_duration_seconds{task,step}`, `ai_tokens_total{task,step,kind}` (`prompt` \| `completion`), `ai_unreported_usage_calls_total{task,step}`, `ai_fallbacks_total{task}`, `ai_chain_exhausted_total{task}` — `step` is `Endpoint · model` as Settings names it |
+| AI | `ai_requests_total{task,step,outcome}` (`ok` \| `rejected` \| `unavailable` \| `unreachable` \| `too_long`), `ai_request_duration_seconds{task,step}`, `ai_tokens_total{task,step,kind}` (`prompt` \| `completion`), `ai_unreported_usage_calls_total{task,step}` — `step` is `Endpoint · model` as Settings names it |
 | Pipeline | `analyses_total{outcome}`, `documents_ingested_total`, `documents_routed_total{action}` (`moved` \| `trashed` \| `skipped` \| `reverted`), `ocr_runs_total{outcome}`, `ocr_duration_seconds` |
 | Poller | `poller_ticks_total{outcome}` (`ok` \| `failed` \| `skipped`), `poller_tick_duration_seconds`, `poller_last_tick_timestamp_seconds` |
 | WebDAV | `webdav_operations_total{operation,outcome}`, `webdav_operation_duration_seconds{operation}`, `webdav_reachable` (from the last operation or `/health` probe) |
@@ -987,8 +1085,11 @@ A **hand-written name** replaces the fields: approve sends `final_name` instead 
   `https://` (allow `http://` only for RFC1918 and localhost hosts — the key travels on
   that connection). `context_limit`, when set, is 1024–2,000,000; prices, when set, are
   0–10,000 per million tokens; `json_mode` is one of the four values in 4.1.
-- Every step of a task chain needs an endpoint that exists and a non-blank model name.
-  An empty chain is valid: it means the task is switched off.
+- A configuration needs a name (≤ 80, unique per user), a filing connection that exists and
+  a non-blank model; a `vision` reading needs the same for reading. Temperatures 0–2, output
+  limits 256–32,768, `max_examples` 0–20, `max_folders` 10–1000, `max_text_chars`
+  1000–30,000, system prompts ≤ 20,000 characters and not blank (blank means built-in, saved
+  as null), instructions ≤ 2000. Every field error names the step.
 - API key is write-only: sent only when non-empty, never returned, never logged, never put
   in the query cache or localStorage.
 
@@ -1002,7 +1103,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Review · `/history` History · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
+`/` Review · `/history` History · `/lab` Lab (configurations; `/lab/configurations/new`, `/lab/configurations/:id`) · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -1028,7 +1129,10 @@ prev/next, zoom out/in, fit width, rotate. Images use the same toolbar minus pag
 filename and size shown above, muted.
 
 *Right:* review form, in this order —
-1. Confidence badge + relative scan time.
+1. Confidence badge + relative scan time, and a chip saying what produced the proposal: the
+   configuration's name, with how the document was read and which connection · model filed it
+   on hover and in the expanded reading. A document picked for another configuration says
+   so while it waits.
 2. Document date (date input; required unless the name is hand-written).
 3. Name fields (7.1a): Sender and Title required, Account, Period and Number optional — each
    its own text input, on two columns from the `sm` breakpoint. Below them the assembled name
@@ -1094,21 +1198,11 @@ Empty: "Nothing filed yet. Approved and trashed documents show up here."
 
 One form per section, save disabled until dirty, `Discard changes` alongside, unsaved-changes
 navigation guard. Sections: Folders (watch folder, allowed roots list, trash folder), Naming (pattern +
-hint, with a live regex validity check), AI endpoints, one card per AI task, AI instructions,
-What the models are given, OCR.
-
-**AI instructions.** Two textareas, filing and extraction, each with a `n / 2000` counter that
-turns destructive past the limit. Blank saves as `null`. Helper text says they apply to
-documents read from now on — regenerate or retry to re-run existing ones.
-
-**What the models are given.** Collapsed by default and fetched only once opened, since it walks
-the WebDAV folder tree. Per task: the chain as `Workshop PC · qwen3 → Infomaniak · gpt-4o` (or
-"no endpoint assigned yet"), a short note on what travels with the message, then the fixed
-instructions and the message in the same monospace blocks as 8.3.5a. A `Refresh` button; it
-reflects saved settings, not unsaved edits, and says so. Not a form.
+hint, with a live regex validity check), AI endpoints, Analysis (documents per tick), OCR.
+Which models read and file, with what prompts, is a configuration (8.13), not a setting.
 
 **AI endpoints.** A list of every configured endpoint — name, URL, a `Key saved` badge, and a
-badge per task using it — with `Edit` and `Remove` on each and `Add endpoint` below. Not a
+badge per configuration using it — with `Edit` and `Remove` on each and `Add endpoint` below. Not a
 single section form: an endpoint is its own resource, so each one saves when *it* is saved.
 The API key field renders `••••••••  (saved)` as its placeholder with helper text "Leave blank
 to keep the current key" — the key is never returned, so blank can only mean "leave it alone".
@@ -1120,18 +1214,11 @@ Ollama that is `OLLAMA_CONTEXT_LENGTH`, 4096 by default on GPUs under 24 GB), JS
 (Automatic, JSON schema, JSON object, None), and price per million input and output tokens
 (both optional). The list row shows the context limit and the prices when set. Removing asks
 for confirmation, and
-the backend's refusal ("still assigned to the filing task") is surfaced verbatim.
-
-**AI tasks.** One card per task (6.3a), each an ordered list of steps labelled `First choice`,
-`Fallback 1`, `Fallback 2`… with move-up / move-down / remove, and `Add fallback`. Above them,
-"Tried top to bottom. The first endpoint that answers is used; the rest are there for when it
-can't be reached." An empty chain says what happens instead — extraction falls back to the
-PDF's own text layer; filing proposes nothing at all. Each step picks an endpoint from the
-saved ones and then a model.
+the backend's refusal ("still used by the configuration …") is surfaced verbatim.
 
 The model field is a dropdown of that endpoint's `/models` ids, not a text field — opening it
 is what fetches the list, so no prior step is required, and one list is fetched per endpoint
-and shared across both task cards. It is disabled until an endpoint is chosen, since there is
+and shared across the steps of the form. It is disabled until an endpoint is chosen, since there is
 nowhere to send the request. Each dropdown offers `Enter a model name manually` to fall back
 to free text — for an endpoint that cannot be reached, or one that does not list the model
 actually wanted. On a fetch error the reason shows inside the open dropdown; the currently
@@ -1163,10 +1250,12 @@ fetch. An endpoint that answers but lists nothing is not an error.
 - Refetch on a 60 s interval and on window refocus.
 - `proposal_status = "pending"`: form skeleton, actions disabled, and the document's
   `analysis_stage` while the poller is working on it — "Reading the document with Jonas-PC ·
-  chandra-ocr-2…", "Choosing a name and folder with Infomaniak · … (Jonas-PC · … didn't
-  answer)" — else "Waiting for the AI proposal." The queue refetches every 3 s while any
-  document is pending. Re-running an analysis, or retrying failed ones, starts a poller tick
-  at once instead of at the end of the interval.
+  chandra-ocr-2…", "Choosing a name and folder with Infomaniak · …" — else its
+  `waiting_reason` ("Read · waiting for Tower to file"), else "Waiting for the AI proposal."
+  The queue refetches every 3 s while any document is pending. Re-running an analysis, or
+  retrying failed ones, starts a poller tick at once instead of at the end of the interval.
+- `Re-run analysis` asks which configuration to use, the one that produced the proposal
+  preselected. Picking one sends `/regenerate` with its id.
 - `proposal_status = "failed"`: show `proposal_error`, empty but editable fields, a
   `Try again` button hitting `/regenerate`, and full manual approvability.
 
@@ -1221,8 +1310,40 @@ modelled on the same page in cash-flow.
 - *Chart*: stacked bars of tokens per day — per month beyond about two months — grouped by
   Connection, Model or Feature (Reading, Filing, Comparisons). The legend toggles a group.
 - *Breakdown*: per group, requests, in, out, total, share, Ø / request, Ø duration, failed.
-  A connection opens into the models it ran. Pills mark fallback use, a model no longer in
-  any chain, a removed connection. Desktop: a table; phone: one card per line.
+  A connection opens into the models it ran. Pills mark fallback use (from before
+  configurations), a model no longer in any configuration, a removed connection. Desktop: a table; phone: one card per line.
+
+### 8.13 Lab — configurations
+
+`/lab` lists the configurations: name, a `Default` badge, the reading ("Text layer",
+"Tesseract", or "Tower · qwen2.5vl") and the filing step ("Tower · qwen3:8b · two calls").
+Each row has `Edit`, `Duplicate`, `Make default` (not on the default; confirms, saying that
+documents waiting for an analysis switch to it and existing proposals stay) and `Delete` (not
+on the default; confirms). `New configuration` opens the editor empty. Without any connection
+the page says to add one in Settings first. Phone: one card per configuration.
+
+The editor (`/lab/configurations/new`, `/lab/configurations/:id`) is one form with the
+unsaved-changes guard, in sections:
+
+- **Name.**
+- **Reading.** Method (Text layer, Tesseract, Vision model). For a vision model: connection,
+  model (8.7's model dropdown), and the step's prompt and parameters below.
+- **Filing.** Connection, model, strategy (One call, Two calls), prompt and parameters.
+- **Prompt and parameters**, per model step: the system prompt as a monospace textarea showing
+  the built-in text until edited, with `Use the built-in prompt` to go back (saved as null);
+  instructions with a `n / 2000` counter; temperature; output limit (tokens); thinking
+  (Model default, Off, Low, Medium, High) with helper text that `Off` asks Ollama to skip
+  thinking where the model allows it. With two calls, filing shows both the fields prompt and
+  the folder prompt.
+- **Context.** Example filenames, folders listed, document text (characters), each with its
+  default named in the helper text.
+- **What the models are given.** For a saved configuration, collapsed and fetched only once
+  opened (it walks WebDAV): each call's system prompt and message with the document as a
+  placeholder, from `/configurations/{id}/preview`. It reflects the saved configuration and
+  says so.
+
+Saving returns to the list. Validation per 7.3 shows under each field; the backend's message
+shows above the actions when it refuses.
 
 ---
 

@@ -21,11 +21,8 @@ _LABELS = {
     "filename_pattern": "filename pattern",
     "filename_pattern_hint": "pattern hint",
     "store_ocr_text": "searchable copies",
-    "filing_instructions": "filing instructions",
-    "extraction_instructions": "extraction instructions",
     "proposal_batch_size": "batch size",
 }
-MAX_INSTRUCTIONS_CHARS = 2000
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 50
 
@@ -177,8 +174,6 @@ def to_read_schema(settings: AppSettings) -> SettingsRead:
         filename_pattern=settings.filename_pattern,
         filename_pattern_hint=settings.filename_pattern_hint,
         store_ocr_text=settings.store_ocr_text,
-        filing_instructions=settings.filing_instructions,
-        extraction_instructions=settings.extraction_instructions,
         proposal_batch_size=settings.proposal_batch_size,
     )
 
@@ -199,10 +194,6 @@ def update_settings(
         "filename_pattern": payload.filename_pattern,
         "filename_pattern_hint": payload.filename_pattern_hint,
         "store_ocr_text": payload.store_ocr_text,
-        "filing_instructions": _validate_instructions(payload.filing_instructions, "Filing"),
-        "extraction_instructions": _validate_instructions(
-            payload.extraction_instructions, "Extraction"
-        ),
         "proposal_batch_size": _validate_batch_size(payload.proposal_batch_size),
     }
     changed = {
@@ -276,17 +267,6 @@ def _validate_watch_folder(watch: str, allowed_roots: list[str], trash: str) -> 
     if is_within(trash, normalized) or is_within(normalized, trash):
         raise ValidationError("Watch folder and trash folder must not overlap.")
     return normalized
-
-
-def _validate_instructions(text: str | None, label: str) -> str | None:
-    """Blank means none. Capped because every character is sent with every document, and a
-    pasted essay would quietly crowd the document itself out of a small model's context."""
-    trimmed = (text or "").strip()
-    if len(trimmed) > MAX_INSTRUCTIONS_CHARS:
-        raise ValidationError(
-            f"{label} instructions must be {MAX_INSTRUCTIONS_CHARS} characters or fewer."
-        )
-    return trimmed or None
 
 
 def _validate_batch_size(size: int) -> int:

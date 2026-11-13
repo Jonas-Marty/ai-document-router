@@ -1,4 +1,7 @@
-"""Poller tests: ingestion, partial-write guards, and proposal outcomes."""
+"""Poller tests: ingestion, partial-write guards, OCR, and how a tick is wired together.
+
+What the analysis itself does is in test_analysis.py.
+"""
 
 import io
 import logging
@@ -15,20 +18,16 @@ from app import log
 from app.config import settings as config
 from app.jobs import poller
 from app.models import (
+    AiConfiguration,
     AiEndpoint,
-    AiTask,
-    AiTaskStep,
     AppSettings,
-    AuditAction,
-    AuditEvent,
     Document,
     DocumentStatus,
     OcrStatus,
     Proposal,
     ProposalStatus,
 )
-from app.schemas import DocumentRead
-from app.services import ai, transcribe
+from app.services import ai, analysis
 from app.services.times import utc_now
 from app.services.webdav import WebDavEntry
 
@@ -77,6 +76,17 @@ def entry(name: str, *, age_seconds: int = 3600, is_dir: bool = False) -> WebDav
     )
 
 
+def configuration() -> AiConfiguration:
+    return AiConfiguration(
+        user_id=OWNER,
+        name="Daily",
+        is_default=True,
+        filing_endpoint_id="ep",
+        filing_model_name="m",
+        created_at=utc_now(),
+    )
+
+
 @pytest.fixture
 def session() -> Iterator[Session]:
     engine = create_engine(
@@ -93,8 +103,8 @@ def session() -> Iterator[Session]:
                 watch_folder_path="/Test-Inbox",
             )
         )
-        # A filing chain with one step: the poller takes its endpoint and model from here,
-        # so without it every proposal fails before it reaches the stubbed request_proposal.
+        # A default configuration: without one every document waits instead of reaching the
+        # stubbed request_proposal.
         s.add(
             AiEndpoint(
                 user_id=OWNER,
@@ -104,11 +114,7 @@ def session() -> Iterator[Session]:
                 created_at=utc_now(),
             )
         )
-        s.add(
-            AiTaskStep(
-                user_id=OWNER, task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"
-            )
-        )
+        s.add(configuration())
         s.commit()
         yield s
 
@@ -219,7 +225,7 @@ class TestNoDoubleDownload:
         """Ingest already read the bytes; extracting the same text again would double
         every tick's network cost against the server."""
         monkeypatch.setattr(
-            poller.ai,
+            ai,
             "request_proposal",
             lambda **kwargs: ai.Proposal(
                 suggested_name="Named",
@@ -233,7 +239,7 @@ class TestNoDoubleDownload:
         service = FakeService([entry("scan.pdf")])
 
         fresh = poller.ingest(session, service, app_settings)  # type: ignore[arg-type]
-        poller.generate_proposals(session, service, app_settings, fresh)  # type: ignore[arg-type]
+        analysis.run_batch(session, service, app_settings, fresh)  # type: ignore[arg-type]
 
         assert service.read_paths == ["/Test-Inbox/scan.pdf"]
 
@@ -245,7 +251,7 @@ class TestNoDoubleDownload:
         service.read_paths.clear()
 
         # No cache passed: simulates a later tick picking up leftover work.
-        poller.generate_proposals(session, service, app_settings)  # type: ignore[arg-type]
+        analysis.run_batch(session, service, app_settings)  # type: ignore[arg-type]
 
         assert service.read_paths == []  # nothing pending: the blank PDF already failed
 
@@ -415,70 +421,6 @@ class TestOcrPhase:
 
         assert len(poller.ocr_pending(session, FakeService([]), app_settings)) == 2  # type: ignore[arg-type]
 
-    def test_the_proposal_is_built_from_the_ocred_copy_not_the_original(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The cache is the only place the OCR text exists until the document is filed.
-
-        Reading the server copy here would have the app OCR a scan, keep the result, and
-        then still tell the person no text layer could be found.
-        """
-        document = self._scan(
-            session, ocr_status=OcrStatus.ready, proposal_status=ProposalStatus.pending
-        )
-        poller.searchable.store(document.content_hash, b"%PDF searchable")
-        service = FakeService([])
-
-        seen: list[bytes] = []
-
-        def capture(data: bytes, filename: str, mime: str | None = None) -> Any:
-            from app.services.extraction import ExtractedDocument
-
-            seen.append(data)
-            return ExtractedDocument(
-                content_hash="h",
-                file_size_bytes=len(data),
-                mime_type="application/pdf",
-                page_count=1,
-                text="Swisscom Rechnung " * 10,
-                text_error=None,
-            )
-
-        monkeypatch.setattr(poller.extraction, "extract", capture)
-        monkeypatch.setattr(
-            poller.ai,
-            "request_proposal",
-            lambda **kwargs: ai.Proposal(
-                suggested_name="2026-08-21_Swisscom",
-                target_folder_path="/Documents/Finance",
-                document_date=None,
-                confidence_score=0.9,
-                reasoning_text="Invoice header.",
-                model_name="m",
-            ),
-        )
-
-        assert poller.propose_for(session, service, app_settings, document) is True  # type: ignore[arg-type]
-        assert seen == [b"%PDF searchable"]
-        assert service.read_paths == []
-
-    def test_a_document_nobody_could_ocr_says_why_on_its_proposal(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """ "No text layer found" is true but useless; the OCR failure is the actionable bit."""
-        document = self._scan(
-            session,
-            ocr_status=OcrStatus.failed,
-            ocr_error="This PDF is encrypted, so it can't be OCR'd.",
-            proposal_status=ProposalStatus.pending,
-        )
-        self._no_text(monkeypatch)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is False  # type: ignore[arg-type]
-
-        session.refresh(document)
-        assert document.proposal_error == "This PDF is encrypted, so it can't be OCR'd."
-
 
 class TestFullTick:
     """The three phases in the order run_once runs them.
@@ -521,11 +463,7 @@ class TestFullTick:
                     created_at=utc_now(),
                 )
             )
-            setup.add(
-                AiTaskStep(
-                    user_id=OWNER, task=AiTask.filing, position=0, endpoint_id="ep", model_name="m"
-                )
-            )
+            setup.add(configuration())
             setup.commit()
 
         monkeypatch.setattr(poller.db, "engine", engine)
@@ -563,7 +501,7 @@ class TestFullTick:
         monkeypatch.setattr(poller.searchable, "is_available", lambda: True)
         monkeypatch.setattr(poller.searchable, "build", build)
         monkeypatch.setattr(
-            poller.ai,
+            ai,
             "request_proposal",
             lambda **kwargs: ai.Proposal(
                 suggested_name="2026.08.21 Swisscom Rechnung",
@@ -603,214 +541,6 @@ class TestFullTick:
         assert log.context_var.get() == ""
 
 
-class TestProposals:
-    def _document(self, session: Session) -> Document:
-        document = Document(
-            user_id=OWNER,
-            webdav_path="/Test-Inbox/scan.pdf",
-            original_filename="scan.pdf",
-            mime_type="application/pdf",
-            file_size_bytes=100,
-            content_hash="h",
-            scanned_at=datetime(2026, 8, 21, 9, 0),
-            discovered_at=datetime(2026, 8, 21, 9, 1),
-            status=DocumentStatus.pending,
-            proposal_status=ProposalStatus.pending,
-        )
-        session.add(document)
-        session.commit()
-        return document
-
-    def _stub_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.services.extraction import ExtractedDocument
-
-        monkeypatch.setattr(
-            poller.extraction,
-            "extract",
-            lambda *a, **k: ExtractedDocument(
-                content_hash="h",
-                file_size_bytes=100,
-                mime_type="application/pdf",
-                page_count=1,
-                text="Swisscom Rechnung " * 10,
-                text_error=None,
-            ),
-        )
-
-    def test_stores_a_valid_proposal(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        self._stub_text(monkeypatch)
-        monkeypatch.setattr(
-            poller.ai,
-            "request_proposal",
-            lambda **kwargs: ai.Proposal(
-                suggested_name="2026-08-21_Swisscom",
-                target_folder_path="/Documents/Finance",
-                document_date=None,
-                confidence_score=0.9,
-                reasoning_text="Invoice header.",
-                model_name="m",
-            ),
-        )
-
-        ok = poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        assert ok is True
-        session.refresh(document)
-        assert document.proposal_status == ProposalStatus.ready
-        proposal = session.exec(select(Proposal)).one()
-        assert proposal.suggested_name == "2026-08-21_Swisscom"
-
-    def test_a_rejected_reply_fails_readably(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        self._stub_text(monkeypatch)
-
-        def reject(**kwargs: Any) -> ai.Proposal:
-            raise ai.ProposalRejected("The model chose '/etc', which is outside your folders.")
-
-        monkeypatch.setattr(poller.ai, "request_proposal", reject)
-
-        ok = poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        assert ok is False
-        session.refresh(document)
-        assert document.proposal_status == ProposalStatus.failed
-        assert document.proposal_error is not None
-        assert "outside your folders" in document.proposal_error
-        # Never a half-valid proposal.
-        assert session.exec(select(Proposal)).all() == []
-
-    def test_an_unreachable_endpoint_fails_readably(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        self._stub_text(monkeypatch)
-
-        def unavailable(**kwargs: Any) -> ai.Proposal:
-            raise ai.AIUnavailable("Couldn't reach the AI endpoint.")
-
-        monkeypatch.setattr(poller.ai, "request_proposal", unavailable)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is False  # type: ignore[arg-type]
-        session.refresh(document)
-        assert document.proposal_status == ProposalStatus.failed
-
-    def test_no_configured_roots_fails_with_a_pointer_to_settings(
-        self, session: Session, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """On a fresh install allowed_root_folders is empty; that must be one readable
-        message, not a stack trace per document."""
-        document = self._document(session)
-        settings = session.get(AppSettings, 1)
-        assert settings is not None
-        settings.allowed_root_folders = []
-        session.add(settings)
-        session.commit()
-
-        ok = poller.propose_for(session, FakeService([]), settings, document)  # type: ignore[arg-type]
-
-        assert ok is False
-        session.refresh(document)
-        assert document.proposal_error is not None
-        assert "Settings" in document.proposal_error
-
-    def test_regenerating_replaces_the_previous_proposal(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        self._stub_text(monkeypatch)
-        names = iter(["first", "second"])
-        monkeypatch.setattr(
-            poller.ai,
-            "request_proposal",
-            lambda **kwargs: ai.Proposal(
-                suggested_name=next(names),
-                target_folder_path="/Documents",
-                document_date=None,
-                confidence_score=0.5,
-                reasoning_text="r",
-                model_name="m",
-            ),
-        )
-
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        # SPEC 4.1: one-to-one with document, replaced wholesale.
-        proposals = session.exec(select(Proposal)).all()
-        assert len(proposals) == 1
-        assert proposals[0].suggested_name == "second"
-
-
-class TestChosenModel(TestProposals):
-    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-        calls: list[tuple[str, str]] = []
-
-        def fake(**kwargs: object) -> ai.Proposal:
-            calls.append((str(kwargs["endpoint_url"]), str(kwargs["model_name"])))
-            return ai.Proposal(
-                suggested_name="n",
-                target_folder_path="/Documents",
-                document_date=None,
-                confidence_score=0.5,
-                reasoning_text="r",
-                model_name="m",
-            )
-
-        monkeypatch.setattr(poller.ai, "request_proposal", fake)
-        return calls
-
-    def test_a_chosen_connection_and_model_replace_the_chain_for_one_run(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        session.add(
-            AiEndpoint(
-                user_id=OWNER,
-                id="other",
-                name="Hosted",
-                base_url="https://hosted.test/v1",
-                created_at=utc_now(),
-            )
-        )
-        document = self._document(session)
-        document.rerun_endpoint_id = "other"
-        document.rerun_model_name = "big-model"
-        session.add(document)
-        session.commit()
-        self._stub_text(monkeypatch)
-        calls = self._capture(monkeypatch)
-
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        assert calls == [("https://hosted.test/v1", "big-model"), ("http://ai.test/v1", "m")]
-        session.refresh(document)
-        assert document.rerun_endpoint_id is None
-        assert document.rerun_model_name is None
-
-    def test_a_chosen_endpoint_that_no_longer_exists_fails_readably(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        document.rerun_endpoint_id = "gone"
-        document.rerun_model_name = "x"
-        session.add(document)
-        session.commit()
-        self._stub_text(monkeypatch)
-        calls = self._capture(monkeypatch)
-
-        ok = poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        assert ok is False
-        assert calls == []
-        session.refresh(document)
-        assert document.proposal_status == ProposalStatus.failed
-
-
 class TestPartialWriteGuardTimezones:
     def test_compares_against_tz_aware_timestamps_without_raising(self) -> None:
         """webdav4 yields aware UTC. A naive value here raised TypeError before the
@@ -823,277 +553,6 @@ class TestPartialWriteGuardTimezones:
         )
 
         assert poller._is_ready(aware) is True
-
-
-class TestExtractionStage:
-    """SPEC 6.3a: when an extraction chain exists, the filing model reads markdown off the
-    pages rather than the PDF's flat text layer -- and a failure there is a worse reading,
-    not a stopped document."""
-
-    def _prepare(
-        self, session: Session, monkeypatch: pytest.MonkeyPatch, *, text: str = "flat text " * 5
-    ) -> Document:
-        from app.services.extraction import ExtractedDocument
-
-        document = TestProposals()._document(session)
-        monkeypatch.setattr(
-            poller.extraction,
-            "extract",
-            lambda *a, **k: ExtractedDocument(
-                content_hash="h",
-                file_size_bytes=100,
-                mime_type="application/pdf",
-                page_count=1,
-                text=text,
-                text_error=None,
-            ),
-        )
-        session.add(
-            AiTaskStep(
-                user_id=OWNER, task=AiTask.extraction, position=0, endpoint_id="ep", model_name="v"
-            )
-        )
-        session.commit()
-        return document
-
-    def _capture_prompt(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-        seen: dict[str, str] = {}
-
-        def propose(**kwargs: Any) -> ai.Proposal:
-            seen["prompt"] = kwargs["prompt"]
-            return ai.Proposal(
-                suggested_name="n",
-                target_folder_path="/Documents",
-                document_date=None,
-                confidence_score=0.9,
-                reasoning_text="r",
-                model_name="m",
-            )
-
-        monkeypatch.setattr(poller.ai, "request_proposal", propose)
-        return seen
-
-    def test_the_filing_model_is_given_the_markdown_not_the_text_layer(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._prepare(session, monkeypatch)
-        seen = self._capture_prompt(monkeypatch)
-        monkeypatch.setattr(
-            poller.transcribe,
-            "transcribe",
-            lambda data, steps, instructions=None, meter=None: transcribe.Transcription(
-                markdown="# Swisscom\n\n| Total | 42.00 |", model_label="Local · v"
-            ),
-        )
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
-        assert "| Total | 42.00 |" in seen["prompt"]
-        assert "flat text" not in seen["prompt"]
-        session.refresh(document)
-        assert document.extraction_model == "Local · v"
-        assert document.extraction_error is None
-
-    def test_each_task_is_given_its_own_instructions(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._prepare(session, monkeypatch)
-        seen = self._capture_prompt(monkeypatch)
-        app_settings.filing_instructions = "Swisscom goes to /Documents/Telecom."
-        app_settings.extraction_instructions = "Keep the umlauts."
-        given: dict[str, object] = {}
-
-        def read(
-            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
-        ) -> transcribe.Transcription:
-            given["extraction"] = instructions
-            return transcribe.Transcription(markdown="# Swisscom", model_label="Local · v")
-
-        monkeypatch.setattr(poller.transcribe, "transcribe", read)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
-        assert given["extraction"] == "Keep the umlauts."
-        assert "Swisscom goes to /Documents/Telecom." in seen["prompt"]
-        assert "Keep the umlauts." not in seen["prompt"]
-        # Stored with the proposal, so the review screen shows the instructions in force.
-        assert "Swisscom goes to /Documents/Telecom." in (
-            session.exec(select(Proposal)).one().prompt_text or ""
-        )
-
-    def test_the_analysis_stores_what_both_tasks_cost(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._prepare(session, monkeypatch)
-
-        def read(data: bytes, steps: Any, instructions: Any = None, meter: Any = None) -> Any:
-            meter.scope(AiTask.extraction, "Local · v").record(ai.TokenUsage(1200, 300), 5)
-            meter.scope(AiTask.extraction, "Local · v").record(ai.TokenUsage(1100, 250), 5)
-            return transcribe.Transcription(markdown="# Swisscom", model_label="Local · v")
-
-        def propose(**kwargs: Any) -> ai.Proposal:
-            kwargs["usage"].record(ai.TokenUsage(900, 60), 5)
-            return ai.Proposal(
-                suggested_name="n",
-                target_folder_path="/Documents",
-                document_date=None,
-                confidence_score=0.9,
-                reasoning_text="r",
-                model_name="m",
-            )
-
-        monkeypatch.setattr(poller.transcribe, "transcribe", read)
-        monkeypatch.setattr(poller.ai, "request_proposal", propose)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
-
-        session.refresh(document)
-        usage = DocumentRead.from_models(document, None).analysis_usage
-        assert usage is not None
-        assert usage.extraction is not None and usage.extraction.calls == 2
-        assert usage.extraction.total_tokens == 2850
-        assert usage.filing is not None and usage.filing.model_label == "Local · m"
-        assert usage.total_tokens == 3810
-        (event,) = session.exec(
-            select(AuditEvent).where(AuditEvent.action == AuditAction.document_analyzed)
-        ).all()
-        assert event.actor_label == "system"
-        assert event.details["outcome"] == "ready"
-        assert (event.prompt_tokens, event.completion_tokens, event.total_tokens) == (
-            3200,
-            610,
-            3810,
-        )
-
-    def test_a_failed_analysis_stores_what_it_cost_too(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = TestProposals()._document(session)
-        TestProposals()._stub_text(monkeypatch)
-
-        def propose(**kwargs: Any) -> ai.Proposal:
-            kwargs["usage"].record(ai.TokenUsage(700, 30), 5)
-            raise ai.ProposalRejected(
-                "The model chose '/Elsewhere', which is outside your folders."
-            )
-
-        monkeypatch.setattr(poller.ai, "request_proposal", propose)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is False  # type: ignore[arg-type]
-
-        session.refresh(document)
-        assert document.proposal_status == ProposalStatus.failed
-        assert document.analysis_usage is not None
-        assert document.analysis_usage["total_tokens"] == 730
-        assert document.analysis_usage["extraction"] is None
-
-    def test_a_failed_transcription_files_from_the_text_layer_and_records_why(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._prepare(session, monkeypatch)
-        seen = self._capture_prompt(monkeypatch)
-
-        def unavailable(
-            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
-        ) -> transcribe.Transcription:
-            raise ai.AIUnavailable("Every extraction endpoint failed.")
-
-        monkeypatch.setattr(poller.transcribe, "transcribe", unavailable)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
-        assert "flat text" in seen["prompt"]
-        session.refresh(document)
-        assert document.proposal_status == ProposalStatus.ready
-        assert document.extracted_markdown is None
-        assert document.extraction_error == "Every extraction endpoint failed."
-
-    def test_regenerating_reuses_the_markdown_rather_than_reading_the_pages_again(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._prepare(session, monkeypatch)
-        seen = self._capture_prompt(monkeypatch)
-        document.extracted_markdown = "# Already read"
-        session.add(document)
-        session.commit()
-
-        def fail(
-            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
-        ) -> transcribe.Transcription:
-            raise AssertionError("The pages should not have been read a second time.")
-
-        monkeypatch.setattr(poller.transcribe, "transcribe", fail)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
-        assert "# Already read" in seen["prompt"]
-
-    def test_without_an_extraction_chain_the_text_layer_is_used_unchanged(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._prepare(session, monkeypatch)
-        for existing in session.exec(
-            select(AiTaskStep).where(AiTaskStep.task == AiTask.extraction)
-        ).all():
-            session.delete(existing)
-        session.commit()
-        seen = self._capture_prompt(monkeypatch)
-
-        def fail(
-            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
-        ) -> transcribe.Transcription:
-            raise AssertionError("Nothing is configured to read the pages.")
-
-        monkeypatch.setattr(poller.transcribe, "transcribe", fail)
-
-        assert poller.propose_for(session, FakeService([]), app_settings, document) is True  # type: ignore[arg-type]
-        assert "flat text" in seen["prompt"]
-        session.refresh(document)
-        assert document.extraction_error is None
-
-    def test_a_batch_is_read_in_full_before_any_document_is_filed(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Reading and filing models rarely fit on one GPU together; alternating would swap
-        # them for every document.
-        first = self._prepare(session, monkeypatch)
-        second = Document(
-            user_id=OWNER,
-            webdav_path="/Test-Inbox/b.pdf",
-            original_filename="b.pdf",
-            mime_type="application/pdf",
-            file_size_bytes=100,
-            content_hash="h2",
-            scanned_at=datetime(2026, 8, 21, 9, 0),
-            discovered_at=datetime(2026, 8, 21, 9, 2),
-            status=DocumentStatus.pending,
-            proposal_status=ProposalStatus.pending,
-        )
-        session.add(second)
-        session.commit()
-        calls: list[str] = []
-
-        def read(
-            data: bytes, steps: Any, instructions: Any = None, meter: Any = None
-        ) -> transcribe.Transcription:
-            calls.append("read")
-            return transcribe.Transcription(markdown="# Read", model_label="v")
-
-        def propose(**kwargs: Any) -> ai.Proposal:
-            calls.append("file")
-            return ai.Proposal(
-                suggested_name="n",
-                target_folder_path="/Documents",
-                document_date=None,
-                confidence_score=0.9,
-                reasoning_text="r",
-                model_name="m",
-            )
-
-        monkeypatch.setattr(poller.transcribe, "transcribe", read)
-        monkeypatch.setattr(poller.ai, "request_proposal", propose)
-
-        assert poller.generate_proposals(session, FakeService([]), app_settings) == (2, 0)  # type: ignore[arg-type]
-        assert calls == ["read", "read", "file", "file"]
-        for document in (first, second):
-            session.refresh(document)
-            assert document.extracted_markdown == "# Read"
 
 
 class TestEveryUser:
@@ -1134,7 +593,7 @@ class TestEveryUser:
 
         monkeypatch.setattr(poller.db, "engine", engine)
         monkeypatch.setattr(poller, "build_service", build)
-        monkeypatch.setattr(poller, "generate_proposals", lambda *args: (0, 0))
+        monkeypatch.setattr(poller.analysis, "run_batch", lambda *args: (0, 0))
 
         poller.run_once()
 
@@ -1143,81 +602,3 @@ class TestEveryUser:
             (document,) = check.exec(select(Document)).all()
             # Filed under the account whose inbox it came from, not the first one polled.
             assert document.user_id == "works"
-
-
-class TestProvenance(TestChosenModel):
-    def _stored(self, session: Session, document: Document) -> Proposal:
-        found = session.exec(select(Proposal).where(Proposal.document_id == document.id)).first()
-        assert found is not None
-        return found
-
-    def test_a_default_run_records_the_answering_connection(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        self._stub_text(monkeypatch)
-        self._capture(monkeypatch)
-
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        stored = self._stored(session, document)
-        assert stored.endpoint_name == "Local"
-        assert stored.chosen_by_user is False
-        assert stored.fallback_from is None
-
-    def test_a_hand_picked_run_is_flagged(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        document = self._document(session)
-        document.rerun_endpoint_id = "ep"
-        document.rerun_model_name = "big-model"
-        session.add(document)
-        session.commit()
-        self._stub_text(monkeypatch)
-        self._capture(monkeypatch)
-
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        stored = self._stored(session, document)
-        assert stored.chosen_by_user is True
-        assert stored.fallback_from is None
-
-    def test_a_fallback_answer_names_the_step_that_did_not_answer(
-        self, session: Session, app_settings: AppSettings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        session.add(
-            AiEndpoint(
-                user_id=OWNER,
-                id="backup",
-                name="Hosted",
-                base_url="https://hosted.test/v1",
-                created_at=utc_now(),
-            )
-        )
-        session.add(
-            AiTaskStep(
-                user_id=OWNER, task=AiTask.filing, position=1, endpoint_id="backup", model_name="h"
-            )
-        )
-        document = self._document(session)
-        self._stub_text(monkeypatch)
-
-        def fake(**kwargs: Any) -> ai.Proposal:
-            if "ai.test" in str(kwargs["endpoint_url"]):
-                raise ai.AIUnavailable("down")
-            return ai.Proposal(
-                suggested_name="n",
-                target_folder_path="/Documents",
-                document_date=None,
-                confidence_score=0.5,
-                reasoning_text="r",
-                model_name="h",
-            )
-
-        monkeypatch.setattr(poller.ai, "request_proposal", fake)
-
-        poller.propose_for(session, FakeService([]), app_settings, document)  # type: ignore[arg-type]
-
-        stored = self._stored(session, document)
-        assert stored.endpoint_name == "Hosted"
-        assert stored.fallback_from == "Local · m"

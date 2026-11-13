@@ -11,7 +11,7 @@ export interface ModelsByEndpoint {
 }
 
 /** One model list per endpoint, fetched the first time a dropdown pointing at it is opened.
- * Shared across every picker on a screen, so picking the same endpoint for extraction and filing costs
+ * Shared across every picker on a screen, so picking the same endpoint for reading and filing costs
  * one round trip to the provider rather than one per picker. Deliberately not a query: it is
  * a live probe of somebody else's server, not state this app owns. */
 export function useModelsByEndpoint(): ModelsByEndpoint {

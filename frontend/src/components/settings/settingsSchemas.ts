@@ -146,19 +146,7 @@ export const namingFormSchema = z.object({
 
 export type NamingFormValues = z.infer<typeof namingFormSchema>;
 
-// Mirrors MAX_INSTRUCTIONS_CHARS in services/settings.py, which is what actually enforces it.
-export const MAX_INSTRUCTIONS_CHARS = 2000;
-
-const instructionsField = z
-  .string()
-  .refine(
-    (value) => value.trim().length <= MAX_INSTRUCTIONS_CHARS,
-    `Keep it to ${MAX_INSTRUCTIONS_CHARS} characters or fewer.`,
-  );
-
-export const instructionsFormSchema = z.object({
-  filing_instructions: instructionsField,
-  extraction_instructions: instructionsField,
+export const analysisFormSchema = z.object({
   // Mirrors MIN/MAX_BATCH_SIZE in services/settings.py.
   proposal_batch_size: z.string().refine((value) => {
     const size = Number(value);
@@ -166,9 +154,9 @@ export const instructionsFormSchema = z.object({
   }, "Between 1 and 50 documents."),
 });
 
-export type InstructionsFormValues = z.infer<typeof instructionsFormSchema>;
+export type AnalysisFormValues = z.infer<typeof analysisFormSchema>;
 
-// SPEC 7.3's exact https/private-network-http rule lives in services/ai_tasks.py
+// SPEC 7.3's exact https/private-network-http rule lives in services/connections.py
 // (validate_endpoint_url, with real RFC1918/localhost matching) -- reproducing that precisely
 // here would drift the moment one side changes. This is feedback only: catch the
 // obviously-wrong case (no scheme at all) client-side, and let the save's own error message
@@ -206,20 +194,6 @@ export function optionalNumber(value: string): number | null {
 }
 
 export type EndpointFormValues = z.infer<typeof endpointFormSchema>;
-
-// SPEC 6.3a: a task is an ordered list of (endpoint, model) steps. An empty list is valid --
-// it means the task is unconfigured, which extraction is allowed to be -- so the only rule
-// here is that a step someone did add has to be complete enough to call.
-export const chainFormSchema = z.object({
-  steps: z.array(
-    z.object({
-      endpoint_id: z.string().min(1, "Choose an endpoint."),
-      model_name: z.string().refine((value) => value.trim().length > 0, "Choose a model."),
-    }),
-  ),
-});
-
-export type ChainFormValues = z.infer<typeof chainFormSchema>;
 
 export const nextcloudFormSchema = z.object({
   base_url: z

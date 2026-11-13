@@ -64,6 +64,31 @@ class AiJsonMode(enum.StrEnum):
     none = "none"
 
 
+class ReadingMethod(enum.StrEnum):
+    """How a configuration turns a document into text (SPEC 6.3a)."""
+
+    text_layer = "text_layer"
+    tesseract = "tesseract"
+    vision = "vision"
+
+
+class FilingStrategy(enum.StrEnum):
+    """Fields and folder in one reply, or fields first and the folder in a second call."""
+
+    one_call = "one_call"
+    two_calls = "two_calls"
+
+
+class AiThinking(enum.StrEnum):
+    """What a step asks of a thinking model, sent as reasoning_effort (SPEC 6.3b)."""
+
+    default = "default"
+    off = "off"
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
 class AuditAction(enum.StrEnum):
     """Everything the audit log records (SPEC 6.7). Dotted so a category is a prefix."""
 
@@ -82,7 +107,10 @@ class AuditAction(enum.StrEnum):
     ai_endpoint_created = "ai_endpoint.created"
     ai_endpoint_updated = "ai_endpoint.updated"
     ai_endpoint_deleted = "ai_endpoint.deleted"
-    ai_task_updated = "ai_task.updated"
+    configuration_created = "configuration.created"
+    configuration_updated = "configuration.updated"
+    configuration_deleted = "configuration.deleted"
+    configuration_defaulted = "configuration.defaulted"
     auth_registered = "auth.registered"
     auth_login = "auth.login"
     auth_login_failed = "auth.login_failed"
@@ -112,20 +140,17 @@ class Document(SQLModel, table=True):
     ocr_status: OcrStatus = OcrStatus.not_needed
     ocr_error: str | None = None
     error_message: str | None = None
-    # What the extraction task read off the pages, kept so re-running the filing task (a
-    # regenerate, a changed folder list) does not pay for the pages to be read again.
-    extracted_markdown: str | None = None
-    extraction_model: str | None = None
-    # Set when extraction was configured and still failed. Not fatal on its own: filing falls
-    # back to the PDF's own text layer, and this says why the better input is missing.
-    extraction_error: str | None = None
+    # A configuration picked for this document (SPEC 6.3a); None means the user's default.
+    configuration_id: str | None = Field(default=None, foreign_key="ai_configuration.id")
+    # The reading the latest analysis filed from, for the review screen. Not a foreign key:
+    # reading.document_id already points the other way, and a cycle is not worth the check.
+    reading_id: str | None = None
+    # Why a pending analysis is not running: a connection it needs is unreachable, or there
+    # is no configuration yet. None while it simply has not had its turn.
+    waiting_reason: str | None = None
     # Tokens spent by the most recent analysis (ai.UsageSummary.to_json). On the document
     # rather than the proposal, because a failed analysis spends tokens too and has no proposal.
     analysis_usage: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
-    # A connection and model picked for the next analysis only. The poller consumes and clears
-    # them; a plain re-run leaves them empty and uses the configured filing chain.
-    rerun_endpoint_id: str | None = None
-    rerun_model_name: str | None = None
 
 
 class Proposal(SQLModel, table=True):
@@ -151,13 +176,16 @@ class Proposal(SQLModel, table=True):
     # hint, document text) -- SPEC 8.3.5a. Nullable because proposals stored before this field
     # existed have nothing to backfill it with.
     prompt_text: str | None = None
-    # Who answered, for the chip on the review screen. endpoint_name is a copy, not a foreign
-    # key: the connection may be renamed or removed later and the chip should keep saying what
-    # produced this text. Nullable for proposals stored before these existed.
+    # The system prompt(s) actually sent. None on proposals from before configurations, all of
+    # which were sent the built-in one.
+    system_prompt: str | None = None
+    # What produced it, for the chip on the review screen. Copies, not foreign keys: the
+    # connection or configuration may be renamed or removed later, and the chip should keep
+    # saying what produced this text. Nullable for proposals stored before these existed.
     endpoint_name: str | None = None
-    chosen_by_user: bool = False
-    # Labels of the steps ahead of the answering one that did not answer, comma-joined.
-    fallback_from: str | None = None
+    configuration_id: str | None = None
+    configuration_name: str | None = None
+    reading_label: str | None = None
 
 
 class HistoryEntry(SQLModel, table=True):
@@ -203,11 +231,6 @@ class AppSettings(SQLModel, table=True):
     # that writes *content* to WebDAV, and the person whose archive it is should be able to
     # stop it without redeploying.
     store_ocr_text: bool = True
-    # The person's own words for each task, added to what the model is sent (SPEC 6.3, 6.3a).
-    # Per task because they answer different questions: filing needs "insurance letters go
-    # under /Versicherung", extraction needs "these are German, keep the umlauts".
-    filing_instructions: str | None = None
-    extraction_instructions: str | None = None
     # Documents analysed per poll tick. Each tick reads its whole batch before filing any of
     # it, so on a GPU that holds one model at a time this is how many documents share one
     # model load; larger also means a single tick holds the queue longer.
@@ -247,23 +270,68 @@ class AiEndpoint(SQLModel, table=True):
     created_at: datetime
 
 
-class AiTaskStep(SQLModel, table=True):
-    """One (endpoint, model) pair to try for a task, and when to try it.
+class AiConfiguration(SQLModel, table=True):
+    """A named way of analysing a document: a reading step and a filing step (SPEC 6.3a).
 
-    The rows for a task form a fallback chain in `position` order: a self-hosted model first,
-    a hosted provider behind it, so a document still gets read when the machine at home is
-    off. Both the endpoint and the model are per step -- the same endpoint can appear twice
-    with different models, and the same model name can mean different things on two servers.
+    The two steps are columns rather than child rows: there are always exactly two, and a
+    configuration is edited, duplicated and compared as a whole.
     """
 
-    __tablename__ = "ai_task_step"
+    __tablename__ = "ai_configuration"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_ai_configuration_user_name"),)
 
     id: str = Field(default_factory=_uuid, primary_key=True)
     user_id: str = Field(foreign_key="user.id", index=True)
-    task: AiTask = Field(index=True)
-    position: int
-    endpoint_id: str = Field(foreign_key="ai_endpoint.id", index=True)
-    model_name: str
+    name: str
+    # Exactly one per user who has any; enforced in services/configurations.py.
+    is_default: bool = False
+
+    reading_method: ReadingMethod = ReadingMethod.text_layer
+    reading_endpoint_id: str | None = Field(default=None, foreign_key="ai_endpoint.id")
+    reading_model_name: str | None = None
+    # None means the built-in prompt, so improvements to it reach configurations nobody edited.
+    reading_system_prompt: str | None = None
+    reading_instructions: str | None = None
+    reading_temperature: float = 0.1
+    reading_max_tokens: int = 4096
+    reading_thinking: AiThinking = AiThinking.default
+
+    filing_endpoint_id: str | None = Field(default=None, foreign_key="ai_endpoint.id")
+    filing_model_name: str | None = None
+    filing_strategy: FilingStrategy = FilingStrategy.one_call
+    filing_system_prompt: str | None = None
+    folder_system_prompt: str | None = None
+    filing_instructions: str | None = None
+    filing_temperature: float = 0.1
+    filing_max_tokens: int = 2048
+    filing_thinking: AiThinking = AiThinking.default
+
+    max_examples: int = 8
+    max_folders: int = 250
+    max_text_chars: int = 6000
+    created_at: datetime
+
+
+class Reading(SQLModel, table=True):
+    """What one reading setup read off one document, kept so it is never read twice.
+
+    `setup_key` hashes everything that changes the result (SPEC 6.3a); a configuration that
+    differs only in its filing step shares the reading.
+    """
+
+    __tablename__ = "reading"
+    __table_args__ = (
+        UniqueConstraint("document_id", "setup_key", name="uq_reading_document_setup"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    document_id: str = Field(foreign_key="document.id", index=True)
+    setup_key: str
+    method: ReadingMethod
+    label: str
+    text: str
+    created_at: datetime
 
 
 class AuditEvent(SQLModel, table=True):

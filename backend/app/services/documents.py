@@ -3,9 +3,17 @@
 from sqlalchemy import case, func
 from sqlmodel import Session, select
 
-from app.models import AuditAction, Document, DocumentStatus, Proposal, ProposalStatus
-from app.schemas import AIProposalRead, DocumentRead, NameFieldsBody
-from app.services import ai_tasks, audit, naming, progress
+from app.models import (
+    AiConfiguration,
+    AuditAction,
+    Document,
+    DocumentStatus,
+    Proposal,
+    ProposalStatus,
+    Reading,
+)
+from app.schemas import AIProposalRead, DocumentRead, DocumentReadingRead, NameFieldsBody
+from app.services import ai, audit, configurations, naming, progress
 from app.services.audit import Actor
 from app.services.errors import NotFoundError
 
@@ -59,15 +67,26 @@ def read_proposal(session: Session, document_id: str) -> AIProposalRead | None:
         reasoning_text=proposal.reasoning_text,
         model_name=proposal.model_name,
         connection_name=proposal.endpoint_name,
-        chosen_by_user=proposal.chosen_by_user,
-        fallback_from=proposal.fallback_from,
+        configuration_name=proposal.configuration_name,
+        reading_label=proposal.reading_label,
         prompt_text=proposal.prompt_text,
+        system_prompt=proposal.system_prompt or ai.SYSTEM_PROMPT,
     )
 
 
 def to_read_schema(session: Session, document: Document) -> DocumentRead:
+    reading = session.get(Reading, document.reading_id) if document.reading_id else None
+    picked = (
+        session.get(AiConfiguration, document.configuration_id)
+        if document.configuration_id
+        else None
+    )
     return DocumentRead.from_models(
-        document, read_proposal(session, document.id), progress.stage_of(document.id)
+        document,
+        read_proposal(session, document.id),
+        progress.stage_of(document.id),
+        reading=DocumentReadingRead(label=reading.label, text=reading.text) if reading else None,
+        configuration_name=picked.name if picked and picked.user_id == document.user_id else None,
     )
 
 
@@ -77,27 +96,23 @@ def request_regenerate(
     document_id: str,
     *,
     actor: Actor,
-    endpoint_id: str | None = None,
-    model_name: str | None = None,
+    configuration_id: str | None = None,
 ) -> Document:
-    """Queue a fresh proposal. The poller does the work; this only resets the status.
+    """Queue a fresh analysis. The poller does the work; this only resets the status.
 
-    With `endpoint_id` and `model_name` the filing step runs on exactly that pair instead of
-    the configured chain. The endpoint is checked against the user here, so the poller never
-    sees an id that is not theirs.
+    With `configuration_id` the document is analysed with that configuration from now on;
+    the default's id clears the pick (SPEC 6.3a). Checked against the user here, so the
+    poller never sees an id that is not theirs.
     """
     document = get_document(session, user_id, document_id)
     label = ""
-    if endpoint_id is not None and model_name is not None:
-        endpoint = ai_tasks.get_endpoint(session, user_id, endpoint_id)
-        label = f" with {endpoint.name} · {model_name.strip()}"
-        document.rerun_endpoint_id = endpoint.id
-        document.rerun_model_name = model_name.strip()
-    else:
-        document.rerun_endpoint_id = None
-        document.rerun_model_name = None
+    if configuration_id is not None:
+        configuration = configurations.get_configuration(session, user_id, configuration_id)
+        label = f" with '{configuration.name}'"
+        document.configuration_id = None if configuration.is_default else configuration.id
     document.proposal_status = ProposalStatus.pending
     document.proposal_error = None
+    document.waiting_reason = None
     session.add(document)
     audit.record(
         session,
@@ -136,8 +151,6 @@ def retry_failed_proposals(session: Session, user_id: str, *, actor: Actor) -> i
     for document in failed:
         document.proposal_status = ProposalStatus.pending
         document.proposal_error = None
-        document.rerun_endpoint_id = None
-        document.rerun_model_name = None
         session.add(document)
     audit.record(
         session,

@@ -14,7 +14,7 @@ from sqlalchemy import ColumnElement, func
 from sqlalchemy import select as sa_select
 from sqlmodel import Session, col, select
 
-from app.models import AiCall, AiEndpoint, AiTaskStep
+from app.models import AiCall, AiConfiguration, AiEndpoint, ReadingMethod
 from app.services import ai
 from app.services.errors import ValidationError
 from app.services.times import to_storage, utc_now
@@ -129,13 +129,13 @@ def report(session: Session, user_id: str, start: date, end: date) -> UsageRepor
     ).all()
 
     endpoints = set(session.exec(select(AiEndpoint.id).where(AiEndpoint.user_id == user_id)))
-    configured = set(
-        session.exec(
-            select(AiTaskStep.endpoint_id, AiTaskStep.model_name).where(
-                AiTaskStep.user_id == user_id
-            )
-        )
-    )
+    configured: set[tuple[str | None, str | None]] = set()
+    for row in session.exec(
+        select(AiConfiguration).where(AiConfiguration.user_id == user_id)
+    ).all():
+        configured.add((row.filing_endpoint_id, row.filing_model_name))
+        if row.reading_method == ReadingMethod.vision:
+            configured.add((row.reading_endpoint_id, row.reading_model_name))
     rows = [
         UsageRow(
             day=str(r[0]),

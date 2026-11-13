@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/services/api/client";
-import type { AiEndpointWrite, AiTask, AiTaskChainUpdate } from "@/services/api/types";
+import type { AiEndpointWrite, ConfigurationWrite } from "@/services/api/types";
 import { queryKeys } from "./queryKeys";
 
 export function useAiEndpoints() {
@@ -10,20 +10,29 @@ export function useAiEndpoints() {
   });
 }
 
-export function useAiTasks() {
+export function useConfigurations() {
   return useQuery({
-    queryKey: queryKeys.aiTasks,
-    queryFn: () => apiClient.listAiTasks(),
+    queryKey: queryKeys.configurations,
+    queryFn: () => apiClient.listConfigurations(),
   });
 }
 
-/** What each task is sent right now. Only fetched while someone is looking (`enabled`),
- * because building it walks the WebDAV folder tree the way a poller tick does. */
-export function useAiContext(enabled: boolean) {
+/** Fixed per release, so fetched once and kept. */
+export function useBuiltinPrompts() {
   return useQuery({
-    queryKey: queryKeys.aiContext,
-    queryFn: () => apiClient.getAiContext(),
-    enabled,
+    queryKey: queryKeys.builtinPrompts,
+    queryFn: () => apiClient.getBuiltinPrompts(),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+}
+
+/** What each call of a configuration is sent. Only fetched while someone is looking
+ * (`enabled`), because building it walks the WebDAV folder tree the way a poller tick does. */
+export function useConfigurationPreview(id: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.configurationPreview(id ?? ""),
+    queryFn: () => apiClient.previewConfiguration(id ?? ""),
+    enabled: enabled && id !== undefined,
   });
 }
 
@@ -41,24 +50,39 @@ export function useDeleteAiEndpoint() {
   return useInvalidatingMutation((id: string) => apiClient.deleteAiEndpoint(id));
 }
 
-export function useUpdateAiTask() {
-  return useInvalidatingMutation(({ task, ...body }: AiTaskChainUpdate & { task: AiTask }) =>
-    apiClient.updateAiTask(task, body),
+export function useCreateConfiguration() {
+  return useInvalidatingMutation((body: ConfigurationWrite) => apiClient.createConfiguration(body));
+}
+
+export function useUpdateConfiguration() {
+  return useInvalidatingMutation(({ id, ...body }: ConfigurationWrite & { id: string }) =>
+    apiClient.updateConfiguration(id, body),
   );
 }
 
-/** Endpoints and chains reference each other -- renaming an endpoint changes how every chain
- * reads, and editing a chain changes which endpoints report as in use -- so any write to
- * either refetches both rather than trying to patch two caches in step. */
+export function useDeleteConfiguration() {
+  return useInvalidatingMutation((id: string) => apiClient.deleteConfiguration(id));
+}
+
+export function useDuplicateConfiguration() {
+  return useInvalidatingMutation((id: string) => apiClient.duplicateConfiguration(id));
+}
+
+export function useMakeDefaultConfiguration() {
+  return useInvalidatingMutation((id: string) => apiClient.makeDefaultConfiguration(id));
+}
+
+/** Connections and configurations reference each other -- renaming a connection changes how
+ * every configuration reads, and editing a configuration changes which connections report as
+ * in use -- so any write to either refetches both rather than patching two caches in step. */
 function useInvalidatingMutation<TArgs, TResult>(mutationFn: (args: TArgs) => Promise<TResult>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.aiEndpoints });
-      queryClient.invalidateQueries({ queryKey: queryKeys.aiTasks });
-      // The context preview names each chain's steps.
-      queryClient.invalidateQueries({ queryKey: queryKeys.aiContext });
+      // Also covers every preview, which is built from the configuration and its connections.
+      queryClient.invalidateQueries({ queryKey: queryKeys.configurations });
     },
   });
 }

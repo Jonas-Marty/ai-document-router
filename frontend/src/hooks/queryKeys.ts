@@ -19,8 +19,11 @@ export const queryKeys = {
   settings: ["settings"] as const,
   nextcloud: ["settings", "nextcloud"] as const,
   aiEndpoints: ["ai", "endpoints"] as const,
-  aiTasks: ["ai", "tasks"] as const,
-  aiContext: ["ai", "context"] as const,
+  configurations: ["configurations"] as const,
+  builtinPrompts: ["builtin-prompts"] as const,
+  // Prefix of every configuration preview, for invalidating them all at once.
+  configurationPreviews: ["configurations", "preview"] as const,
+  configurationPreview: (id: string) => ["configurations", "preview", id] as const,
   authConfig: ["auth", "config"] as const,
   currentUser: ["auth", "me"] as const,
 };

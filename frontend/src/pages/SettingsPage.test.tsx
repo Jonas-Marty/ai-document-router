@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NavigationGuardProvider, useConfirmNavigation } from "@/hooks/useNavigationGuard";
 import type { Settings } from "@/services/api/types";
@@ -14,8 +15,6 @@ vi.mock("@/services/api/client", () => ({
     updateSettings: vi.fn(),
     listAiModels: vi.fn(),
     listAiEndpoints: vi.fn(),
-    listAiTasks: vi.fn(),
-    getAiContext: vi.fn(),
   },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -47,8 +46,6 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     filename_pattern: null,
     filename_pattern_hint: null,
     store_ocr_text: true,
-    filing_instructions: null,
-    extraction_instructions: null,
     proposal_batch_size: 10,
     ...overrides,
   };
@@ -71,10 +68,12 @@ function renderPage() {
   render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        <NavigationGuardProvider>
-          <SettingsPage />
-          <NavProbe />
-        </NavigationGuardProvider>
+        <MemoryRouter>
+          <NavigationGuardProvider>
+            <SettingsPage />
+            <NavProbe />
+          </NavigationGuardProvider>
+        </MemoryRouter>
       </QueryClientProvider>
     </StrictMode>,
   );
@@ -106,10 +105,6 @@ describe("SettingsPage", () => {
       username: "me",
       password_set: true,
     });
-    vi.mocked(apiClient.listAiTasks).mockResolvedValue([
-      { task: "extraction", steps: [] },
-      { task: "filing", steps: [] },
-    ]);
   });
 
   afterEach(() => {
@@ -146,13 +141,8 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("Folders")).toBeInTheDocument();
     expect(screen.getByText("Naming")).toBeInTheDocument();
     expect(screen.getByText("AI endpoints")).toBeInTheDocument();
-    expect(await screen.findByText("Extraction — read the pages")).toBeInTheDocument();
-    expect(screen.getByText("Filing — choose the filename")).toBeInTheDocument();
-    expect(screen.getByText("AI instructions")).toBeInTheDocument();
-    expect(screen.getByText("What the models are given")).toBeInTheDocument();
+    expect(screen.getByText("Analysis")).toBeInTheDocument();
     expect(screen.getByText("OCR")).toBeInTheDocument();
-    // Collapsed: it walks WebDAV, so nothing is fetched until someone opens it.
-    expect(apiClient.getAiContext).not.toHaveBeenCalled();
   });
 
   it("turns the searchable-copy setting off and saves it", async () => {

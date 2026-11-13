@@ -27,8 +27,9 @@ export interface AIProposal {
   model_name: string;
   // Who answered. connection_name is null for proposals stored before it was recorded.
   connection_name: string | null;
-  chosen_by_user: boolean;
-  fallback_from: string | null; // labels of earlier steps that didn't answer
+  // What produced it (SPEC 6.3a); null on proposals from before configurations.
+  configuration_name: string | null;
+  reading_label: string | null; // "Text layer", "Tesseract", or the vision model's label
   // What was actually sent for this proposal (SPEC 8.3.5a). prompt_text is null for
   // proposals stored before this field existed.
   prompt_text: string | null;
@@ -52,9 +53,16 @@ export interface Document {
   ocr_status: OcrStatus;
   ocr_error: string | null;
   analysis_usage: UsageSummary | null; // tokens the most recent analysis spent, success or not
-  extracted_markdown: string | null; // what extraction read off the pages, fed to filing
-  extraction_model: string | null;
-  extraction_error: string | null; // why extraction failed and the text layer was used
+  // Why a pending analysis is waiting, e.g. "Waiting for Tower to read"; null otherwise.
+  waiting_reason: string | null;
+  // The configuration picked for this document; null means it follows the default.
+  configuration_name: string | null;
+  reading: DocumentReading | null; // what the latest analysis filed from
+}
+
+export interface DocumentReading {
+  label: string;
+  text: string;
 }
 
 /** Every call one task made during one analysis, added up. */
@@ -170,28 +178,22 @@ export interface Settings {
   filename_pattern: string | null;
   filename_pattern_hint: string | null;
   store_ocr_text: boolean; // file a searchable copy of a scan instead of the original
-  filing_instructions: string | null; // added to the filing prompt; max 2000 characters
-  extraction_instructions: string | null; // added to the extraction prompt; max 2000 characters
   proposal_batch_size: number; // documents read, then filed, per poll tick; 1-50
 }
 
 export type SettingsUpdate = Settings;
-
-/** The two jobs a model can be given, in the order they run: a vision model reads the pages
- * into markdown, then a text model chooses the filename from what was read. */
-export type AiTask = "extraction" | "filing";
 
 export interface AiEndpoint {
   id: string;
   name: string;
   base_url: string;
   api_key_set: boolean; // never the key itself
-  timeout_seconds: number; // how long to wait for a reply before trying the next step
+  timeout_seconds: number; // how long to wait for a reply before the call fails
   context_limit: number | null; // tokens the server holds per request; null = unknown (SPEC 6.3b)
   json_mode: AiJsonMode;
   price_input_per_million: number | null;
   price_output_per_million: number | null;
-  used_by: AiTask[]; // tasks that would lose a step if this were removed
+  used_by: string[]; // names of the configurations using it; it can't be deleted while any do
 }
 
 /** How filing asks the endpoint for JSON (SPEC 6.3). */
@@ -208,37 +210,62 @@ export interface AiEndpointWrite {
   price_output_per_million: number | null;
 }
 
-export interface AiTaskStep {
-  endpoint_id: string;
-  endpoint_name: string;
-  model_name: string;
+export type ReadingMethod = "text_layer" | "tesseract" | "vision";
+export type FilingStrategy = "one_call" | "two_calls";
+/** Sent as reasoning_effort; "default" sends nothing and leaves it to the model. */
+export type AiThinking = "default" | "off" | "low" | "medium" | "high";
+
+/** One step of a configuration. A null prompt means the built-in one; a reading that needs
+ * no model has no connection or model. */
+export interface ConfigurationStep {
+  endpoint_id: string | null;
+  endpoint_name: string | null; // filled in on the way out, ignored on the way in
+  model_name: string | null;
+  system_prompt: string | null;
+  instructions: string | null;
+  temperature: number; // 0-2
+  max_tokens: number; // 256-32768
+  thinking: AiThinking;
 }
 
-/** A task's endpoints in the order they are tried: the first that answers wins, and the
- * rest exist for the days it doesn't. */
-export interface AiTaskChain {
-  task: AiTask;
-  steps: AiTaskStep[];
+export interface ConfigurationWrite {
+  name: string;
+  reading_method: ReadingMethod;
+  reading: ConfigurationStep;
+  filing_strategy: FilingStrategy;
+  filing: ConfigurationStep;
+  folder_system_prompt: string | null; // the second call's prompt, for two_calls
+  max_examples: number; // 0-20
+  max_folders: number; // 10-1000
+  max_text_chars: number; // 1000-30000
 }
 
-/** One connection and model for a single analysis, instead of the configured chain. */
-export interface RegenerateChoice {
-  endpoint_id: string;
-  model_name: string;
+/** A named way of reading and filing a document (SPEC 6.3a). Exactly one is the default. */
+export interface Configuration extends ConfigurationWrite {
+  id: string;
+  is_default: boolean;
 }
 
-export interface AiTaskChainUpdate {
-  steps: { endpoint_id: string; model_name: string }[];
+/** What a configuration without its own system prompt is sent. */
+export interface BuiltinPrompts {
+  reading: string;
+  filing_one_call: string;
+  filing_fields: string;
+  filing_folder: string;
 }
 
-/** What one task is sent right now, built from the current settings with a placeholder in
- * place of the document. */
-export interface AiTaskContext {
-  task: AiTask;
-  chain: string[]; // "Endpoint · model", in the order tried
-  system_prompt: string;
-  user_prompt: string;
+/** What one call of a configuration is sent, the document left as a placeholder. */
+export interface ConfigurationPreviewCall {
+  step: string; // "Reading", "Filing", "Fields" or "Folder"
+  model_label: string | null; // null when the step needs no model
+  system_prompt: string | null;
+  user_prompt: string | null;
   note: string;
+}
+
+/** Re-analyse, optionally with another configuration from now on. */
+export interface RegenerateChoice {
+  configuration_id: string;
 }
 
 /** One entry in the audit log (SPEC 6.7). `action` is dotted, e.g. "document.approved". */
@@ -326,7 +353,7 @@ export interface AiUsageRow {
   cached_tokens: number;
   without_usage: number; // replied, but sent no token counts
   failed: number; // got no reply
-  fallback: number; // made by a later step because an earlier one was unavailable
+  fallback: number; // from before configurations: made by a later step of a chain
   duration_ms: number; // summed over `timed`
   timed: number;
   cost: number | null; // from the connection's prices; null when no call in the row had one

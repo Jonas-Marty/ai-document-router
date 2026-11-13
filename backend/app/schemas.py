@@ -1,17 +1,19 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, field_serializer, model_validator
+from pydantic import BaseModel, field_serializer
 
 from app.models import (
     AiJsonMode,
-    AiTask,
+    AiThinking,
     AuditEvent,
     Document,
     DocumentStatus,
+    FilingStrategy,
     HistoryAction,
     HistoryEntry,
     OcrStatus,
     ProposalStatus,
+    ReadingMethod,
 )
 from app.services.ai import SYSTEM_PROMPT, UsageSummary
 from app.services.extraction import extension_of
@@ -38,12 +40,13 @@ class AIProposalRead(BaseModel):
     reasoning_text: str
     model_name: str
     connection_name: str | None = None
-    chosen_by_user: bool = False
-    fallback_from: str | None = None
+    # What produced it (SPEC 6.3a); None on proposals from before configurations.
+    configuration_name: str | None = None
+    reading_label: str | None = None
     # SPEC 8.3.5a: what was actually sent for this proposal, so the review screen can show it.
     # prompt_text is None for proposals stored before this field existed, and for the
-    # /compare endpoint's in-memory results, which are never persisted. system_prompt has a
-    # default because it is the same constant for every proposal, never per-row state.
+    # /compare endpoint's in-memory results, which are never persisted. system_prompt falls
+    # back to the built-in one, which every proposal from before configurations was sent.
     prompt_text: str | None = None
     system_prompt: str = SYSTEM_PROMPT
 
@@ -87,10 +90,11 @@ class DocumentRead(BaseModel):
     ocr_status: OcrStatus
     ocr_error: str | None
     analysis_usage: UsageSummaryRead | None = None
-    # What the extraction task read off the pages, so the person can see what filing saw.
-    extracted_markdown: str | None = None
-    extraction_model: str | None = None
-    extraction_error: str | None = None
+    # Why a pending analysis waits (SPEC 6.3a), and a configuration picked for this document.
+    waiting_reason: str | None = None
+    configuration_name: str | None = None
+    # The reading the latest analysis filed from, so the person can see what filing saw.
+    reading: "DocumentReadingRead | None" = None
 
     @field_serializer("scanned_at")
     def _serialize_scanned_at(self, value: datetime) -> str:
@@ -106,6 +110,9 @@ class DocumentRead(BaseModel):
         document: Document,
         proposal: AIProposalRead | None,
         analysis_stage: str | None = None,
+        *,
+        reading: "DocumentReadingRead | None" = None,
+        configuration_name: str | None = None,
     ) -> "DocumentRead":
         return cls(
             analysis_stage=analysis_stage,
@@ -123,9 +130,9 @@ class DocumentRead(BaseModel):
             proposal_error=document.proposal_error,
             ocr_status=document.ocr_status,
             ocr_error=document.ocr_error,
-            extracted_markdown=document.extracted_markdown,
-            extraction_model=document.extraction_model,
-            extraction_error=document.extraction_error,
+            waiting_reason=document.waiting_reason,
+            configuration_name=configuration_name,
+            reading=reading,
             analysis_usage=(
                 UsageSummaryRead.model_validate(document.analysis_usage)
                 if document.analysis_usage
@@ -134,27 +141,23 @@ class DocumentRead(BaseModel):
         )
 
 
+class DocumentReadingRead(BaseModel):
+    label: str
+    text: str
+
+
+DocumentRead.model_rebuild()
+
+
 class QueueResponse(BaseModel):
     items: list[DocumentRead]
     total_pending: int
 
 
 class RegenerateRequest(BaseModel):
-    """Optional: run this one analysis on a chosen connection and model.
+    """Optional: analyse with this configuration from now on (SPEC 6.3a)."""
 
-    Both or neither -- a model name means nothing without the connection that serves it.
-    """
-
-    endpoint_id: str | None = None
-    model_name: str | None = None
-
-    @model_validator(mode="after")
-    def _both_or_neither(self) -> "RegenerateRequest":
-        if (self.endpoint_id is None) != (self.model_name is None):
-            raise ValueError("Choose a connection and a model together.")
-        if self.model_name is not None and not self.model_name.strip():
-            raise ValueError("Choose a model.")
-        return self
+    configuration_id: str | None = None
 
 
 class RetriedResponse(BaseModel):
@@ -218,8 +221,6 @@ class SettingsRead(BaseModel):
     filename_pattern: str | None
     filename_pattern_hint: str | None
     store_ocr_text: bool
-    filing_instructions: str | None
-    extraction_instructions: str | None
     proposal_batch_size: int
 
 
@@ -230,8 +231,6 @@ class SettingsUpdate(BaseModel):
     filename_pattern: str | None = None
     filename_pattern_hint: str | None = None
     store_ocr_text: bool = True
-    filing_instructions: str | None = None
-    extraction_instructions: str | None = None
     proposal_batch_size: int = 10
 
 
@@ -262,7 +261,8 @@ class AiEndpointRead(BaseModel):
     json_mode: AiJsonMode
     price_input_per_million: float | None
     price_output_per_million: float | None
-    used_by: list[AiTask]
+    # Names of the configurations that use it; it cannot be removed while any do.
+    used_by: list[str]
 
 
 class AiEndpointWrite(BaseModel):
@@ -281,28 +281,6 @@ class AiEndpointWrite(BaseModel):
     price_output_per_million: float | None = None
 
 
-class AiTaskStepWrite(BaseModel):
-    endpoint_id: str
-    model_name: str
-
-
-class AiTaskStepRead(BaseModel):
-    endpoint_id: str
-    endpoint_name: str
-    model_name: str
-
-
-class AiTaskChainRead(BaseModel):
-    """A task's endpoints in the order they are tried."""
-
-    task: AiTask
-    steps: list[AiTaskStepRead]
-
-
-class AiTaskChainUpdate(BaseModel):
-    steps: list[AiTaskStepWrite]
-
-
 class AiModelsRequest(BaseModel):
     """The endpoint under test may be one being typed into the add form, so it is described
     by URL rather than by id. A blank key on a saved endpoint means "use the stored one"."""
@@ -316,13 +294,51 @@ class AiModelsResponse(BaseModel):
     models: list[str]
 
 
-class AiTaskContextRead(BaseModel):
-    """What one task is sent, built from the current settings with a placeholder document."""
+class ConfigurationStepBody(BaseModel):
+    """One step of a configuration. endpoint_name is filled in on the way out and ignored
+    on the way in."""
 
-    task: AiTask
-    chain: list[str]
-    system_prompt: str
-    user_prompt: str
+    endpoint_id: str | None = None
+    endpoint_name: str | None = None
+    model_name: str | None = None
+    system_prompt: str | None = None
+    instructions: str | None = None
+    temperature: float
+    max_tokens: int
+    thinking: AiThinking = AiThinking.default
+
+
+class ConfigurationWrite(BaseModel):
+    name: str
+    reading_method: ReadingMethod
+    reading: ConfigurationStepBody
+    filing_strategy: FilingStrategy
+    filing: ConfigurationStepBody
+    folder_system_prompt: str | None = None
+    max_examples: int
+    max_folders: int
+    max_text_chars: int
+
+
+class ConfigurationRead(ConfigurationWrite):
+    id: str
+    is_default: bool
+
+
+class BuiltinPromptsRead(BaseModel):
+    reading: str
+    filing_one_call: str
+    filing_fields: str
+    filing_folder: str
+
+
+class ConfigurationPreviewRead(BaseModel):
+    """What one call of a configuration is sent, the document left as a placeholder."""
+
+    step: str
+    model_label: str | None
+    system_prompt: str | None
+    user_prompt: str | None
     note: str
 
 

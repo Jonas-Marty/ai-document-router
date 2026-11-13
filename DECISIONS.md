@@ -1067,3 +1067,38 @@ meaningful. One line of "why" each; not a full ADR log.
 - **Unticking "Write the name by hand" returns to the fields as they were**, not to fields
   re-parsed from the edited name: splitting a free name back into fields is guesswork.
 - **The `N` shortcut focuses Sender**, or the name itself while it is hand-written.
+
+## Redesign milestone 3 — configurations replace chains (2026-11-13)
+
+- **Context size stays on the connection, not the configuration.** It is what the server is
+  set to (`OLLAMA_CONTEXT_LENGTH`), so two configurations on one server cannot differ.
+- **Readings carried over by the migration have the setup key `migrated` and are never
+  reused.** Nobody knows which model or prompt produced them, so no setup can claim them;
+  the first analysis under a configuration reads again.
+- **Fallback steps became configurations of their own.** The migration builds one
+  configuration per filing position; position 0 is the default. Nothing is lost, and the
+  owner deletes the ones they do not want.
+- **No automatic fallback anywhere, vision to text layer included.** A failed vision reading
+  fails the document with the reason. A configuration is one answer to "how was this read",
+  and a silent switch would make the Lab's comparisons meaningless.
+- **Only an unreachable connection makes a document wait.** That means no HTTP answer at all,
+  either from the per-tick probe or from a call after its retry. A timeout, a 500, a
+  too-long prompt or a rejected reply fails with the reason: retrying those every minute
+  would only fail again.
+- **A configuration picked in "Re-run analysis" stays with the document** for later re-runs.
+  Picking the default clears the pick, so the document follows whichever configuration is
+  the default.
+- **The Lab lives at `/lab` from milestone 3,** holding only configurations until milestone 7
+  adds test sets and runs. The editor needed a home, and Settings is for what is true of
+  the account, not of a model.
+- **`document.reading_id` is a plain column, not a foreign key.** `reading.document_id`
+  already references `document`, and a key each way makes a cycle that SQLAlchemy cannot
+  order on insert.
+- **Proposals from before configurations get `reading_label`** from the old
+  `extraction_model`, or "Text layer" when there was none. `configuration_name` stays null:
+  no configuration produced them.
+- **Thinking is sent as `reasoning_effort`.** Off is sent as `"none"`, which Ollama's
+  OpenAI-compatible API maps to `think: false` where the model allows it. Low, medium and
+  high are sent as they are. Model default sends nothing, because some servers reject the
+  field.
+- **Reading failures count as failed in the tick summary,** alongside filing failures.

@@ -58,7 +58,10 @@ CATEGORIES: dict[str, tuple[AuditAction, ...]] = {
         AuditAction.ai_endpoint_created,
         AuditAction.ai_endpoint_updated,
         AuditAction.ai_endpoint_deleted,
-        AuditAction.ai_task_updated,
+        AuditAction.configuration_created,
+        AuditAction.configuration_updated,
+        AuditAction.configuration_deleted,
+        AuditAction.configuration_defaulted,
     ),
     "auth": (
         AuditAction.auth_registered,

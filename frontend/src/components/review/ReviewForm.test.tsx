@@ -36,8 +36,8 @@ const baseDocument: Document = {
     reasoning_text: "Looks like an invoice.",
     model_name: "test-model",
     connection_name: null,
-    chosen_by_user: false,
-    fallback_from: null,
+    configuration_name: null,
+    reading_label: null,
     prompt_text: "Folders available (choose exactly one):\n/Documents/Finance",
     system_prompt: "You file scanned documents.",
   },
@@ -45,9 +45,9 @@ const baseDocument: Document = {
   ocr_status: "not_needed",
   ocr_error: null,
   analysis_usage: null,
-  extracted_markdown: null,
-  extraction_model: null,
-  extraction_error: null,
+  waiting_reason: null,
+  configuration_name: null,
+  reading: null,
 };
 
 const emptySettings: Settings = {
@@ -57,8 +57,6 @@ const emptySettings: Settings = {
   filename_pattern: null,
   filename_pattern_hint: null,
   store_ocr_text: true,
-  filing_instructions: null,
-  extraction_instructions: null,
   proposal_batch_size: 10,
 };
 
@@ -128,33 +126,27 @@ describe("ReviewForm", () => {
     expect(screen.getByText("/Documents/Finance")).toBeInTheDocument();
   });
 
-  it("names the connection and model beside the badge, and says when you chose them", async () => {
+  it("names the connection and model, and the configuration and reading behind them", async () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
     const proposal = {
       ...baseDocument.proposal,
       connection_name: "Infomaniak",
-      chosen_by_user: true,
+      configuration_name: "Careful",
+      reading_label: "Text layer",
     };
     render(<Harness document={{ ...baseDocument, proposal } as Document} />);
 
     expect(screen.getByText("Infomaniak · test-model")).toBeInTheDocument();
-    expect(screen.getByText(/chosen by you for this run/i)).toBeInTheDocument();
-    expect(screen.queryByText("fallback")).not.toBeInTheDocument();
+    expect(screen.getByText("Configuration “Careful” · read with Text layer")).toBeInTheDocument();
   });
 
-  it("tags a fallback answer and says which step didn't answer", async () => {
+  it("says nothing about a configuration for a proposal from before them", async () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
-    const proposal = {
-      ...baseDocument.proposal,
-      connection_name: "Infomaniak",
-      fallback_from: "Workshop PC · qwen3",
-    };
-    render(<Harness document={{ ...baseDocument, proposal } as Document} />);
+    render(<Harness document={baseDocument} />);
 
-    expect(screen.getByText("fallback")).toBeInTheDocument();
-    expect(screen.getByText("Workshop PC · qwen3 didn't answer.")).toBeInTheDocument();
+    expect(screen.queryByText(/Configuration “/)).not.toBeInTheDocument();
   });
 
   it("reveals what was sent to the AI only once asked, and hides it again on request", async () => {
@@ -173,7 +165,7 @@ describe("ReviewForm", () => {
     expect(screen.queryByText("You file scanned documents.")).not.toBeInTheDocument();
   });
 
-  it("shows the extracted text, and the model that read it, only once asked", async () => {
+  it("shows the text filing read, and what read it, only once asked", async () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
     const user = userEvent.setup();
@@ -181,24 +173,23 @@ describe("ReviewForm", () => {
       <Harness
         document={{
           ...baseDocument,
-          extracted_markdown: "# Swisscom\nRechnung Mai",
-          extraction_model: "Jonas-PC · chandra-ocr-2",
+          reading: { label: "Jonas-PC · chandra-ocr-2", text: "# Swisscom\nRechnung Mai" },
         }}
       />,
     );
 
     expect(screen.queryByText(/Rechnung Mai/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /show extracted text/i }));
+    await user.click(screen.getByRole("button", { name: /show the text filing read/i }));
     expect(screen.getByText(/Rechnung Mai/)).toBeInTheDocument();
     expect(screen.getByText("Read by Jonas-PC · chandra-ocr-2")).toBeInTheDocument();
   });
 
-  it("offers no extracted text when nothing was extracted", () => {
+  it("offers no reading when there is none", () => {
     vi.mocked(apiClient.getFolderContext).mockResolvedValue(folderContextOf());
     vi.mocked(apiClient.getSettings).mockResolvedValue(emptySettings);
     render(<Harness document={baseDocument} />);
 
-    expect(screen.queryByRole("button", { name: /extracted text/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /text filing read/i })).not.toBeInTheDocument();
   });
 
   it("explains when the document-specific prompt wasn't recorded for an older proposal", async () => {
@@ -218,8 +209,8 @@ describe("ReviewForm", () => {
             reasoning_text: "Looks like an invoice.",
             model_name: "test-model",
             connection_name: null,
-            chosen_by_user: false,
-            fallback_from: null,
+            configuration_name: null,
+            reading_label: null,
             prompt_text: null,
             system_prompt: "You file scanned documents.",
           },
@@ -246,8 +237,8 @@ describe("ReviewForm", () => {
         reasoning_text: "Looks like an invoice.",
         model_name: "test-model",
         connection_name: null,
-        chosen_by_user: false,
-        fallback_from: null,
+        configuration_name: null,
+        reading_label: null,
         prompt_text: "Folders available (choose exactly one):\n/Documents/Finance",
         system_prompt: "You file scanned documents.",
       },

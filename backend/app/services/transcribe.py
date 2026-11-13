@@ -6,8 +6,8 @@ in a table header read identically once the table is gone. A model that transcri
 keeps that structure, so the second stage reasons over headings and tables rather than a
 blob.
 
-Never fatal. When there is no extraction chain configured, or every endpoint in it fails, the
-caller falls back to the PDF's own text layer -- a worse input, not a stopped pipeline.
+A configuration's `vision` reading (SPEC 6.3a). A failure here fails the analysis with its
+reason; nothing falls back to another reading on its own.
 """
 
 import logging
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from app.models import AiTask
 from app.services import ai, extraction
-from app.services.ai_tasks import ResolvedStep, run_chain
+from app.services.connections import ResolvedStep, call_step
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,17 @@ def user_prompt(instructions: str | None) -> str:
 
 def transcribe(
     data: bytes,
-    steps: list[ResolvedStep],
+    step: ResolvedStep,
+    *,
+    system_prompt: str = SYSTEM_PROMPT,
     instructions: str | None = None,
+    parameters: ai.TaskParameters = ai.EXTRACTION_PARAMETERS,
     meter: ai.UsageMeter | None = None,
 ) -> Transcription:
-    """Render the document's pages and have the first working endpoint read them.
+    """Render the document's pages and have the step's model read them.
 
-    Raises AIUnavailable when the chain is empty or every endpoint in it failed, and
-    RenderUnavailable when the file could not be turned into pages at all.
+    Raises what the call raises (Unreachable, AIUnavailable, ReplyCutOff, PromptTooLong),
+    and RenderUnavailable when the file could not be turned into pages at all.
     """
     pages = extraction.render_pages(data, max_pages=extraction.MAX_RENDERED_PAGES)
     if not pages:
@@ -73,18 +76,19 @@ def transcribe(
                 endpoint_url=step.endpoint_url,
                 model_name=step.model_name,
                 api_key=step.api_key,
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 prompt=prompt,
                 images=batch,
                 usage=step.usage(meter, AiTask.extraction) if meter else None,
                 timeout=step.timeout_seconds,
+                parameters=parameters,
                 context_limit=step.context_limit,
             )
             for batch in _batched(pages, PAGES_PER_REQUEST)
         ]
         return Transcription(markdown=_clean("\n\n".join(chunks)), model_label=step.label)
 
-    return run_chain(steps, call, AiTask.extraction)
+    return call_step(step, call, AiTask.extraction)
 
 
 def _batched(pages: list[bytes], size: int) -> list[list[bytes]]:

@@ -14,10 +14,16 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.models import AiJsonMode, AiTask
+from app.models import AiJsonMode, AiTask, AiThinking
 from app.services import ai, ai_usage
-from app.services.ai import AIUnavailable, PromptTooLong, ProposalRejected, ReplyCutOff
-from app.services.ai_tasks import ResolvedStep, _is_cooling, run_chain
+from app.services.ai import (
+    AIUnavailable,
+    PromptTooLong,
+    ProposalRejected,
+    ReplyCutOff,
+    Unreachable,
+)
+from app.services.connections import ResolvedStep, call_step
 
 ROOTS = ["/Documents"]
 FOLDERS = ["/Documents", "/Documents/Bank", "/Documents/Versicherung"]
@@ -111,6 +117,31 @@ class TestParameters:
         assert body["temperature"] == ai.EXTRACTION_PARAMETERS.temperature
         assert body["max_tokens"] == ai.EXTRACTION_PARAMETERS.max_tokens
 
+    @pytest.mark.parametrize(
+        ("thinking", "sent"),
+        [
+            (AiThinking.off, "none"),
+            (AiThinking.low, "low"),
+            (AiThinking.high, "high"),
+        ],
+    )
+    def test_a_thinking_setting_is_sent_as_reasoning_effort(
+        self, thinking: AiThinking, sent: str
+    ) -> None:
+        recorder = Recorder(ok())
+        propose(recorder, parameters=ai.FILING_PARAMETERS.with_settings(0.2, 1024, thinking))
+
+        (body,) = recorder.bodies
+        assert body["reasoning_effort"] == sent
+        assert (body["temperature"], body["max_tokens"]) == (0.2, 1024)
+
+    def test_the_model_default_sends_no_reasoning_effort(self) -> None:
+        """Some servers reject the field outright, so it is left out unless asked for."""
+        recorder = Recorder(ok())
+        propose(recorder)
+
+        assert "reasoning_effort" not in recorder.bodies[0]
+
 
 class TestContextLimit:
     def test_a_prompt_that_cannot_fit_is_never_sent(self) -> None:
@@ -150,25 +181,9 @@ class TestContextLimit:
             )
         assert recorder.bodies == []
 
-    def test_a_too_long_prompt_moves_on_without_cooling_the_endpoint(self) -> None:
-        """The next document may well fit; skipping the endpoint for five minutes would send
-        it to the fallback for nothing."""
-        local = ResolvedStep(
-            endpoint_name="Tower", endpoint_url="http://tower/v1", api_key=None, model_name="m"
-        )
-        hosted = ResolvedStep(
-            endpoint_name="Hosted", endpoint_url="https://h/v1", api_key=None, model_name="m"
-        )
-
-        def call(step: ResolvedStep) -> str:
-            if step is local:
-                raise PromptTooLong("too long")
-            return "answer"
-
-        assert run_chain([local, hosted], call, AiTask.filing) == "answer"
-        assert not _is_cooling(local)
-
-    def test_the_failure_names_the_step_when_nothing_else_is_left(self) -> None:
+    def test_a_too_long_prompt_is_a_failure_not_an_unreachable_connection(self) -> None:
+        """The document fails with the reason rather than waiting: retrying the same prompt
+        on the same connection would only be refused again."""
         local = ResolvedStep(
             endpoint_name="Tower", endpoint_url="http://tower/v1", api_key=None, model_name="m"
         )
@@ -176,8 +191,9 @@ class TestContextLimit:
         def call(step: ResolvedStep) -> str:
             raise PromptTooLong("The prompt is about 9,000 tokens")
 
-        with pytest.raises(AIUnavailable, match="Tower · m .The prompt is about 9,000"):
-            run_chain([local], call, AiTask.filing)
+        with pytest.raises(PromptTooLong) as raised:
+            call_step(local, call, AiTask.filing)
+        assert not isinstance(raised.value, Unreachable)
 
 
 class TestCutOff:
