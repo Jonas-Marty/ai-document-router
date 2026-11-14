@@ -32,7 +32,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="border-b border-border bg-background">
         <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
           <span className="min-w-0 shrink truncate font-semibold">AI Document Router</span>
-          <nav className="ml-auto flex items-center gap-1">
+          {/* Left of the nav, so the links keep their place whatever the connections are
+              called. */}
+          <div className="ml-auto flex items-center lg:mr-2">
+            <ConnectionStatus />
+          </div>
+          <nav className="flex items-center gap-1">
             {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
               <NavLink
                 key={to}
@@ -59,7 +64,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               </NavLink>
             ))}
           </nav>
-          <ConnectionStatus />
           <ThemeToggle />
           {user && (
             <Tooltip>
