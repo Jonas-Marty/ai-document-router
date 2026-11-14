@@ -35,7 +35,7 @@ from app.services import configurations, documents, knowledge, progress, router,
 from app.services.audit import Actor
 from app.services.connections import ResolvedStep
 from app.services.errors import AppError, NotFoundError
-from app.services.extraction import PDF_MIME, extension_of
+from app.services.extraction import PDF_MIME, PDFIUM_LOCK, extension_of
 from app.services.paths import normalize_path
 from app.services.webdav import WebDavService
 
@@ -475,21 +475,23 @@ def _first_page(data: bytes, is_image: bool) -> Image.Image | None:
                 return copied
         except (UnidentifiedImageError, OSError):
             return None
-    try:
-        pdf = pdfium.PdfDocument(data)
-    except Exception:  # noqa: BLE001 - pdfium raises assorted types on a bad file
-        return None
-    try:
-        if len(pdf) == 0:
+    with PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(data)
+        except Exception:  # noqa: BLE001 - pdfium raises assorted types on a bad file
             return None
-        page_ = pdf[0]
-        # Rendered at the width wanted, not at a dpi: a thumbnail of an A3 scan should not
-        # cost an A3's worth of pixels.
-        scale = THUMBNAIL_WIDTH * 2 / max(page_.get_width(), 1)
-        rendered: Image.Image = page_.render(scale=scale).to_pil()
-        return rendered
-    finally:
-        pdf.close()
+        try:
+            if len(pdf) == 0:
+                return None
+            page_ = pdf[0]
+            # Rendered at the width wanted, not at a dpi: a thumbnail of an A3 scan should not
+            # cost an A3's worth of pixels.
+            scale = THUMBNAIL_WIDTH * 2 / max(page_.get_width(), 1)
+            # to_pil() may share PDFium's bitmap memory; the copy outlives the bitmap.
+            rendered: Image.Image = page_.render(scale=scale).to_pil().copy()
+            return rendered
+        finally:
+            pdf.close()
 
 
 # --- bulk actions ------------------------------------------------------------------------

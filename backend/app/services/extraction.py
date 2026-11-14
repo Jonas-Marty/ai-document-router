@@ -9,6 +9,7 @@ import hashlib
 import io
 import logging
 import mimetypes
+import threading
 from dataclasses import dataclass
 
 import pypdfium2 as pdfium
@@ -32,6 +33,11 @@ PDF_MIME = "application/pdf"
 # Whether anything is going to be done about it is the poller's business, and it
 # substitutes the OCR failure's own reason when there is one.
 NO_TEXT_LAYER_MESSAGE = "No text layer found in this document."
+
+# PDFium is not thread-safe: two threads inside it at once corrupt its heap and kill the
+# process. Thumbnails render on FastAPI's thread pool while the poller renders pages, so
+# every use of it -- opening, rendering, closing -- holds this one lock.
+PDFIUM_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -96,22 +102,29 @@ def render_pages(
     document is rasterised once and read twice, and the two are compared on identical input
     rather than on whatever each library happened to decode.
     """
-    try:
-        pdf = pdfium.PdfDocument(data)
-    except Exception as exc:  # noqa: BLE001 - pdfium raises assorted types on a bad file
-        raise RenderUnavailable(f"This PDF couldn't be rendered: {exc}") from exc
+    with PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(data)
+        except Exception as exc:  # noqa: BLE001 - pdfium raises assorted types on a bad file
+            raise RenderUnavailable(f"This PDF couldn't be rendered: {exc}") from exc
 
-    try:
-        pages = []
-        for index in range(min(len(pdf), max_pages)):
-            page = pdf[index]
-            image = page.render(scale=dpi / 72).to_pil()
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            pages.append(buffer.getvalue())
-        return pages
-    finally:
-        pdf.close()
+        try:
+            images = [
+                # to_pil() may share PDFium's bitmap memory, which is freed with the
+                # bitmap; a copy is the image's own.
+                pdf[index].render(scale=dpi / 72).to_pil().copy()
+                for index in range(min(len(pdf), max_pages))
+            ]
+        finally:
+            pdf.close()
+
+    # PNG encoding is PIL's work, not PDFium's, so it runs outside the lock.
+    pages = []
+    for image in images:
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        pages.append(buffer.getvalue())
+    return pages
 
 
 def extract(

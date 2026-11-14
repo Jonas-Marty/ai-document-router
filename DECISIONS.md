@@ -1216,3 +1216,13 @@ meaningful. One line of "why" each; not a full ADR log.
   button reads "Try again" while the analysis has failed.
 - Compare methods stays in the Produced by block until the Lab replaces it in milestone 7.
   "Add to a Lab test set" waits for milestone 7 too: test sets do not exist yet.
+
+## PDFium behind one lock
+
+- Production crashed with `malloc(): unaligned tcache chunk detected` right after an Inbox
+  load: thumbnails render on FastAPI's thread pool, several at once, and PDFium is not
+  thread-safe. Every use of it now holds `extraction.PDFIUM_LOCK`, the poller's page
+  renders included. Thumbnails are cached after the first render, so the lock costs little
+  after that; PNG and JPEG encoding stay outside it.
+- Rendered pages are copied out of PDFium's bitmap before the lock is released, because
+  `to_pil()` may share the bitmap's memory, which is freed with it.
