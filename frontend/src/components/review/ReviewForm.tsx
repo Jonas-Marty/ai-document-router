@@ -12,7 +12,7 @@ import {
   REQUIRED_FIELDS,
   trimStemOnBlur,
 } from "@/lib/naming";
-import { relativeTime } from "@/lib/relativeTime";
+import { absoluteTime, relativeTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { ConfidenceBadge, isLowConfidence } from "./ConfidenceBadge";
 import { ExtractedText } from "./ExtractedText";
@@ -137,8 +137,13 @@ export function ReviewForm({
         ) : (
           <span />
         )}
+        {/* Named, because beside an analysis error a bare "3 months ago" reads as the error's
+            age rather than the scan's. */}
         <span className="shrink-0 text-xs text-muted-foreground">
-          {relativeTime(document.scanned_at)}
+          Scanned{" "}
+          <time dateTime={document.scanned_at} title={absoluteTime(document.scanned_at)}>
+            {relativeTime(document.scanned_at)}
+          </time>
         </span>
       </div>
 

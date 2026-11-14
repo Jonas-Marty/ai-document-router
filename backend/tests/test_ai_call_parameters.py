@@ -203,6 +203,37 @@ class TestCutOff:
         with pytest.raises(ProposalRejected, match="cut off at the output limit"):
             propose(recorder)
 
+    @pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+    def test_a_reply_spent_on_thinking_says_so_and_what_to_change(self, field: str) -> None:
+        """Qwen3 on a hosted vLLM thought through the whole limit and wrote no answer; the
+        bare "cut off" left the person guessing which knob to turn."""
+        body = {
+            "choices": [
+                {"message": {"content": None, field: "Let me think…"}, "finish_reason": "length"}
+            ]
+        }
+        recorder = Recorder(httpx.Response(200, json=body))
+
+        with pytest.raises(ProposalRejected) as raised:
+            propose(recorder)
+
+        assert raised.value.reason == (
+            "The model spent its whole output limit of 2,048 tokens thinking and wrote no "
+            "answer. Raise the step's output limit, or turn its thinking down, in the "
+            "configuration."
+        )
+
+    def test_a_reply_cut_off_mid_answer_names_the_output_limit(self) -> None:
+        recorder = Recorder(httpx.Response(200, json=reply_body('{"reasoning', "length")))
+
+        with pytest.raises(ProposalRejected) as raised:
+            propose(recorder)
+
+        assert raised.value.reason == (
+            "The model's reply was cut off at the output limit of 2,048 tokens. Raise the "
+            "step's output limit in the configuration."
+        )
+
     def test_a_reading_stopped_at_the_limit_is_not_a_reading(self) -> None:
         recorder = Recorder(httpx.Response(200, json=reply_body("# Half a page", "length")))
         with recorder.client() as client, pytest.raises(ReplyCutOff):

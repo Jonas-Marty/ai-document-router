@@ -763,9 +763,7 @@ def _request_json(
 
     _record_usage(usage, body, started)
     if _finish_reason(body) == "length":
-        raise ProposalRejected(
-            f"The model's reply was cut off at the output limit of {max_tokens:,} tokens."
-        )
+        raise ProposalRejected(_cut_off_reason(body, max_tokens))
     return _parse_object(_extract_message_content(body))
 
 
@@ -783,6 +781,40 @@ def _formats_to_try(json_mode: AiJsonMode, cache_key: tuple[str, str]) -> list[s
         return [str(json_mode)]
     start = _known_format.get(cache_key, RESPONSE_FORMATS[0])
     return RESPONSE_FORMATS[RESPONSE_FORMATS.index(start) :]
+
+
+def _cut_off_reason(body: dict[str, object], max_tokens: int) -> str:
+    """Why a reply stopped at the limit, and which setting to change.
+
+    A thinking model can spend the whole limit reasoning and leave the answer empty; servers
+    hand that reasoning back beside the content (vLLM as reasoning_content, Ollama as
+    reasoning). Turning thinking down only helps in that case, so it is only offered then.
+    """
+    message = _first_message(body)
+    content = message.get("content")
+    thought = any(
+        isinstance(message.get(key), str) and str(message.get(key)).strip()
+        for key in ("reasoning_content", "reasoning")
+    )
+    if thought and not (isinstance(content, str) and content.strip()):
+        return (
+            f"The model spent its whole output limit of {max_tokens:,} tokens thinking and "
+            "wrote no answer. Raise the step's output limit, or turn its thinking down, in the "
+            "configuration."
+        )
+    return (
+        f"The model's reply was cut off at the output limit of {max_tokens:,} tokens. Raise "
+        "the step's output limit in the configuration."
+    )
+
+
+def _first_message(body: dict[str, object]) -> dict[str, object]:
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        if isinstance(message, dict):
+            return message
+    return {}
 
 
 def _finish_reason(body: dict[str, object]) -> object:
@@ -848,9 +880,7 @@ def request_completion(
 
     _record_usage(usage, body, started)
     if _finish_reason(body) == "length":
-        raise ReplyCutOff(
-            f"The model's reply was cut off at the output limit of {max_tokens:,} tokens."
-        )
+        raise ReplyCutOff(_cut_off_reason(body, max_tokens))
     return _extract_message_content(body)
 
 

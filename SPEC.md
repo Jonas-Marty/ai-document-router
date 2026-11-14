@@ -1178,7 +1178,9 @@ models that can), `low`/`medium`/`high` as themselves, `default` not at all. A s
 refuses the parameter fails the call with its own reason.
 A reply that stopped at the output limit (`finish_reason: "length"`) is a readable failure,
 never parsed as if it were complete: for filing a rejected proposal, for reading a failed
-analysis.
+analysis. The reason names the step's output limit to raise; when the message has reasoning
+(`reasoning_content` or `reasoning`) but no content, it says the model spent the limit
+thinking and offers turning thinking down as well.
 
 OpenAI-compatible servers cannot be told a context size per request, and Ollama silently cuts
 a prompt that does not fit, from the start, where the instructions sit. So each endpoint
@@ -1519,7 +1521,7 @@ prev/next, zoom out/in, fit width, rotate. Images use the same toolbar minus pag
 filename and size shown above, muted.
 
 *Form:* in this order —
-1. Confidence badge + relative scan time.
+1. Confidence badge (or the analysis error) + "Scanned 3 months ago", absolute time on hover.
 2. Document date (date input; required unless the name is hand-written).
 3. Name fields (7.1a): Sender and Title required, Account, Period and Number optional — each
    its own text input, on two columns from the `sm` breakpoint. Below them the assembled name

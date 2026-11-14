@@ -199,6 +199,10 @@ describe("ReviewForm", () => {
 
     expect(screen.getByText("The AI endpoint timed out.")).toBeInTheDocument();
     expect(screen.queryByText(/confidence/i)).not.toBeInTheDocument();
+    // The time beside the error is the scan's, and says so.
+    const scanned = screen.getByText((_, element) => element?.tagName === "TIME");
+    expect(scanned).toHaveAttribute("dateTime", "2026-05-18T10:00:00Z");
+    expect(scanned.parentElement).toHaveTextContent(/^Scanned /);
     // SPEC 8.8: "full manual approvability" -- fields are present and editable even without
     // a proposal.
     expect(screen.getByLabelText(/file name/i)).toBeEnabled();
