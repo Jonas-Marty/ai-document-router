@@ -219,8 +219,8 @@ class TestCutOff:
 
         assert raised.value.reason == (
             "The model spent its whole output limit of 2,048 tokens thinking and wrote no "
-            "answer. Raise the step's output limit, or turn its thinking down, in the "
-            "configuration."
+            "answer. Raise “Output limit” in the filing step of the configuration "
+            "(Lab → Configurations), or turn its thinking down."
         )
 
     def test_a_reply_cut_off_mid_answer_names_the_output_limit(self) -> None:
@@ -230,13 +230,13 @@ class TestCutOff:
             propose(recorder)
 
         assert raised.value.reason == (
-            "The model's reply was cut off at the output limit of 2,048 tokens. Raise the "
-            "step's output limit in the configuration."
+            "The model's reply was cut off at the output limit of 2,048 tokens. Raise “Output "
+            "limit” in the filing step of the configuration (Lab → Configurations)."
         )
 
     def test_a_reading_stopped_at_the_limit_is_not_a_reading(self) -> None:
         recorder = Recorder(httpx.Response(200, json=reply_body("# Half a page", "length")))
-        with recorder.client() as client, pytest.raises(ReplyCutOff):
+        with recorder.client() as client, pytest.raises(ReplyCutOff, match="in the reading step"):
             ai.request_completion(
                 endpoint_url="http://tower:11434/v1",
                 model_name="qwen2.5vl",

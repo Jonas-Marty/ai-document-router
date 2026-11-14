@@ -1178,7 +1178,9 @@ models that can), `low`/`medium`/`high` as themselves, `default` not at all. A s
 refuses the parameter fails the call with its own reason.
 A reply that stopped at the output limit (`finish_reason: "length"`) is a readable failure,
 never parsed as if it were complete: for filing a rejected proposal, for reading a failed
-analysis. The reason names the step's output limit to raise; when the message has reasoning
+analysis. The reason names the setting to raise and where it lives — "Output limit" in the
+filing (or reading) step of the configuration, Lab → Configurations — since the connection's
+context limit sounds like the same thing; when the message has reasoning
 (`reasoning_content` or `reasoning`) but no content, it says the model spent the limit
 thinking and offers turning thinking down as well.
 

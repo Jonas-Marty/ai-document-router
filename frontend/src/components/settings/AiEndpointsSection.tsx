@@ -413,7 +413,8 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
           <p id={`${contextId}-help`} className="text-sm text-muted-foreground">
             Enter what the server is set to; this app cannot ask it. For Ollama that is
             OLLAMA_CONTEXT_LENGTH, 4096 by default on GPUs under 24 GB. A prompt that won't fit is
-            not sent, rather than cut off silently. Leave blank to send without checking.
+            not sent, rather than cut off silently. Leave blank to send without checking. How long a
+            reply may be is each configuration step's output limit, under Lab → Configurations.
           </p>
         )}
       </div>
