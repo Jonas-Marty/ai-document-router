@@ -187,6 +187,9 @@ def test_an_expired_session_is_rejected_and_cleaned_up(client: TestClient) -> No
         ("post", "/api/v1/ai/models"),
         ("get", "/api/v1/ai/endpoints"),
         ("get", "/api/v1/configurations"),
+        ("get", "/api/v1/lab/test-sets"),
+        ("get", "/api/v1/lab/runs"),
+        ("put", "/api/v1/lab/results/x/verdict"),
     ],
 )
 def test_every_data_route_needs_a_session(

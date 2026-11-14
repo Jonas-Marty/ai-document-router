@@ -44,7 +44,10 @@ describe("AnalysisSection", () => {
   it("points to the Lab for what each analysis sends", () => {
     renderSection();
 
-    expect(screen.getByRole("link", { name: "Lab" })).toHaveAttribute("href", "/lab");
+    expect(screen.getByRole("link", { name: "Lab" })).toHaveAttribute(
+      "href",
+      "/lab/configurations",
+    );
   });
 
   it("saves the batch size as a number and rejects one out of range", async () => {

@@ -7,7 +7,7 @@ owner ticked "remember" on; this module never adds one on its own.
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from sqlmodel import Session, col, select
@@ -317,8 +317,13 @@ def for_prompt(
     app_settings: AppSettings,
     document_text: str,
     max_examples: int,
+    *,
+    exclude_document_ids: Collection[str] = (),
 ) -> PromptKnowledge:
-    """What the filing call is given about the archive for this text (SPEC 6.3c)."""
+    """What the filing call is given about the archive for this text (SPEC 6.3c).
+
+    `exclude_document_ids` keeps documents out of the examples: the Lab tests filed
+    documents, and one shown its own approved answer would score itself."""
     haystack = normalise(document_text)
     user_id = app_settings.user_id
     senders = list_senders(session, user_id)
@@ -349,7 +354,9 @@ def for_prompt(
         sections += ["", "Known accounts in this document — copy the value exactly:"]
         sections += [f"  {sender}: {value}" for sender, value in accounts]
 
-    examples = _examples(session, user_id, haystack, found, accounts, max_examples)
+    examples = _examples(
+        session, user_id, haystack, found, accounts, max_examples, exclude_document_ids
+    )
     if examples:
         sections += ["", "Documents filed before, with the fields and folder the owner approved:"]
         sections += examples
@@ -383,9 +390,11 @@ def _examples(
     found: list[SenderWithAccounts],
     accounts: list[tuple[str, str]],
     limit: int,
+    exclude_document_ids: Collection[str] = (),
 ) -> list[str]:
     if limit <= 0:
         return []
+    excluded = set(exclude_document_ids)
     rows = session.exec(
         select(HistoryEntry, Document, Reading)
         .join(Document, col(Document.id) == HistoryEntry.document_id)
@@ -412,6 +421,7 @@ def _examples(
         )
 
     # Newest first within each group; sorted() keeps that order, related ones go first.
+    rows = [row for row in rows if row[1].id not in excluded]
     chosen = sorted(rows, key=lambda row: not related(row[0]))[:limit]
     return [_describe_example(entry, reading) for entry, _, reading in chosen]
 

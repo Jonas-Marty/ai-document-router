@@ -10,7 +10,6 @@ export interface ProducedByProps {
   isReanalysing: boolean;
   onReanalyse: () => void;
   onReanalyseWith: () => void;
-  onCompare: () => void;
 }
 
 /** SPEC 8.3 item 5: where the proposal came from, and the way to ask for another one. The
@@ -21,7 +20,6 @@ export function ProducedBy({
   isReanalysing,
   onReanalyse,
   onReanalyseWith,
-  onCompare,
 }: ProducedByProps) {
   const proposal = document.proposal;
   const failed = document.proposal_status === "failed";
@@ -89,9 +87,6 @@ export function ProducedBy({
           onClick={onReanalyseWith}
         >
           Re-analyse with…
-        </Button>
-        <Button type="button" variant="link" size="sm" className="px-1" onClick={onCompare}>
-          Compare methods
         </Button>
       </div>
 

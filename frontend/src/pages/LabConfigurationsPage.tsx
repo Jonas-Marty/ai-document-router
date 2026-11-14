@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { describeFiling, describeReading } from "@/components/lab/configurationSchema";
+import { LabHeader } from "@/components/lab/LabTabs";
+import { LastRunsComparison } from "@/components/lab/LastRunsComparison";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +32,7 @@ import type { Configuration } from "@/services/api/types";
 type Confirming = { action: "default" | "delete"; configuration: Configuration } | null;
 
 /** SPEC 8.13: the configurations, one card each. */
-export default function LabPage() {
+export default function LabConfigurationsPage() {
   const navigate = useNavigate();
   const configurations = useConfigurations();
   const endpoints = useAiEndpoints();
@@ -131,17 +133,19 @@ export default function LabPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold">Lab</h1>
-        {!noConnections && (configurations.data?.length ?? 0) > 0 && (
-          <Button asChild size="sm">
-            <Link to="/lab/configurations/new">
-              <Plus aria-hidden="true" />
-              New configuration
-            </Link>
-          </Button>
-        )}
-      </div>
+      <LabHeader
+        action={
+          !noConnections &&
+          (configurations.data?.length ?? 0) > 0 && (
+            <Button asChild size="sm">
+              <Link to="/lab/configurations/new">
+                <Plus aria-hidden="true" />
+                New configuration
+              </Link>
+            </Button>
+          )
+        }
+      />
       <p className="text-sm text-muted-foreground">
         A configuration is one way of reading and filing a document. New documents use the default;
         any document can be re-run with another.
@@ -162,6 +166,12 @@ export default function LabPage() {
                 : "Documents that were re-run with it go back to the default. Proposals already made stay as they are."}
             </DialogDescription>
           </DialogHeader>
+          {confirming?.action === "default" && (
+            <LastRunsComparison
+              candidate={confirming.configuration}
+              current={configurations.data?.find((row) => row.is_default)}
+            />
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setConfirming(null)}>
               Cancel

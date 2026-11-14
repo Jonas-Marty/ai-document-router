@@ -1,6 +1,8 @@
 import { createLogger } from "@/lib/logger";
 import { ApiError, NETWORK_ERROR_CODE } from "./errors";
 import type {
+  AddCasesRequest,
+  AddedCases,
   AiEndpoint,
   AiEndpointWrite,
   AiModelsRequest,
@@ -18,7 +20,6 @@ import type {
   AuthUser,
   BuiltinPrompts,
   BulkTrashResponse,
-  CompareResponse,
   Configuration,
   ConfigurationPreviewCall,
   ConfigurationWrite,
@@ -33,6 +34,10 @@ import type {
   InboxQuery,
   KnownSender,
   KnownSenderWrite,
+  LabField,
+  LabResult,
+  LabRun,
+  LabRunDetail,
   NextcloudConnection,
   NextcloudWrite,
   RegenerateChoice,
@@ -41,6 +46,9 @@ import type {
   RoutedResponse,
   Settings,
   SettingsUpdate,
+  StartRunRequest,
+  TestSet,
+  TestSetDetail,
 } from "./types";
 
 /** Everything the frontend can ask of the backend. Implemented once, by HttpApiClient --
@@ -57,7 +65,6 @@ export interface ApiClient {
   trashDocument(id: string): Promise<RoutedResponse>;
   regenerateDocument(id: string, choice?: RegenerateChoice): Promise<Document>;
   retryFailedProposals(): Promise<RetriedResponse>;
-  compareDocument(id: string): Promise<CompareResponse>;
 
   getInbox(params: InboxQuery): Promise<InboxPage>;
   /** Not a fetch: a URL for an <img>, like getDocumentContentUrl. */
@@ -95,6 +102,19 @@ export interface ApiClient {
   duplicateConfiguration(id: string): Promise<Configuration>;
   makeDefaultConfiguration(id: string): Promise<Configuration>;
   previewConfiguration(id: string): Promise<ConfigurationPreviewCall[]>;
+  listTestSets(): Promise<TestSet[]>;
+  getTestSet(id: string): Promise<TestSetDetail>;
+  createTestSet(name: string): Promise<TestSet>;
+  renameTestSet(id: string, name: string): Promise<TestSet>;
+  deleteTestSet(id: string): Promise<void>;
+  addTestCases(id: string, body: AddCasesRequest): Promise<AddedCases>;
+  deleteTestCase(id: string): Promise<void>;
+  listLabRuns(): Promise<LabRun[]>;
+  getLabRun(id: string): Promise<LabRunDetail>;
+  startLabRun(body: StartRunRequest): Promise<LabRun>;
+  cancelLabRun(id: string): Promise<LabRun>;
+  deleteLabRun(id: string): Promise<void>;
+  setLabVerdict(id: string, field: LabField, score: number | null): Promise<LabResult>;
   getKnowledge(): Promise<ArchiveKnowledge>;
   updateKnowledge(body: ArchiveKnowledge): Promise<ArchiveKnowledge>;
   listKnownSenders(): Promise<KnownSender[]>;
@@ -156,10 +176,6 @@ export class HttpApiClient implements ApiClient {
 
   retryFailedProposals(): Promise<RetriedResponse> {
     return this.request<RetriedResponse>("POST", "/documents/retry-failed");
-  }
-
-  compareDocument(id: string): Promise<CompareResponse> {
-    return this.request<CompareResponse>("POST", `/documents/${encodeURIComponent(id)}/compare`);
   }
 
   getFolderTree(path?: string): Promise<FolderNode[]> {
@@ -297,6 +313,61 @@ export class HttpApiClient implements ApiClient {
       "GET",
       `/configurations/${encodeURIComponent(id)}/preview`,
     );
+  }
+
+  listTestSets(): Promise<TestSet[]> {
+    return this.request<TestSet[]>("GET", "/lab/test-sets");
+  }
+
+  getTestSet(id: string): Promise<TestSetDetail> {
+    return this.request<TestSetDetail>("GET", `/lab/test-sets/${encodeURIComponent(id)}`);
+  }
+
+  createTestSet(name: string): Promise<TestSet> {
+    return this.request<TestSet>("POST", "/lab/test-sets", { name });
+  }
+
+  renameTestSet(id: string, name: string): Promise<TestSet> {
+    return this.request<TestSet>("PUT", `/lab/test-sets/${encodeURIComponent(id)}`, { name });
+  }
+
+  deleteTestSet(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/lab/test-sets/${encodeURIComponent(id)}`);
+  }
+
+  addTestCases(id: string, body: AddCasesRequest): Promise<AddedCases> {
+    return this.request<AddedCases>("POST", `/lab/test-sets/${encodeURIComponent(id)}/cases`, body);
+  }
+
+  deleteTestCase(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/lab/test-cases/${encodeURIComponent(id)}`);
+  }
+
+  listLabRuns(): Promise<LabRun[]> {
+    return this.request<LabRun[]>("GET", "/lab/runs");
+  }
+
+  getLabRun(id: string): Promise<LabRunDetail> {
+    return this.request<LabRunDetail>("GET", `/lab/runs/${encodeURIComponent(id)}`);
+  }
+
+  startLabRun(body: StartRunRequest): Promise<LabRun> {
+    return this.request<LabRun>("POST", "/lab/runs", body);
+  }
+
+  cancelLabRun(id: string): Promise<LabRun> {
+    return this.request<LabRun>("POST", `/lab/runs/${encodeURIComponent(id)}/cancel`);
+  }
+
+  deleteLabRun(id: string): Promise<void> {
+    return this.request<void>("DELETE", `/lab/runs/${encodeURIComponent(id)}`);
+  }
+
+  setLabVerdict(id: string, field: LabField, score: number | null): Promise<LabResult> {
+    return this.request<LabResult>("PUT", `/lab/results/${encodeURIComponent(id)}/verdict`, {
+      field,
+      score,
+    });
   }
 
   getKnowledge(): Promise<ArchiveKnowledge> {

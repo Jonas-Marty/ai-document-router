@@ -72,7 +72,7 @@ class _Job:
     reading: Reading | None = None
 
 
-class _Reachability:
+class Reachability:
     """Which connections answered this tick. Each is probed at most once per batch."""
 
     def __init__(self, probe: Prober) -> None:
@@ -89,7 +89,7 @@ class _Reachability:
         self._known[step.endpoint_id or step.endpoint_url] = False
 
 
-class _ReadingFailed(Exception):
+class ReadingFailed(Exception):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
@@ -139,7 +139,7 @@ def run_batch(
             continue
         jobs.append(_Job(document, configurations.plan(session, configuration)))
 
-    reachability = _Reachability(probe or connections.is_reachable)
+    reachability = Reachability(probe or connections.is_reachable)
     unread = _read_all(session, service, jobs, fresh or {}, reachability)
     ready, failed = _file_all(session, service, app_settings, jobs, reachability)
     return ready, failed + unread
@@ -154,7 +154,7 @@ def _read_all(
     service: WebDavService,
     jobs: Sequence[_Job],
     fresh: dict[str, ExtractedDocument],
-    reachability: _Reachability,
+    reachability: Reachability,
 ) -> int:
     """Every reading the batch still needs, before any filing. Returns how many failed.
 
@@ -209,7 +209,7 @@ def _read_all(
                     job.meter,
                 )
                 continue
-            except _ReadingFailed as exc:
+            except ReadingFailed as exc:
                 _fail(session, document, exc.reason, job.meter)
                 failed += 1
                 continue
@@ -232,46 +232,68 @@ def _read(
             if extracted.text_error is not None:
                 # The OCR failure's own reason when there is one: "This PDF is encrypted, so
                 # it can't be OCR'd" is something the person can act on.
-                raise _ReadingFailed(document.ocr_error or extracted.text_error)
+                raise ReadingFailed(document.ocr_error or extracted.text_error)
             return extracted.text
         data = _document_bytes(service, document)
     except AppError as exc:
-        raise _ReadingFailed(f"Couldn't read the file: {exc.message}") from exc
+        raise ReadingFailed(f"Couldn't read the file: {exc.message}") from exc
 
-    if setup.method == ReadingMethod.tesseract:
-        return _tesseract(data, document)
+    return read_data(data, document.mime_type, setup.method, job.plan, job.meter)
 
-    step = job.plan.reading_step
-    assert step is not None
+
+def read_data(
+    data: bytes,
+    mime_type: str,
+    method: ReadingMethod,
+    plan: Plan,
+    meter: ai.UsageMeter,
+    filename: str = "",
+) -> str:
+    """Read a file's bytes the way the plan says. Shared with the Lab, whose test files are
+    not documents. Raises ReadingFailed, or Unreachable when the reading connection is gone."""
+    if method == ReadingMethod.text_layer:
+        extracted = extraction.extract(data, filename, mime_type)
+        if extracted.text_error is not None:
+            raise ReadingFailed(extracted.text_error)
+        return extracted.text
+    if method == ReadingMethod.tesseract:
+        return _tesseract(data, mime_type)
+
+    step = plan.reading_step
+    if step is None:
+        raise ReadingFailed(
+            f"The configuration '{plan.configuration_name}' has no reading connection — "
+            "choose one in the Lab."
+        )
     try:
         transcription = transcribe.transcribe(
             data,
             step,
-            system_prompt=job.plan.reading_system_prompt,
-            instructions=job.plan.reading_instructions,
-            parameters=job.plan.reading_parameters,
-            meter=job.meter,
+            system_prompt=plan.reading_system_prompt,
+            instructions=plan.reading_instructions,
+            parameters=plan.reading_parameters,
+            meter=meter,
         )
     except Unreachable:
         raise
     except AppError as exc:
-        raise _ReadingFailed(f"Reading with {step.label} failed: {exc.message}") from exc
+        raise ReadingFailed(f"Reading with {step.label} failed: {exc.message}") from exc
     except extraction.RenderUnavailable as exc:
-        raise _ReadingFailed(str(exc)) from exc
+        raise ReadingFailed(str(exc)) from exc
     if not transcription.markdown:
-        raise _ReadingFailed(f"Reading with {step.label} returned no text.")
+        raise ReadingFailed(f"Reading with {step.label} returned no text.")
     return transcription.markdown
 
 
-def _tesseract(data: bytes, document: Document) -> str:
-    if document.mime_type != extraction.PDF_MIME:
-        raise _ReadingFailed("Only PDFs can be rendered to pages for Tesseract.")
+def _tesseract(data: bytes, mime_type: str) -> str:
+    if mime_type != extraction.PDF_MIME:
+        raise ReadingFailed("Only PDFs can be rendered to pages for Tesseract.")
     try:
         text = ocr.read_pages(extraction.render_pages(data))
     except (ocr.OcrUnavailable, extraction.RenderUnavailable) as exc:
-        raise _ReadingFailed(str(exc)) from exc
+        raise ReadingFailed(str(exc)) from exc
     if not text.strip():
-        raise _ReadingFailed("Tesseract read no text off these pages.")
+        raise ReadingFailed("Tesseract read no text off these pages.")
     return text
 
 
@@ -315,7 +337,7 @@ def _file_all(
     service: WebDavService,
     app_settings: AppSettings,
     jobs: Sequence[_Job],
-    reachability: _Reachability,
+    reachability: Reachability,
 ) -> tuple[int, int]:
     readable = [
         job

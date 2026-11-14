@@ -27,7 +27,7 @@ from app.models import (
     OcrStatus,
     ProposalStatus,
 )
-from app.services import analysis, audit, extraction, metrics, searchable
+from app.services import analysis, audit, extraction, lab, metrics, searchable
 from app.services import settings as settings_service
 from app.services.documents import QUEUED_STATUSES
 from app.services.errors import AppError
@@ -166,6 +166,15 @@ def _run_for_user(session: Session, user_id: str) -> tuple[int, int, int, int]:
                 # Its cached extraction predates the text layer, so it must not be reused.
                 fresh.pop(document_id, None)
             ready, failed = analysis.run_batch(session, service, app_settings, fresh)
+            # After the day's own documents, never instead of them, and on this thread so a
+            # run never uses a connection at the same time (SPEC 6.4a). One interval's worth,
+            # so a long run delays the next scan by at most about that much.
+            lab.work(
+                session,
+                service,
+                app_settings,
+                deadline=time.monotonic() + config.poll_interval_seconds,
+            )
         except Exception:
             session.rollback()
             logger.exception("Poller pass failed for one user; carrying on with the rest.")

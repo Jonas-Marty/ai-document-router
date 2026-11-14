@@ -1226,3 +1226,32 @@ meaningful. One line of "why" each; not a full ADR log.
   after that; PNG and JPEG encoding stay outside it.
 - Rendered pages are copied out of PDFium's bitmap before the lock is released, because
   `to_pil()` may share the bitmap's memory, which is freed with it.
+
+## Redesign milestone 7 — Lab
+
+- Compare methods is gone, from the review screen and the API. The Lab answers the same
+  question on many documents with a known right answer, which one document without one
+  could not. The usage page's comparison count still shows past comparisons.
+- "Add to a Lab test set" is not on the review screen: a document under review has no right
+  answer yet. Done documents are added from the test set page, with the name, date, fields
+  and folder of their latest approval.
+- An archive folder adds only the files directly in it, at most 100, PDFs and images.
+  Their answer is the file name as it stands; its date is read from a leading
+  `YYYY.MM.DD`, and there are no fields, so the whole name is compared.
+- Readings are stored per test case and reading setup (`lab_reading`) and reused by every
+  later run; a Done document's own stored reading is used when the setup matches. Reading
+  the same scan again for each run would cost the most and tell nothing new.
+- The document under test is left out of the filing examples, or a Done document would be
+  shown its own answer.
+- Lab calls are recorded in AI usage as the ordinary reading and filing calls they are.
+- The poller works on the Lab after the Inbox, for at most one poll interval per tick,
+  checked before each result. Kicking the poller again from inside a tick does nothing
+  (one instance at a time), so a long run proceeds tick by tick; the oldest run goes
+  first.
+- A result whose connection is away waits with the reason shown, as a document does; a
+  configuration or test case deleted mid-run fails its results instead.
+- The run page is refetched after every overruled verdict instead of patched: the scoring
+  rules live in the backend only.
+- Configurations moved to `/lab/configurations`; `/lab` is the runs list. The editor's
+  routes did not change. "Re-analyse with…" stays on the review screen: it is how one
+  document gets another configuration, which the Lab does not replace.

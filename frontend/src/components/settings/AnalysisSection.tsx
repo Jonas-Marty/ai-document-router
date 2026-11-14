@@ -64,7 +64,7 @@ export function AnalysisSection({
       >
         <p className="text-sm text-muted-foreground">
           Models, prompts and instructions are set per configuration in the{" "}
-          <Link to="/lab" className="underline underline-offset-4">
+          <Link to="/lab/configurations" className="underline underline-offset-4">
             Lab
           </Link>
           .

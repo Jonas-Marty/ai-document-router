@@ -9,7 +9,6 @@ import { ActionBar } from "@/components/review/ActionBar";
 import type { DesktopDocumentPaneHandle } from "@/components/review/DesktopDocumentPane";
 import { DesktopDocumentPane } from "@/components/review/DesktopDocumentPane";
 import { DocumentViewer } from "@/components/review/DocumentViewer";
-import { MethodComparison } from "@/components/review/MethodComparison";
 import { ProducedBy } from "@/components/review/ProducedBy";
 import { RerunDialog } from "@/components/review/RerunDialog";
 import { ResizableSplit } from "@/components/review/ResizableSplit";
@@ -33,7 +32,6 @@ import { useIsDesktop, useIsWide } from "@/hooks/useBreakpoint";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   useApproveDocument,
-  useCompareDocument,
   useRegenerateDocument,
   useSkipDocument,
   useTrashDocument,
@@ -189,7 +187,6 @@ function DocumentReview({
 }) {
   const isDesktop = useIsDesktop();
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [compareOpen, setCompareOpen] = useState(false);
   const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const viewerRef = useRef<DesktopDocumentPaneHandle>(null);
@@ -229,17 +226,6 @@ function DocumentReview({
   const trashMutation = useTrashDocument();
   const regenerateMutation = useRegenerateDocument();
   const [rerunOpen, setRerunOpen] = useState(false);
-  const compareMutation = useCompareDocument();
-
-  function openComparison() {
-    setCompareOpen(true);
-    // Reopening shows the last run rather than paying for another one; "Run again" inside
-    // the overlay is there for when the configuration changed since.
-    if (!compareMutation.data && !compareMutation.isPending) {
-      compareMutation.mutate(document.id);
-    }
-  }
-
   /** SPEC 8.8: on success the next row becomes current -- picked now, while this row is
    * still in the list to count from. A failure never gets to `moveOn`. */
   function moveOnFrom(id: string) {
@@ -347,7 +333,6 @@ function DocumentReview({
             isReanalysing={regenerateMutation.isPending}
             onReanalyse={() => reanalyse()}
             onReanalyseWith={() => setRerunOpen(true)}
-            onCompare={openComparison}
           />
         }
       />
@@ -396,31 +381,6 @@ function DocumentReview({
         onRun={(choice) => reanalyse(choice.configuration_id)}
       />
       <ShortcutCheatSheet open={cheatSheetOpen} onOpenChange={setCheatSheetOpen} />
-      <MethodComparison
-        open={compareOpen}
-        onOpenChange={setCompareOpen}
-        extension={document.extension}
-        results={compareMutation.data?.results}
-        isPending={compareMutation.isPending}
-        onRerun={() => compareMutation.mutate(document.id)}
-        error={
-          compareMutation.error
-            ? compareMutation.error instanceof ApiError
-              ? compareMutation.error.message
-              : "Couldn't compare the methods."
-            : null
-        }
-        onUse={(result) => {
-          if (!result.proposal) return;
-          // setValue, not reset: this is an offer to start from, and every field stays
-          // editable and validated exactly as if it had been typed.
-          const options = { shouldValidate: true, shouldDirty: true };
-          for (const [key, value] of Object.entries(formValuesFor(result.proposal))) {
-            methods.setValue(key as keyof ReviewFormValues, value, options);
-          }
-          toast.success(`Filled in from ${result.label}`);
-        }}
-      />
     </>
   );
 

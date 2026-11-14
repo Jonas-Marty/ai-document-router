@@ -372,6 +372,121 @@ class Reading(SQLModel, table=True):
     created_at: datetime
 
 
+class LabResultStatus(enum.StrEnum):
+    pending = "pending"
+    done = "done"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class TestCaseSource(enum.StrEnum):
+    done = "done"
+    archive = "archive"
+
+
+class TestSet(SQLModel, table=True):
+    """A named list of filed documents whose right answer is known (SPEC 6.4a)."""
+
+    __tablename__ = "test_set"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_test_set_user_name"),)
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    name: str
+    created_at: datetime
+
+
+class TestCase(SQLModel, table=True):
+    """One file in a test set and its right answer, copied in when added: a later revert or
+    rename of the source must not change what a run is scored against."""
+
+    __tablename__ = "test_case"
+    __table_args__ = (UniqueConstraint("test_set_id", "path", name="uq_test_case_set_path"),)
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    test_set_id: str = Field(foreign_key="test_set.id", index=True)
+    source: TestCaseSource
+    document_id: str | None = None
+    path: str
+    original_filename: str
+    mime_type: str
+    expected_name: str
+    expected_date: date | None = None
+    # None for a whole, hand-written name: then the name is scored as one value.
+    expected_fields: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
+    expected_folder: str
+    created_at: datetime
+
+
+class LabReading(SQLModel, table=True):
+    """What one reading setup read off one test case. Kept apart from `reading`, which
+    belongs to documents: an archive file in a test set has no document."""
+
+    __tablename__ = "lab_reading"
+    __table_args__ = (
+        UniqueConstraint("test_case_id", "setup_key", name="uq_lab_reading_case_setup"),
+    )
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    test_case_id: str = Field(foreign_key="test_case.id", index=True)
+    setup_key: str
+    label: str
+    text: str
+    created_at: datetime
+
+
+class LabRun(SQLModel, table=True):
+    """One test set run against configurations. Names are copies: a run outlives renames and
+    deletions of what it ran."""
+
+    __tablename__ = "lab_run"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    test_set_id: str
+    test_set_name: str
+    configurations: list[dict[str, str]] = Field(sa_column=Column(JSON))
+    cancelled: bool = False
+    created_at: datetime
+    finished_at: datetime | None = None
+
+
+class LabResult(SQLModel, table=True):
+    """One test case filed by one configuration in one run, with its scores."""
+
+    __tablename__ = "lab_result"
+
+    id: str = Field(default_factory=_uuid, primary_key=True)
+    user_id: str = Field(foreign_key="user.id", index=True)
+    run_id: str = Field(foreign_key="lab_run.id", index=True)
+    test_case_id: str
+    position: int
+    configuration_id: str
+    configuration_name: str
+    original_filename: str
+    expected_name: str
+    expected_date: date | None = None
+    expected_fields: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
+    expected_folder: str
+    status: LabResultStatus = LabResultStatus.pending
+    waiting_reason: str | None = None
+    error: str | None = None
+    predicted_name: str | None = None
+    predicted_date: date | None = None
+    predicted_fields: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
+    predicted_folder: str | None = None
+    reading_label: str | None = None
+    duration_ms: int | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost: float | None = None
+    verdicts: dict[str, float] = Field(default_factory=dict, sa_column=Column(JSON))
+    overrides: dict[str, float] = Field(default_factory=dict, sa_column=Column(JSON))
+    finished_at: datetime | None = None
+
+
 class AuditEvent(SQLModel, table=True):
     """One thing that happened, who did it, and what it cost (SPEC 6.7).
 

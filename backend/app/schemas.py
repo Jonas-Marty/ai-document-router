@@ -44,8 +44,7 @@ class AIProposalRead(BaseModel):
     configuration_name: str | None = None
     reading_label: str | None = None
     # SPEC 8.3.5a: what was actually sent for this proposal, so the review screen can show it.
-    # prompt_text is None for proposals stored before this field existed, and for the
-    # /compare endpoint's in-memory results, which are never persisted. system_prompt falls
+    # prompt_text is None for proposals stored before this field existed. system_prompt falls
     # back to the built-in one, which every proposal from before configurations was sent.
     prompt_text: str | None = None
     system_prompt: str = SYSTEM_PROMPT
@@ -244,23 +243,6 @@ class EndpointStatusRead(BaseModel):
     id: str
     name: str
     reachable: bool
-
-
-class MethodResultRead(BaseModel):
-    """One way of reading a document, and what it proposed."""
-
-    method: str  # "text_layer" | "ocr" | "markdown"
-    model_name: str
-    label: str
-    text_preview: str
-    proposal: AIProposalRead | None
-    error: str | None
-    duration_ms: int
-    usage: UsageSummaryRead | None = None
-
-
-class CompareResponse(BaseModel):
-    results: list[MethodResultRead]
 
 
 class DocumentResponse(BaseModel):
@@ -622,3 +604,132 @@ class FolderContext(BaseModel):
     siblings: list[SiblingFile]
     total_file_count: int
     filename_collision: bool
+
+
+# --- Lab (SPEC 6.4a) ---------------------------------------------------------------------
+
+
+class LabFieldsRead(BaseModel):
+    """Name fields as approved or proposed; any may be empty."""
+
+    sender: str | None = None
+    account: str | None = None
+    title: str | None = None
+    period: str | None = None
+    number: str | None = None
+
+
+class TestSetWrite(BaseModel):
+    name: str
+
+
+class TestSetRead(BaseModel):
+    id: str
+    name: str
+    case_count: int
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return from_storage(value).isoformat()
+
+
+class TestCaseRead(BaseModel):
+    id: str
+    source: str
+    path: str
+    original_filename: str
+    expected_name: str
+    expected_date: date | None
+    expected_fields: LabFieldsRead | None
+    expected_folder: str
+
+
+class TestSetDetailRead(TestSetRead):
+    cases: list[TestCaseRead]
+
+
+class AddCasesRequest(BaseModel):
+    """Exactly one of the two: Done documents, or an archive folder."""
+
+    document_ids: list[str] | None = Field(default=None, max_length=500)
+    folder_path: str | None = None
+
+
+class AddedCasesResponse(BaseModel):
+    added: int
+    skipped: int
+
+
+class StartRunRequest(BaseModel):
+    test_set_id: str
+    configuration_ids: list[str] = Field(max_length=20)
+
+
+class LabConfigurationSummaryRead(BaseModel):
+    configuration_id: str
+    configuration_name: str
+    documents: int
+    finished: int
+    failed: int
+    accuracy: dict[str, float]
+    fully_correct: float
+    average_ms: float | None
+    prompt_tokens: int
+    completion_tokens: int
+    cost: float | None
+
+
+class LabRunRead(BaseModel):
+    id: str
+    test_set_id: str
+    test_set_name: str
+    status: str
+    total: int
+    finished: int
+    waiting_reason: str | None
+    stage: str | None
+    remaining_seconds: float | None
+    created_at: datetime
+    finished_at: datetime | None
+    summaries: list[LabConfigurationSummaryRead]
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        return from_storage(value).isoformat()
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return from_storage(value).isoformat() if value else None
+
+
+class LabResultRead(BaseModel):
+    id: str
+    test_case_id: str
+    position: int
+    configuration_id: str
+    configuration_name: str
+    original_filename: str
+    expected_name: str
+    expected_date: date | None
+    expected_folder: str
+    expected_fields: LabFieldsRead | None
+    status: str
+    error: str | None
+    predicted_name: str | None
+    predicted_date: date | None
+    predicted_fields: LabFieldsRead | None
+    predicted_folder: str | None
+    reading_label: str | None
+    duration_ms: int | None
+    verdicts: dict[str, float]
+    overrides: dict[str, float]
+
+
+class LabRunDetailRead(LabRunRead):
+    results: list[LabResultRead]
+
+
+class VerdictRequest(BaseModel):
+    field: str
+    score: float | None

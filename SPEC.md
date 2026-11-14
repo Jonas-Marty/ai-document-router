@@ -272,6 +272,79 @@ step (6.3a). Any number per user; exactly one is the default once any exists.
 | `text` | str |
 | `created_at` | datetime |
 
+**`test_set`** — a named list of filed documents with a known correct answer (6.4a).
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
+| `name` | str ≤ 80, unique per user |
+| `created_at` | datetime |
+
+**`test_case`** — one file in a test set and its correct answer, copied in when it is added,
+so a later revert or rename of the source does not change what a run is scored against.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
+| `test_set_id` | FK test_set.id; unique together with `path` |
+| `source` | `done` \| `archive` |
+| `document_id` | str \| null — the Done document it came from |
+| `path` | str — where the file is now, within `allowed_root_folders` |
+| `original_filename` | str — the scanned name for a Done document, the file name otherwise |
+| `mime_type` | str |
+| `expected_name` | str — the correct stem, no extension |
+| `expected_date` | date \| null — from the name's `YYYY.MM.DD` prefix |
+| `expected_fields` | JSON \| null — the approved name fields; null for a hand-written or archive name |
+| `expected_folder` | str |
+| `created_at` | datetime |
+
+**`lab_reading`** — what one reading setup read off one test case, reused by later runs.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
+| `test_case_id` | FK test_case.id; unique together with `setup_key` |
+| `setup_key` / `label` / `text` / `created_at` | as `reading` |
+
+**`lab_run`** — one test set run against one or more configurations.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
+| `test_set_id` | str — not a foreign key: a run outlives its test set |
+| `test_set_name` | str — as it was |
+| `configurations` | JSON — `[{ id, name }]` as they were, in the order asked |
+| `cancelled` | bool |
+| `created_at` | datetime |
+| `finished_at` | datetime \| null — set when no result is pending |
+
+**`lab_result`** — one test case filed by one configuration in one run.
+
+| column | type |
+|---|---|
+| `id` | str (uuid4) PK |
+| `user_id` | FK user.id |
+| `run_id` | FK lab_run.id |
+| `test_case_id` | str |
+| `position` | int — the case's place in the set when the run started |
+| `configuration_id` / `configuration_name` | str — as they were |
+| `original_filename`, `expected_name`, `expected_date`, `expected_fields`, `expected_folder` | copied from the case |
+| `status` | `pending` \| `done` \| `failed` \| `cancelled` |
+| `waiting_reason` / `error` | str \| null |
+| `predicted_name` | str \| null — the assembled stem |
+| `predicted_date` / `predicted_fields` / `predicted_folder` | the proposal's |
+| `reading_label` | str \| null |
+| `duration_ms` | int \| null — reading and filing, as measured |
+| `prompt_tokens` / `completion_tokens` | int |
+| `cost` | float \| null — null when a call was unpriced |
+| `verdicts` | JSON — `{ field: 0 \| 0.5 \| 1 }` as scored (6.4a) |
+| `overrides` | JSON — `{ field: 0 \| 0.5 \| 1 }` set by the owner; wins over `verdicts` |
+| `finished_at` | datetime \| null |
+
 **`user`** — password and OIDC are two ways into the same row.
 
 | column | type |
@@ -673,6 +746,95 @@ export interface AiModelsRequest {
 export interface AiModelsResponse {
   models: string[];             // model ids, sorted
 }
+
+// Name fields as approved or proposed in the Lab; a model may leave any of them out.
+export interface LabNameFields {
+  sender: string | null;
+  account: string | null;
+  title: string | null;
+  period: string | null;
+  number: string | null;
+}
+
+export interface TestSet {
+  id: string;
+  name: string;
+  case_count: number;
+  created_at: string;
+}
+
+export interface TestCase {
+  id: string;
+  source: "done" | "archive";
+  path: string;
+  original_filename: string;
+  expected_name: string;
+  expected_date: string | null;
+  expected_fields: LabNameFields | null;
+  expected_folder: string;
+}
+
+export interface TestSetDetail extends TestSet {
+  cases: TestCase[];
+}
+
+export type LabField = "date" | "sender" | "account" | "title" | "period" | "number" | "name" | "folder";
+
+export interface LabConfigurationSummary {
+  configuration_id: string;
+  configuration_name: string;
+  documents: number;            // results in the run for this configuration
+  finished: number;             // done or failed
+  failed: number;
+  accuracy: Partial<Record<LabField, number>>; // 0–1 per scored field, failures count as 0
+  fully_correct: number;        // 0–1 share of finished documents with every field right
+  average_ms: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost: number | null;          // null when nothing was priced
+}
+
+export interface LabRun {
+  id: string;
+  test_set_id: string;
+  test_set_name: string;
+  status: "running" | "done" | "cancelled";
+  total: number;
+  finished: number;
+  waiting_reason: string | null; // why pending results are not moving
+  stage: string | null;          // what the result being worked on is doing
+  remaining_seconds: number | null; // average so far × pending; null before the first result
+  created_at: string;
+  finished_at: string | null;
+  summaries: LabConfigurationSummary[];
+}
+
+export interface LabResult {
+  id: string;
+  test_case_id: string;
+  position: number;
+  configuration_id: string;
+  configuration_name: string;
+  original_filename: string;
+  expected_name: string;
+  expected_date: string | null;
+  expected_folder: string;
+  expected_fields: LabNameFields | null;
+  status: "pending" | "done" | "failed" | "cancelled";
+  error: string | null;
+  predicted_name: string | null;
+  predicted_date: string | null;
+  predicted_fields: LabNameFields | null;
+  predicted_folder: string | null;
+  reading_label: string | null;
+  duration_ms: number | null;
+  verdicts: Partial<Record<LabField, number>>;
+  overrides: Partial<Record<LabField, number>>;
+}
+
+export interface LabRunDetail extends LabRun {
+  results: LabResult[];
+}
 ```
 
 ---
@@ -693,7 +855,6 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/documents/{id}/approve` | `{ final_folder_path, document_date, name_fields, remember_sender?, remember_account? }` or `{ final_folder_path, document_date, final_name }` — exactly one of the two; with fields the backend assembles the name and `document_date` is required; the remember flags (default false) apply only with fields (6.4) | `{ document, history_entry }` |
 | POST | `/documents/{id}/skip` | — | `{ document }` |
 | POST | `/documents/{id}/trash` | — | `{ document, history_entry }` |
-| POST | `/documents/{id}/compare` | — | `{ results: MethodResult[] }` — reads the document three ways and files each with its configuration's filing step; stores nothing |
 | POST | `/documents/retry-failed` | — | `{ retried: number }` — every failed proposal of an open document goes back to `pending` |
 | POST | `/documents/{id}/regenerate` | `{ configuration_id? }` | `{ document }` — re-runs the analysis; with `configuration_id`, with that configuration from now on (the default's id clears the pick) |
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
@@ -721,6 +882,19 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/configurations/{id}/default` | — | `AiConfiguration` — makes it the default |
 | GET | `/configurations/{id}/preview` | — | `ConfigurationPreview[]` — what each call is sent; walks WebDAV for the folder tree |
 | GET | `/configurations/prompts` | — | `BuiltinPrompts` |
+| GET | `/lab/test-sets` | — | `TestSet[]`, by name |
+| POST | `/lab/test-sets` | `{ name }` | `TestSet`, 201 |
+| PUT | `/lab/test-sets/{id}` | `{ name }` | `TestSet` |
+| DELETE | `/lab/test-sets/{id}` | — | 204 — its cases go with it; runs stay |
+| GET | `/lab/test-sets/{id}` | — | `TestSetDetail` |
+| POST | `/lab/test-sets/{id}/cases` | `{ document_ids }` or `{ folder_path }` | `{ added, skipped }` — Done documents, or the files directly in an archive folder (6.4a) |
+| DELETE | `/lab/test-cases/{id}` | — | 204 |
+| GET | `/lab/runs` | — | `LabRun[]`, newest first |
+| POST | `/lab/runs` | `{ test_set_id, configuration_ids }` | `LabRun`, 201 |
+| GET | `/lab/runs/{id}` | — | `LabRunDetail` |
+| POST | `/lab/runs/{id}/cancel` | — | `LabRun` — pending results become cancelled |
+| DELETE | `/lab/runs/{id}` | — | 204 |
+| PUT | `/lab/results/{id}/verdict` | `{ field, score }` — `score` 0, 0.5 (folder only), 1, or null to drop the override | `LabResult` |
 | GET | `/knowledge` | — | `ArchiveKnowledge` |
 | PUT | `/knowledge` | `ArchiveKnowledge` | `ArchiveKnowledge` |
 | GET | `/knowledge/senders` | — | `KnownSender[]`, by short name, each with its accounts |
@@ -1080,27 +1254,46 @@ times the documents. Cost uses the model's price; unknown when either is missing
 
 **Connection status.** Every connection probed (6.3a) in parallel, result kept a minute.
 
-### 6.4a Method comparison (`services/compare.py`)
+### 6.4a Lab: test sets and runs (`services/lab.py`)
 
-Reading a document is not one thing, and there is no way to know from the outside which way
-works best on a given corpus. `POST /documents/{id}/compare` runs every configured method
-against one document and reports what each proposed, so a person can judge:
+The Lab measures configurations against documents whose right answer is known, so changing a
+model, a prompt or a parameter is judged on numbers rather than on one document.
 
-- **Text layer** — `pypdf`, flat.
-- **Tesseract OCR** — pages rendered by `pypdfium2`, read by the `tesseract` CLI (`deu+eng`).
-  Not ocrmypdf: this wants characters, not a rewritten PDF.
-- **Vision reading** — the document's configuration's vision model transcribes the pages
-  (6.3a), when that configuration reads with one; otherwise skipped with the reason.
+**Test cases.** A Done document (status `moved`) contributes its file where it was filed and
+its approved name: the fields when it was approved from fields, otherwise the whole name; and
+the folder. An archive folder contributes every PDF and image directly in it, up to 100, each
+with its current name and folder as the answer, scored as a whole name. The folder must lie
+within `allowed_root_folders` (6.1), and every file is read through the WebDAV service only:
+the Lab never writes. A path already in the set is skipped. At most 200 cases per set.
 
-All three file through the **same** filing step, the document's configuration's (or the
-default's), so what is being compared is the *reading*, with the model that chooses the
-filename held constant.
+**Runs.** Starting a run (at most 6 configurations, a set with at least one case) creates one
+`pending` result per case and configuration, copying the case's answer. The poller works
+through them after the tick's own analyses, so a run never delays the daily documents and
+never uses a connection at the same time as them: each tick works through the oldest
+unfinished run's pending results, one configuration after another, for up to one poll
+interval (checked before each result), then lets the next tick scan the watch folder. A result whose connection is unreachable
+stays pending with a waiting reason, like a document (6.3a). Cancelling turns the pending
+results into `cancelled`.
 
-Synchronous and on demand — one model call per method. Nothing is stored: the document's
-own proposal is untouched, and choosing a result only fills the review form. A method that
-cannot run is a result carrying its reason, never an omission. Each result carries its own
-`usage` (the markdown method's includes the transcription), so a reading is judged on cost as
-well as quality.
+Each result is read and filed exactly as 6.3a and 6.3c describe, with two differences: the
+reading is stored per test case and reading setup (`lab_reading`), reusing the Done
+document's own reading when one with the same setup exists; and the document being tested,
+and any Done document at the same path, is never given as one of its own examples. Its usage
+is recorded like any analysis's.
+
+**Scoring.** Values are compared after trimming, case folding, treating ü/ue, ö/oe, ä/ae and
+ß/ss as equal and ignoring everything but letters and digits. Both empty is right; a value
+where the answer is empty, or none where it has one, is wrong.
+
+- With fields in the answer: date, folder, and each field in the owner's name template.
+- With a whole name in the answer: the name, compared whole, and the folder.
+- The folder scores 1 when equal, 0.5 when it differs only in year segments or has the same
+  parent, else 0.
+- A failed result scores 0 on every field.
+
+The owner can overrule any verdict; the override wins and can be dropped again. Per
+configuration a run shows each field's average score, the share of finished documents with
+every field fully right, the average time per document, tokens and cost.
 
 ### 6.5 Authentication (`services/auth.py`, `services/oidc.py`)
 
@@ -1288,7 +1481,7 @@ changes app behaviour. There is no auto-approval at any threshold.
 ## 8. Frontend
 
 ### 8.1 Routes
-`/` Inbox (`?tab=analyse|ready|done|trashed`) · `/review/:id?` Review · `/history` redirects to `/?tab=done` · `/lab` Lab (configurations; `/lab/configurations/new`, `/lab/configurations/:id`) · `/knowledge` Archive knowledge · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
+`/` Inbox (`?tab=analyse|ready|done|trashed`) · `/review/:id?` Review · `/history` redirects to `/?tab=done` · `/lab` Lab: runs (`/lab/runs/:id`), `/lab/configurations` (`/new`, `/:id`), `/lab/test-sets` (`/:id`) · `/knowledge` Archive knowledge · `/activity` Activity (`/activity/usage` AI usage) · `/settings` Settings
 
 Every screen sits behind `RequireAuth`, which renders the sign-in screen *in place* rather
 than redirecting, so a bookmarked `/settings` survives signing in. `/login` exists only for
@@ -1339,7 +1532,8 @@ filename and size shown above, muted.
 4. Target folder — breadcrumb display + "Choose folder" button.
 5. **Produced by** — a bordered block: the configuration's name, how the document was read,
    and the connection · model that filed it; then `Re-analyse` (with the document's own
-   configuration) and `Re-analyse with…` (choose one, 8.8). Inside it, items 5a–5c.
+   configuration) and `Re-analyse with…` (choose one, 8.8). Inside it, items 5a–5c. Comparing methods is the Lab's
+   job (6.4a); the review screen has no comparison.
 5a. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
    "Show more".
 5b. **What was sent to the AI** — collapsed by default behind a "Show what was sent to the
@@ -1566,6 +1760,31 @@ unsaved-changes guard, in sections:
 
 Saving returns to the list. Validation per 7.3 shows under each field; the backend's message
 shows above the actions when it refuses.
+
+### 8.13a Lab — runs and test sets
+
+The Lab has three tabs: **Runs** (`/lab`), **Configurations**, **Test sets**.
+
+*Runs* lists runs newest first: test set, configurations, a progress bar with `n / total`,
+the time left, and the waiting reason when nothing moves. `New run` asks for a test set and
+one to six configurations, the default preselected. A run's page (`/lab/runs/:id`) shows the
+same progress with the current stage and `Cancel`, then a table with a row per
+configuration: each scored field's accuracy, fully correct, time per document, tokens and
+cost; best value per column in bold. Phone: one card per configuration. Below it, one block
+per document: the correct name and folder, and per configuration the proposed name, folder,
+and a verdict badge per field — right, partly, wrong, or failed with the error. A badge opens
+a menu to mark it right, partly (folder only) or wrong, or to go back to the automatic
+verdict; an overruled badge is outlined. The run refetches every 3 s while running.
+
+*Test sets* lists the sets with their case count, `New test set` by name. A set's page
+(`/lab/test-sets/:id`) has the name (editable), its cases — original name, correct name and
+folder, where it came from — each removable, `Add from Done` (a searchable list of Done
+documents with checkboxes) and `Add a folder` (the folder picker; adds the files directly in
+it), and `Run this set`.
+
+*Make default* on a configuration confirms with the last finished run containing it next to
+the last one containing the current default, field accuracy and fully correct side by side,
+or says that neither has been run.
 
 ### 8.14 Archive knowledge
 

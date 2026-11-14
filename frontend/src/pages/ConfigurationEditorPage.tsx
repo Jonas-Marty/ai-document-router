@@ -92,11 +92,11 @@ export default function ConfigurationEditorPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
       <Link
-        to="/lab"
+        to="/lab/configurations"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="size-4" aria-hidden="true" />
-        Lab
+        Configurations
       </Link>
       <h1 className="text-lg font-semibold">{id ? "Edit configuration" : "New configuration"}</h1>
       {body}

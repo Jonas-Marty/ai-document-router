@@ -25,7 +25,6 @@ vi.mock("@/services/api/client", () => ({
     approveDocument: vi.fn(),
     skipDocument: vi.fn(),
     trashDocument: vi.fn(),
-    compareDocument: vi.fn(),
     regenerateDocument: vi.fn(),
     listConfigurations: vi.fn(),
   },
@@ -359,63 +358,6 @@ describe("ReviewPage", () => {
 
     await waitFor(() => expect(apiClient.regenerateDocument).toHaveBeenCalledWith("7", undefined));
     expect(location()).toHaveTextContent("/review/7");
-  });
-
-  it("fills the review form from the comparison method that was picked", async () => {
-    renderReview([SWISSCOM]);
-    vi.mocked(apiClient.compareDocument).mockResolvedValue({
-      results: [
-        {
-          method: "markdown",
-          model_name: "qwen2.5vl:7b",
-          label: "Markdown · Local · qwen2.5vl:7b",
-          text_preview: "",
-          proposal: {
-            suggested_name: "2026.04.16 Helvetia Police",
-            fields: null,
-            target_folder_path: "/Documents/Insurance",
-            document_date: "2026-04-16",
-            confidence_score: 0.95,
-            reasoning_text: "Reads the letterhead directly.",
-            model_name: "qwen2.5vl:7b",
-            connection_name: null,
-            configuration_name: null,
-            reading_label: null,
-            prompt_text: null,
-            system_prompt: "You file scanned documents.",
-          },
-          error: null,
-          duration_ms: 3100,
-          usage: null,
-        },
-      ],
-    });
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: /compare methods/i }));
-    await user.click(await screen.findByRole("button", { name: /use this/i }));
-
-    // Filled in, not approved -- and still editable, because "nearly right" is the point
-    // of having a review step at all.
-    await waitFor(() =>
-      expect(screen.getByDisplayValue("2026.04.16 Helvetia Police")).toBeInTheDocument(),
-    );
-    expect(screen.getByDisplayValue("2026-04-16")).toBeInTheDocument();
-  });
-
-  it("shows the last comparison when reopened instead of paying for another run", async () => {
-    renderReview([SWISSCOM]);
-    vi.mocked(apiClient.compareDocument).mockResolvedValue({ results: [] });
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: /compare methods/i }));
-    await waitFor(() => expect(apiClient.compareDocument).toHaveBeenCalledTimes(1));
-    await user.keyboard("{Escape}");
-    await user.click(await screen.findByRole("button", { name: /compare methods/i }));
-    expect(apiClient.compareDocument).toHaveBeenCalledTimes(1);
-
-    await user.click(await screen.findByRole("button", { name: /run again/i }));
-    await waitFor(() => expect(apiClient.compareDocument).toHaveBeenCalledTimes(2));
   });
 
   it("says which step the analysis is on while the proposal is being made", async () => {

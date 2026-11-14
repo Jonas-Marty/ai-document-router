@@ -145,7 +145,7 @@ export function AnalyseWithDialog({
           {configurations.isSuccess && list.length === 0 && (
             <p className="text-sm text-muted-foreground">
               No configurations yet —{" "}
-              <Link to="/lab" className="underline underline-offset-4">
+              <Link to="/lab/configurations" className="underline underline-offset-4">
                 create one in the Lab
               </Link>
               .

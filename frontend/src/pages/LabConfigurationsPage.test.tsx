@@ -4,11 +4,13 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiEndpoint, Configuration } from "@/services/api/types";
-import LabPage from "./LabPage";
+import { labRun, summary } from "@/test/labFixtures";
+import LabConfigurationsPage from "./LabConfigurationsPage";
 
 vi.mock("@/services/api/client", () => ({
   apiClient: {
     listConfigurations: vi.fn(),
+    listLabRuns: vi.fn(),
     listAiEndpoints: vi.fn(),
     duplicateConfiguration: vi.fn(),
     makeDefaultConfiguration: vi.fn(),
@@ -62,15 +64,16 @@ function renderLab() {
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <LabPage />
+        <LabConfigurationsPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-describe("LabPage", () => {
+describe("LabConfigurationsPage", () => {
   beforeEach(() => {
     vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([ENDPOINT]);
+    vi.mocked(apiClient.listLabRuns).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -120,6 +123,50 @@ describe("LabPage", () => {
     await user.click(within(dialog).getByRole("button", { name: "Make default" }));
 
     await waitFor(() => expect(apiClient.makeDefaultConfiguration).toHaveBeenCalledWith("c2"));
+  });
+
+  it("shows the last finished run of both side by side before switching", async () => {
+    vi.mocked(apiClient.listConfigurations).mockResolvedValue([
+      configuration("c1", "Daily", true),
+      configuration("c2", "Careful", false),
+    ]);
+    vi.mocked(apiClient.listLabRuns).mockResolvedValue([
+      // Newest first; a run still going does not count.
+      labRun({ id: "r3", status: "running", summaries: [summary("c2", "Careful")] }),
+      labRun({
+        id: "r2",
+        test_set_name: "Insurance",
+        summaries: [summary("c2", "Careful", { fully_correct: 0.9 })],
+      }),
+      labRun({ id: "r1", summaries: [summary("c1", "Daily", { fully_correct: 0.4 })] }),
+    ]);
+    const user = userEvent.setup();
+    renderLab();
+
+    await user.click(await screen.findByRole("button", { name: "Make default" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const fully = await within(dialog).findByRole("row", { name: /fully correct/i });
+    expect(
+      within(fully)
+        .getAllByRole("cell")
+        .map((cell) => cell.textContent),
+    ).toEqual(["90%", "40%"]);
+    expect(within(dialog).getByText("Insurance")).toBeVisible();
+    expect(within(dialog).getByText("Bank statements")).toBeVisible();
+  });
+
+  it("says when neither configuration has been run", async () => {
+    vi.mocked(apiClient.listConfigurations).mockResolvedValue([
+      configuration("c1", "Daily", true),
+      configuration("c2", "Careful", false),
+    ]);
+    const user = userEvent.setup();
+    renderLab();
+
+    await user.click(await screen.findByRole("button", { name: "Make default" }));
+
+    expect(await screen.findByText(/neither has been run in the lab yet/i)).toBeVisible();
   });
 
   it("surfaces the backend's refusal to delete", async () => {

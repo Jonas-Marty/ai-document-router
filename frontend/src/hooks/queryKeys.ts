@@ -24,6 +24,12 @@ export const queryKeys = {
   // Prefix of every configuration preview, for invalidating them all at once.
   configurationPreviews: ["configurations", "preview"] as const,
   configurationPreview: (id: string) => ["configurations", "preview", id] as const,
+  // Prefix of every Lab query: a run's scores and a set's cases change together.
+  lab: ["lab"] as const,
+  labRuns: ["lab", "runs"] as const,
+  labRun: (id: string) => ["lab", "runs", id] as const,
+  testSets: ["lab", "test-sets"] as const,
+  testSet: (id: string) => ["lab", "test-sets", id] as const,
   knowledge: ["knowledge"] as const,
   knownSenders: ["knowledge", "senders"] as const,
   authConfig: ["auth", "config"] as const,

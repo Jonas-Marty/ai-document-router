@@ -42,7 +42,7 @@ const DOCUMENT: Document = {
 };
 
 function renderBlock(document: Document) {
-  const handlers = { onReanalyse: vi.fn(), onReanalyseWith: vi.fn(), onCompare: vi.fn() };
+  const handlers = { onReanalyse: vi.fn(), onReanalyseWith: vi.fn() };
   render(<ProducedBy document={document} isReanalysing={false} {...handlers} />);
   return { block: screen.getByRole("region", { name: "Produced by" }), ...handlers };
 }

@@ -162,25 +162,6 @@ export interface EndpointStatus {
   reachable: boolean;
 }
 
-export type CompareMethod = "text_layer" | "ocr" | "markdown";
-
-/** One way of reading a document, and what it proposed. `proposal` and `error` are
- * mutually exclusive: a method either produced something or said why it couldn't. */
-export interface MethodResult {
-  method: CompareMethod;
-  model_name: string;
-  label: string;
-  text_preview: string;
-  proposal: AIProposal | null;
-  error: string | null;
-  duration_ms: number;
-  usage: UsageSummary | null;
-}
-
-export interface CompareResponse {
-  results: MethodResult[];
-}
-
 /** Exactly one of `name_fields` (assembled by the backend) or a hand-written `final_name`. */
 export type ApproveRequest = {
   final_folder_path: string;
@@ -496,4 +477,115 @@ export interface ApiErrorBody {
     code: string;
     message: string;
   };
+}
+
+/** Name fields as approved or proposed in the Lab; a model may leave any of them out. */
+export interface LabNameFields {
+  sender: string | null;
+  account: string | null;
+  title: string | null;
+  period: string | null;
+  number: string | null;
+}
+
+export interface TestSet {
+  id: string;
+  name: string;
+  case_count: number;
+  created_at: string;
+}
+
+export interface TestCase {
+  id: string;
+  source: "done" | "archive";
+  path: string;
+  original_filename: string;
+  expected_name: string;
+  expected_date: string | null;
+  expected_fields: LabNameFields | null;
+  expected_folder: string;
+}
+
+export interface TestSetDetail extends TestSet {
+  cases: TestCase[];
+}
+
+export type AddCasesRequest = { document_ids: string[] } | { folder_path: string };
+
+export interface AddedCases {
+  added: number;
+  skipped: number;
+}
+
+export type LabField =
+  | "date"
+  | "sender"
+  | "account"
+  | "title"
+  | "period"
+  | "number"
+  | "name"
+  | "folder";
+
+export type LabScores = Partial<Record<LabField, number>>;
+
+export interface LabConfigurationSummary {
+  configuration_id: string;
+  configuration_name: string;
+  documents: number;
+  finished: number;
+  failed: number;
+  accuracy: LabScores;
+  fully_correct: number;
+  average_ms: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost: number | null;
+}
+
+export interface LabRun {
+  id: string;
+  test_set_id: string;
+  test_set_name: string;
+  status: "running" | "done" | "cancelled";
+  total: number;
+  finished: number;
+  waiting_reason: string | null;
+  stage: string | null;
+  remaining_seconds: number | null;
+  created_at: string;
+  finished_at: string | null;
+  summaries: LabConfigurationSummary[];
+}
+
+export interface LabResult {
+  id: string;
+  test_case_id: string;
+  position: number;
+  configuration_id: string;
+  configuration_name: string;
+  original_filename: string;
+  expected_name: string;
+  expected_date: string | null;
+  expected_folder: string;
+  expected_fields: LabNameFields | null;
+  status: "pending" | "done" | "failed" | "cancelled";
+  error: string | null;
+  predicted_name: string | null;
+  predicted_date: string | null;
+  predicted_fields: LabNameFields | null;
+  predicted_folder: string | null;
+  reading_label: string | null;
+  duration_ms: number | null;
+  verdicts: LabScores;
+  overrides: LabScores;
+}
+
+export interface LabRunDetail extends LabRun {
+  results: LabResult[];
+}
+
+export interface StartRunRequest {
+  test_set_id: string;
+  configuration_ids: string[];
 }
