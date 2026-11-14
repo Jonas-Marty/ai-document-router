@@ -62,6 +62,7 @@ function page(items: InboxCard[], extra: Partial<InboxPageData> = {}): InboxPage
     counts: COUNTS,
     senders: ["WIR Bank"],
     folders: ["/Finance/WIR Bank/2026"],
+    analysing: 0,
     ...extra,
   };
 }
@@ -293,6 +294,39 @@ describe("InboxPage", () => {
     expect(within(grid).getByText("Waiting for Tower")).toBeInTheDocument();
     expect(within(grid).getByText("No text layer found.")).toBeInTheDocument();
     expect(within(grid).getByRole("link", { name: "scan_w.pdf" })).toBeInTheDocument();
+  });
+
+  it("marks the documents being analysed right now and counts them", async () => {
+    vi.mocked(apiClient.getInbox).mockResolvedValue(
+      page(
+        [
+          card("a", {
+            proposal_status: "pending",
+            name: null,
+            analysis_stage: "Reading page 2 of 3",
+          }),
+          card("w", { proposal_status: "pending", name: null }),
+        ],
+        { analysing: 1 },
+      ),
+    );
+    renderPage("/?tab=analyse");
+
+    const grid = await screen.findByRole("list", { name: "To analyse" });
+    expect(screen.getByText("Analysing 1 of 2 now")).toBeVisible();
+    const items = within(grid).getAllByRole("listitem", { name: /scan_/ });
+    expect(within(items[0] as HTMLElement).getByText("Analysing")).toBeVisible();
+    expect(within(items[0] as HTMLElement).getByText("Reading page 2 of 3")).toBeVisible();
+    expect(within(items[1] as HTMLElement).queryByText("Analysing")).not.toBeInTheDocument();
+  });
+
+  it("says when nothing in To analyse is being worked on", async () => {
+    vi.mocked(apiClient.getInbox).mockResolvedValue(
+      page([card("w", { proposal_status: "pending", name: null })]),
+    );
+    renderPage("/?tab=analyse");
+
+    expect(await screen.findByText("Nothing is being analysed right now")).toBeVisible();
   });
 
   it("retries every failed analysis from To analyse, and offers it only when one failed", async () => {

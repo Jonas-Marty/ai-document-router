@@ -96,6 +96,8 @@ export function InboxCardView({
       className={cn(
         "relative flex gap-3 rounded-lg border border-border bg-card p-3 text-card-foreground",
         selected && "border-primary ring-1 ring-primary",
+        // Dashed rather than the accent colour, which belongs to selection.
+        group === "analyse" && card.analysis_stage && "border-dashed border-foreground/50",
       )}
     >
       {onSelectedChange && (
@@ -107,7 +109,14 @@ export function InboxCardView({
           onChange={(event) => onSelectedChange(event.target.checked)}
         />
       )}
-      <Thumbnail id={card.id} />
+      <div className="relative shrink-0">
+        <Thumbnail id={card.id} />
+        {group === "analyse" && card.analysis_stage && (
+          <Badge variant="secondary" className="absolute bottom-1 left-1/2 -translate-x-1/2">
+            Analysing
+          </Badge>
+        )}
+      </div>
       <div className="min-w-0 flex-1 space-y-1">
         {open ? (
           <Link

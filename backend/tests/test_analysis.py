@@ -233,6 +233,7 @@ class TestOneCall:
         session.refresh(document)
         assert document.proposal_status == ProposalStatus.ready
         assert document.waiting_reason is None
+        assert document.analysed_at is not None
         found = stored(session)
         assert found.suggested_name == "2026.08.21 Swisscom Rechnung"
         assert (found.configuration_name, found.reading_label) == ("Daily", "Text layer")
@@ -381,6 +382,8 @@ class TestFailures:
         session.refresh(document)
         assert document.proposal_status == ProposalStatus.failed
         assert "outside your folders" in (document.proposal_error or "")
+        # A failed analysis happened too; the review screen says when.
+        assert document.analysed_at is not None
         assert document.analysis_usage is not None
         assert document.analysis_usage["total_tokens"] == 730
         # Never a half-valid proposal.

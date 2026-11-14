@@ -153,6 +153,9 @@ class Document(SQLModel, table=True):
     # Tokens spent by the most recent analysis (ai.UsageSummary.to_json). On the document
     # rather than the proposal, because a failed analysis spends tokens too and has no proposal.
     analysis_usage: dict[str, object] | None = Field(default=None, sa_column=Column(JSON))
+    # When the latest analysis finished, successfully or not. A failed one has no proposal
+    # to carry a time, so it lives here.
+    analysed_at: datetime | None = None
 
 
 class Proposal(SQLModel, table=True):

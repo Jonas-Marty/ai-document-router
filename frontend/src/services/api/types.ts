@@ -58,6 +58,7 @@ export interface Document {
   // The configuration picked for this document; null means it follows the default.
   configuration_name: string | null;
   reading: DocumentReading | null; // what the latest analysis filed from
+  analysed_at: string | null; // when the latest analysis finished, successfully or not
 }
 
 export interface DocumentReading {
@@ -135,6 +136,7 @@ export interface InboxPage {
   counts: Record<InboxGroup, number>;
   senders: string[];
   folders: string[];
+  analysing: number; // To analyse only: how many are being worked on right now
 }
 
 export interface AnalyseRequest {

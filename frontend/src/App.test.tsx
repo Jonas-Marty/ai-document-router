@@ -69,6 +69,7 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
           counts: { analyse: 0, ready: 0, done: 0, trashed: 0 },
           senders: [],
           folders: [],
+          analysing: 0,
         }),
       );
     }

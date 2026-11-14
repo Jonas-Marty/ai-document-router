@@ -60,6 +60,7 @@ def read_inbox(
         counts=InboxCounts.model_validate(result.counts),
         senders=result.senders,
         folders=result.folders,
+        analysing=result.analysing,
     )
 
 

@@ -468,6 +468,7 @@ export interface Document {
   waiting_reason: string | null;    // why a pending analysis waits (6.3a)
   configuration_name: string | null;// a configuration picked for this document; null = default
   reading: DocumentReading | null;
+  analysed_at: string | null;       // when the latest analysis finished, successfully or not
 }
 
 export interface StageUsage {
@@ -552,6 +553,7 @@ export interface InboxPage {
   counts: Record<InboxGroup, number>; // unfiltered
   senders: string[];            // filter options in this group
   folders: string[];
+  analysing: number;            // To analyse: how many are being worked on right now
 }
 
 export interface AnalysisEstimate {
@@ -1531,7 +1533,8 @@ filename and size shown above, muted.
    approve; nothing is learned without them. Hidden for a hand-written name.
 4. Target folder — breadcrumb display + "Choose folder" button.
 5. **Produced by** — a bordered block: the configuration's name, how the document was read,
-   and the connection · model that filed it; then `Re-analyse` (with the document's own
+   and the connection · model that filed it, and when the latest analysis finished
+   ("Analysed …" or "Failed …", date and time); then `Re-analyse` (with the document's own
    configuration) and `Re-analyse with…` (choose one, 8.8). Inside it, items 5a–5c. Comparing methods is the Lab's
    job (6.4a); the review screen has no comparison.
 5a. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
@@ -1589,6 +1592,9 @@ sort select. A card grid: one column on phones, up to four on wide screens, 48 p
 (proposed, filed, or the original while there is none), folder, the configuration and the
 upload time; flags as small badges with a readable label; "Later" marked; in To analyse the
 stage, waiting reason or error. Clicking a card in To analyse or Ready opens `/review/:id`.
+In To analyse, documents being analysed right now come first whatever the sort, with an
+"Analysing" badge on the thumbnail and a dashed border, and a line above the grid says
+"Analysing n of total now" or "Nothing is being analysed right now" (`InboxPage.analysing`).
 
 **Multi-select** in To analyse and Ready: a checkbox per card and "Select all on page".
 The action bar (sticky at the bottom on phones) offers `Analyse` (To analyse) or

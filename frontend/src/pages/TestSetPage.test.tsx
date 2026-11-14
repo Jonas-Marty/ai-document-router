@@ -71,6 +71,7 @@ function inboxPage(items: InboxCard[]): InboxPage {
     counts: { ready: 0, analyse: 0, done: items.length, trashed: 0 },
     senders: [],
     folders: [],
+    analysing: 0,
   };
 }
 

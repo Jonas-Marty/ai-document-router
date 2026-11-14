@@ -173,6 +173,12 @@ export default function InboxPage() {
         folders={latest?.folders ?? []}
       />
 
+      {group === "analyse" && latest && latest.total > 0 && (
+        <p className="text-sm text-muted-foreground" aria-live="polite">
+          {analyseSummary(latest.analysing, latest.total)}
+        </p>
+      )}
+
       {group === "analyse" && cards.some((card) => card.proposal_status === "failed") && (
         <Button
           type="button"
@@ -468,4 +474,11 @@ function WaitingBanner({
       ))}
     </p>
   );
+}
+
+/** What the To analyse tab is doing, at a glance. Counted against the whole tab, failed
+ * documents included: each of those cards says that it failed. */
+function analyseSummary(analysing: number, total: number): string {
+  if (analysing === 0) return "Nothing is being analysed right now";
+  return `Analysing ${analysing} of ${total} now`;
 }

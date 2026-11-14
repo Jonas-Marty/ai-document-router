@@ -53,6 +53,7 @@ const baseDocument: Document = {
   waiting_reason: null,
   configuration_name: null,
   reading: null,
+  analysed_at: null,
 };
 
 const emptySettings: Settings = {

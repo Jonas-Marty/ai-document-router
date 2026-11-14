@@ -39,6 +39,7 @@ const DOCUMENT: Document = {
   waiting_reason: null,
   configuration_name: null,
   reading: null,
+  analysed_at: null,
 };
 
 function renderBlock(document: Document) {
@@ -97,6 +98,7 @@ describe("ProducedBy", () => {
       proposal_status: "failed",
       proposal: null,
       proposal_error: "The model chose '/Elsewhere', which is outside your folders.",
+      analysed_at: "2026-11-14T12:05:00+00:00",
       analysis_usage: {
         extraction: null,
         filing: {
@@ -112,6 +114,10 @@ describe("ProducedBy", () => {
     });
 
     expect(within(block).getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    // When it failed, to the minute, in the viewer's own time zone.
+    const when = within(block).getByText((_, element) => element?.tagName === "TIME");
+    expect(when).toHaveAttribute("dateTime", "2026-11-14T12:05:00+00:00");
+    expect(when.parentElement).toHaveTextContent(/^Failed .*2026/);
     expect(within(block).getByText("Tokens").closest("summary")).toHaveTextContent(
       "Tokens · filing 1.2K · total 1.2K",
     );

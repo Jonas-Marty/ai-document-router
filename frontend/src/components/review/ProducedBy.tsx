@@ -1,5 +1,6 @@
 import { Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { absoluteTime } from "@/lib/relativeTime";
 import type { Document } from "@/services/api/types";
 import { PromptDetails } from "./PromptDetails";
 import { ReasoningBlock } from "./ReasoningBlock";
@@ -58,6 +59,12 @@ export function ProducedBy({
         ) : (
           <p className="text-sm text-muted-foreground">
             {failed ? "No proposal: the analysis failed." : "No proposal yet."}
+          </p>
+        )}
+        {document.analysed_at && (
+          <p className="text-xs text-muted-foreground">
+            {failed ? "Failed " : "Analysed "}
+            <time dateTime={document.analysed_at}>{absoluteTime(document.analysed_at)}</time>
           </p>
         )}
       </div>

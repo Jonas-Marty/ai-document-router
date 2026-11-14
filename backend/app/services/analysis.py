@@ -567,6 +567,7 @@ def _store(
     )
     usage = meter.summary()
     document.proposal_status = ProposalStatus.ready
+    document.analysed_at = to_storage(utc_now())
     document.proposal_error = None
     document.waiting_reason = None
     document.reading_id = reading.id
@@ -616,6 +617,7 @@ def _fail(
     including the tokens a rejected reply cost, and None when no model was reached at all."""
     usage = meter.summary() if meter else None
     document.proposal_status = ProposalStatus.failed
+    document.analysed_at = to_storage(utc_now())
     document.proposal_error = reason
     document.waiting_reason = None
     if reading is not None:

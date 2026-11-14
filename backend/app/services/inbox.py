@@ -119,6 +119,8 @@ class Page:
     counts: dict[str, int]
     senders: list[str]
     folders: list[str]
+    # To analyse only: how many of the group are being worked on right now.
+    analysing: int = 0
 
 
 def counts(session: Session, user_id: str) -> dict[str, int]:
@@ -195,6 +197,12 @@ def page(
         for card in cards:
             card.flags = checks.flags(card)
     cards = _sorted(cards, sort)
+    analysing = 0
+    if group is Group.analyse:
+        # What is happening now is what someone opening this tab looks for; a stable sort
+        # keeps the chosen order within both halves.
+        cards.sort(key=lambda card: card.analysis_stage is None)
+        analysing = sum(card.analysis_stage is not None for card in cards)
 
     shown = cards[offset : offset + min(limit, MAX_PAGE)]
     if group is Group.ready and webdav is not None:
@@ -205,6 +213,7 @@ def page(
         counts=counts(session, user_id),
         senders=senders,
         folders=folders,
+        analysing=analysing,
     )
 
 

@@ -94,6 +94,8 @@ class DocumentRead(BaseModel):
     configuration_name: str | None = None
     # The reading the latest analysis filed from, so the person can see what filing saw.
     reading: "DocumentReadingRead | None" = None
+    # When the latest analysis finished, successfully or not.
+    analysed_at: datetime | None = None
 
     @field_serializer("scanned_at")
     def _serialize_scanned_at(self, value: datetime) -> str:
@@ -102,6 +104,10 @@ class DocumentRead(BaseModel):
         Without this the frontend would read a UTC instant as local time.
         """
         return from_storage(value).isoformat()
+
+    @field_serializer("analysed_at")
+    def _serialize_analysed_at(self, value: datetime | None) -> str | None:
+        return from_storage(value).isoformat() if value else None
 
     @classmethod
     def from_models(
@@ -132,6 +138,7 @@ class DocumentRead(BaseModel):
             waiting_reason=document.waiting_reason,
             configuration_name=configuration_name,
             reading=reading,
+            analysed_at=document.analysed_at,
             analysis_usage=(
                 UsageSummaryRead.model_validate(document.analysis_usage)
                 if document.analysis_usage
@@ -202,6 +209,7 @@ class InboxPageRead(BaseModel):
     counts: InboxCounts
     senders: list[str]
     folders: list[str]
+    analysing: int
 
 
 class DocumentIdsRequest(BaseModel):

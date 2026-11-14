@@ -31,7 +31,7 @@ from app.models import (
     ReadingMethod,
     User,
 )
-from app.services import ai, configurations, connections, inbox
+from app.services import ai, configurations, connections, inbox, progress
 from app.services.errors import NotFoundError, WebDAVUnreachable
 from app.services.times import utc_now
 from app.services.webdav import WebDavEntry
@@ -218,6 +218,27 @@ class TestGroups:
         assert cards["waiting.pdf"].waiting_reason == "Waiting for Tower"
         assert cards["waiting.pdf"].name is None
         assert cards["failed.pdf"].error == "No text layer"
+
+    def test_documents_being_analysed_come_first_and_are_counted(self, session: Session) -> None:
+        old = document(
+            session,
+            "old.pdf",
+            proposal_status=ProposalStatus.pending,
+            scanned_at=datetime(2026, 1, 1),
+        )
+        document(
+            session,
+            "new.pdf",
+            proposal_status=ProposalStatus.pending,
+            scanned_at=datetime(2026, 3, 1),
+        )
+        with progress.tracking(old.id):
+            progress.report("Reading page 2 of 3")
+            result = inbox.page(session, None, OWNER, group=inbox.Group.analyse)
+
+        assert [card.original_filename for card in result.items] == ["old.pdf", "new.pdf"]
+        assert result.items[0].analysis_stage == "Reading page 2 of 3"
+        assert result.analysing == 1
 
     def test_done_cards_carry_where_the_file_went_and_whether_it_can_go_back(
         self, session: Session

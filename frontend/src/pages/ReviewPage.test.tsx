@@ -94,6 +94,7 @@ function doc(id: string, suggestedName: string, overrides: Partial<Document> = {
     waiting_reason: null,
     configuration_name: null,
     reading: null,
+    analysed_at: null,
     ...overrides,
   };
 }
@@ -145,6 +146,7 @@ function pageOf(list: Document[]): InboxPage {
     counts: { analyse: 0, ready: list.length, done: 0, trashed: 0 },
     senders: [],
     folders: [],
+    analysing: 0,
   };
 }
 
