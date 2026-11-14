@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { ConfigurationSteps } from "@/components/lab/ConfigurationSteps";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,6 +55,7 @@ export function RerunDialog({
     if (open) setConfigurationId(currentId);
   }, [open, currentId]);
 
+  const chosen = list.find((row) => row.id === configurationId);
   const canRun = configurationId !== "" && !isPending;
 
   return (
@@ -81,6 +83,7 @@ export function RerunDialog({
               ))}
             </SelectContent>
           </Select>
+          {chosen && <ConfigurationSteps configuration={chosen} />}
           {configurations.isSuccess && list.length === 0 && (
             <p className="text-sm text-muted-foreground">
               No configurations yet —{" "}

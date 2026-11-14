@@ -1535,7 +1535,7 @@ filename and size shown above, muted.
 5. **Produced by** — a bordered block: the configuration's name, how the document was read,
    and the connection · model that filed it, and when the latest analysis finished
    ("Analysed …" or "Failed …", date and time); then `Re-analyse` (with the document's own
-   configuration) and `Re-analyse with…` (choose one, 8.8). Inside it, items 5a–5c. Comparing methods is the Lab's
+   configuration) and `Re-analyse with…` (choose one, 8.8; the dialog shows the chosen configuration's reading and filing step, as does Analyse with… in the Inbox). Inside it, items 5a–5c. Comparing methods is the Lab's
    job (6.4a); the review screen has no comparison.
 5a. AI reasoning — muted bordered block, `whitespace-pre-wrap`, clamped to 4 lines with
    "Show more".

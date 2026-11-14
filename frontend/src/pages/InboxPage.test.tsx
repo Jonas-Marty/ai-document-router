@@ -259,12 +259,23 @@ describe("InboxPage", () => {
       connections: ["Infomaniak"],
     });
     vi.mocked(apiClient.analyseDocuments).mockResolvedValue({ queued: 2 });
+    vi.mocked(apiClient.listConfigurations).mockResolvedValue([
+      {
+        ...DAILY,
+        reading_method: "vision",
+        reading: { ...DAILY.reading, endpoint_name: "Tower", model_name: "qwen2.5vl:7b" },
+      },
+    ]);
     const user = userEvent.setup();
     renderPage();
     await screen.findByRole("list", { name: "Ready for review" });
 
     await user.click(screen.getByLabelText("Select all on page"));
     await user.click(screen.getByRole("button", { name: "Analyse with…" }));
+    // Both steps of the chosen configuration, not just its name.
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByText("Tower · qwen2.5vl:7b")).toBeVisible();
+    expect(within(dialog).getByText("Infomaniak · big · one call")).toBeVisible();
 
     const estimate = await screen.findByRole("region", { name: "Estimate" });
     await waitFor(() => expect(estimate).toHaveTextContent("2 documents, 1 needs a new reading."));
