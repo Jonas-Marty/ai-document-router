@@ -12,6 +12,7 @@ const USAGE: UsageSummary = {
     total_tokens: 3412,
     calls: 2,
     unreported_calls: 0,
+    cost: null,
   },
   filing: {
     model_label: "Infomaniak · gpt-4o",
@@ -20,8 +21,10 @@ const USAGE: UsageSummary = {
     total_tokens: 1208,
     calls: 1,
     unreported_calls: 0,
+    cost: null,
   },
   total_tokens: 4620,
+  cost: null,
 };
 
 describe("TokenUsage", () => {
@@ -41,6 +44,18 @@ describe("TokenUsage", () => {
     expect(screen.getByText("2,800 prompt + 612 completion = 3,412 · 2 calls")).toBeVisible();
   });
 
+  it("adds what the priced calls cost, overall and per task", async () => {
+    const filing = { ...(USAGE.filing as NonNullable<UsageSummary["filing"]>), cost: 0.0028 };
+    render(<TokenUsage usage={{ ...USAGE, filing, cost: 0.0028 }} />);
+
+    const summary = screen.getByText("Tokens").closest("summary");
+    expect(summary).toHaveTextContent("· total 4.6K · cost 0.0028");
+
+    await userEvent.setup().click(screen.getByText("Tokens"));
+    expect(screen.getByText("1,150 prompt + 58 completion = 1,208 · cost 0.0028")).toBeVisible();
+    expect(screen.getByText("2,800 prompt + 612 completion = 3,412 · 2 calls")).toBeVisible();
+  });
+
   it("shows a task that didn't run as absent, and marks unreported totals as a minimum", () => {
     render(
       <TokenUsage
@@ -48,6 +63,7 @@ describe("TokenUsage", () => {
           extraction: null,
           filing: { ...(USAGE.filing as NonNullable<UsageSummary["filing"]>), unreported_calls: 1 },
           total_tokens: 1208,
+          cost: null,
         }}
       />,
     );

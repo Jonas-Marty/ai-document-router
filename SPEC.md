@@ -478,12 +478,14 @@ export interface StageUsage {
   total_tokens: number;
   calls: number;
   unreported_calls: number;     // calls whose server sent no usage; totals are a minimum
+  cost: number | null;          // sum over the calls whose model had a price; null = none had one
 }
 
 export interface UsageSummary {
   extraction: StageUsage | null; // null = the task made no calls this time
   filing: StageUsage | null;
   total_tokens: number;
+  cost: number | null;          // null when no stage has a cost, and for usage stored earlier
 }
 
 export interface FolderNode {
@@ -1548,7 +1550,8 @@ filename and size shown above, muted.
 5c. **Token usage** — one muted line, `Tokens · extraction 3.4K · filing 1.2K · total 4.6K`,
     from `analysis_usage`, shown for failed analyses too. A `<details>` expands it to prompt +
     completion per task with the endpoint · model; `≥` and a note when a call didn't report
-    usage. Nothing when no model was reached.
+    usage. When a model had a price, ` · cost 0.0028` ends the line (and its task's row),
+    with the same `≥`. Nothing when no model was reached.
 6. **Files already in this folder** — up to 5 siblings, filename (monospace) and date.
    Re-fetches with a 300 ms debounce whenever the target folder changes; it must always show
    the *currently selected* folder, not the AI's original suggestion. This block is the

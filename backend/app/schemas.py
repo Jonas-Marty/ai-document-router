@@ -57,6 +57,8 @@ class StageUsageRead(BaseModel):
     total_tokens: int
     calls: int
     unreported_calls: int
+    # Usage stored before costs were kept has none.
+    cost: float | None = None
 
 
 class UsageSummaryRead(BaseModel):
@@ -65,6 +67,7 @@ class UsageSummaryRead(BaseModel):
     extraction: StageUsageRead | None
     filing: StageUsageRead | None
     total_tokens: int
+    cost: float | None = None
 
     @classmethod
     def from_summary(cls, summary: UsageSummary | None) -> "UsageSummaryRead | None":

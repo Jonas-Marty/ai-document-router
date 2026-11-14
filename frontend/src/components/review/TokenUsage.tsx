@@ -1,4 +1,4 @@
-import { formatTokens } from "@/lib/tokens";
+import { formatCost, formatTokens } from "@/lib/tokens";
 import type { StageUsage, UsageSummary } from "@/services/api/types";
 
 const STAGES = [
@@ -7,7 +7,8 @@ const STAGES = [
 ] as const;
 
 /** SPEC 8.3: what the latest analysis of this document cost, in tokens. One muted line,
- * expandable to the prompt/completion split per task. A `<details>` rather than a tooltip, so
+ * expandable to the prompt/completion split per task. The cost joins in when a model had a
+ * price, a minimum on the same terms as the tokens. A `<details>` rather than a tooltip, so
  * it opens with a tap on a phone. Renders nothing when no model was reached. */
 export function TokenUsage({ usage }: { usage: UsageSummary | null }) {
   if (!usage) return null;
@@ -33,6 +34,13 @@ export function TokenUsage({ usage }: { usage: UsageSummary | null }) {
           {atLeast}
           {formatTokens(usage.total_tokens)}
         </span>
+        {usage.cost !== null && (
+          <span>
+            {" · cost "}
+            {atLeast}
+            {formatCost(usage.cost)}
+          </span>
+        )}
       </summary>
       <div className="mt-1.5 space-y-1.5 rounded-lg border border-border bg-muted/30 p-2">
         <dl className="space-y-1.5">
@@ -62,6 +70,7 @@ function StageRow({ label, stage }: { label: string; stage: StageUsage }) {
         {stage.completion_tokens.toLocaleString("en")} completion ={" "}
         {stage.total_tokens.toLocaleString("en")}
         {stage.calls > 1 && ` · ${stage.calls} calls`}
+        {stage.cost !== null && ` · cost ${formatCost(stage.cost)}`}
       </dd>
     </div>
   );

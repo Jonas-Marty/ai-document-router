@@ -299,6 +299,9 @@ class StageUsage:
     # Calls whose server sent no usage block. Counted rather than ignored, so a total built
     # partly from silence is shown as "at least", not passed off as the whole cost.
     unreported_calls: int
+    # Only the calls that had a price; None when none did. An unpriced call is usually a
+    # local model, so the sum stands as the cost rather than being thrown away as unknown.
+    cost: float | None = None
 
 
 @dataclass(frozen=True)
@@ -310,11 +313,17 @@ class UsageSummary:
     def total_tokens(self) -> int:
         return sum(stage.total_tokens for stage in (self.extraction, self.filing) if stage)
 
+    @property
+    def cost(self) -> float | None:
+        costs = [s.cost for s in (self.extraction, self.filing) if s and s.cost is not None]
+        return sum(costs) if costs else None
+
     def to_json(self) -> dict[str, object]:
         return {
             "extraction": asdict(self.extraction) if self.extraction else None,
             "filing": asdict(self.filing) if self.filing else None,
             "total_tokens": self.total_tokens,
+            "cost": self.cost,
         }
 
     def describe(self) -> str:
@@ -387,6 +396,7 @@ class UsageMeter:
         reported = [call.usage for call in calls if call.usage is not None]
         prompt = sum(usage.prompt_tokens for usage in reported)
         completion = sum(usage.completion_tokens for usage in reported)
+        costs = [call.cost for call in calls if call.cost is not None]
         return StageUsage(
             model_label=calls[-1].label,
             prompt_tokens=prompt,
@@ -394,6 +404,7 @@ class UsageMeter:
             total_tokens=prompt + completion,
             calls=len(calls),
             unreported_calls=len(calls) - len(reported),
+            cost=sum(costs) if costs else None,
         )
 
 

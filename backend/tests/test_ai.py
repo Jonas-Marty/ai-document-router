@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.schemas import UsageSummaryRead
 from app.services import ai
 from app.services.ai import AIUnavailable, ProposalRejected, request_proposal
 
@@ -590,6 +591,41 @@ class TestUsage:
 
         assert ai._extract_usage({"usage": openai}) == ai.TokenUsage(100, 5, 60)
         assert ai._extract_usage({"usage": anthropic}) == ai.TokenUsage(100, 5, 40)
+
+    def test_the_summary_carries_the_cost_of_the_priced_calls(self) -> None:
+        meter = ai.UsageMeter()
+        meter.scope("extraction", "Local · vl").record(ai.TokenUsage(1000, 200), 10)
+        priced = meter.scope("filing", "Hosted · gpt", price_input=2.0, price_output=8.0)
+        priced.record(ai.TokenUsage(500_000, 100_000), 10)
+        priced.record(ai.TokenUsage(500_000, 0), 10)
+
+        summary = meter.summary()
+
+        assert summary is not None and summary.extraction and summary.filing
+        assert summary.extraction.cost is None
+        assert summary.filing.cost == pytest.approx(2.8)
+        assert summary.cost == pytest.approx(2.8)
+        stored = summary.to_json()
+        assert stored["cost"] == pytest.approx(2.8)
+        assert UsageSummaryRead.model_validate(stored).filing.cost == pytest.approx(2.8)  # type: ignore[union-attr]
+
+    def test_usage_stored_before_costs_reads_as_unpriced(self) -> None:
+        stored = {
+            "extraction": None,
+            "filing": {
+                "model_label": "Hosted · gpt",
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "calls": 1,
+                "unreported_calls": 0,
+            },
+            "total_tokens": 2,
+        }
+
+        read = UsageSummaryRead.model_validate(stored)
+
+        assert read.cost is None and read.filing is not None and read.filing.cost is None
 
     def test_the_summary_adds_up_calls_and_counts_the_silent_ones(self) -> None:
         meter = ai.UsageMeter()

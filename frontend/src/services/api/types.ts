@@ -74,6 +74,7 @@ export interface StageUsage {
   total_tokens: number;
   calls: number;
   unreported_calls: number; // calls whose server sent no usage -- the totals are "at least"
+  cost: number | null; // of the calls whose model had a price; null when none had one
 }
 
 /** A task that made no calls this time (unconfigured, or its reading was reused) is null. */
@@ -81,6 +82,7 @@ export interface UsageSummary {
   extraction: StageUsage | null;
   filing: StageUsage | null;
   total_tokens: number;
+  cost: number | null;
 }
 
 export interface RetriedResponse {
