@@ -159,10 +159,13 @@ describe("AiEndpointsSection", () => {
     renderSection();
 
     await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
-    expect(screen.getAllByLabelText("Model")[0]).toHaveValue("gpt-4.1");
+    expect(screen.getAllByLabelText("Model")[0]).toHaveTextContent("gpt-4.1");
 
     await user.click(screen.getByRole("button", { name: "Remove price 2" }));
     await user.click(screen.getByRole("button", { name: "Add a price" }));
+    await user.click(
+      screen.getAllByRole("button", { name: "Enter a model name manually" })[1] as HTMLElement,
+    );
     await user.type(screen.getAllByLabelText("Model")[1] as HTMLElement, "gpt-4.1-mini");
     await user.type(screen.getAllByLabelText("Output")[1] as HTMLElement, "1.6");
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -177,6 +180,30 @@ describe("AiEndpointsSection", () => {
           price_output_per_million: 1.6,
         },
       ],
+    });
+  });
+
+  it("offers the connection's models, fetched when the picker opens", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint()]);
+    vi.mocked(apiClient.listAiModels).mockResolvedValue({ models: ["gemma3", "qwen3:8b"] });
+    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint());
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
+    await user.click(screen.getByRole("button", { name: "Add a price" }));
+    expect(apiClient.listAiModels).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("combobox", { name: "Model" }));
+    await user.click(await screen.findByRole("option", { name: "qwen3:8b" }));
+    await user.type(screen.getByLabelText("Input"), "0.2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
+    expect(apiClient.listAiModels).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint_id: "ep-1" }),
+    );
+    expect(vi.mocked(apiClient.updateAiEndpoint).mock.calls[0]?.[1]).toMatchObject({
+      model_prices: [{ model_name: "qwen3:8b", price_input_per_million: 0.2 }],
     });
   });
 
@@ -197,6 +224,9 @@ describe("AiEndpointsSection", () => {
 
     await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
     await user.click(screen.getByRole("button", { name: "Add a price" }));
+    await user.click(
+      screen.getAllByRole("button", { name: "Enter a model name manually" })[1] as HTMLElement,
+    );
     if (model) await user.type(screen.getAllByLabelText("Model")[1] as HTMLElement, model);
     if (output) await user.type(screen.getAllByLabelText("Output")[1] as HTMLElement, output);
     await user.click(screen.getByRole("button", { name: "Save" }));

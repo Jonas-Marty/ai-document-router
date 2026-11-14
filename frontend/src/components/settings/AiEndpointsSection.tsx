@@ -34,6 +34,7 @@ import {
 import { useListAiModels } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
 import type { AiEndpoint, AiJsonMode, AiModelPrice } from "@/services/api/types";
+import { ModelPicker, optionsWithCurrent } from "./ModelPicker";
 import { type EndpointFormValues, endpointFormSchema, optionalNumber } from "./settingsSchemas";
 
 const JSON_MODE_LABELS: Record<AiJsonMode, string> = {
@@ -251,29 +252,36 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const prices = useFieldArray({ control, name: "model_prices" });
   const isSaving = create.isPending || update.isPending;
 
-  function onTest() {
+  // The form's own address and key, so a connection not saved yet can list its models too.
+  function modelsRequest() {
     const key = getValues("api_key").trim();
-    listModels.mutate(
-      {
-        base_url: getValues("base_url").trim(),
-        ...(key ? { api_key: key } : {}),
-        ...(endpoint ? { endpoint_id: endpoint.id } : {}),
+    return {
+      base_url: getValues("base_url").trim(),
+      ...(key ? { api_key: key } : {}),
+      ...(endpoint ? { endpoint_id: endpoint.id } : {}),
+    };
+  }
+
+  /** Opening a price row's model picker asks the connection for its models, once: the list
+   * is kept until Test asks again. */
+  function loadModels() {
+    if (listModels.data || listModels.isPending || !getValues("base_url").trim()) return;
+    listModels.mutate(modelsRequest());
+  }
+
+  function onTest() {
+    listModels.mutate(modelsRequest(), {
+      onSuccess: ({ models }) => {
+        toast.success(
+          models.length > 0
+            ? `Endpoint reachable — ${models.length} model${models.length === 1 ? "" : "s"} available`
+            : "Endpoint reachable, but it listed no models",
+        );
       },
-      {
-        onSuccess: ({ models }) => {
-          toast.success(
-            models.length > 0
-              ? `Endpoint reachable — ${models.length} model${models.length === 1 ? "" : "s"} available`
-              : "Endpoint reachable, but it listed no models",
-          );
-        },
-        onError: (error) => {
-          toast.error(
-            error instanceof ApiError ? error.message : "Couldn't reach the AI endpoint.",
-          );
-        },
+      onError: (error) => {
+        toast.error(error instanceof ApiError ? error.message : "Couldn't reach the AI endpoint.");
       },
-    );
+    });
   }
 
   function onSubmit(values: EndpointFormValues) {
@@ -315,8 +323,15 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const contextId = `endpoint-context-${endpoint?.id ?? "new"}`;
   const jsonModeId = `endpoint-json-${endpoint?.id ?? "new"}`;
   const pricesId = `endpoint-prices-${endpoint?.id ?? "new"}`;
-  // Offered while typing a model name, once a connection test has listed them.
-  const modelsListId = `${pricesId}-models`;
+  const [manualRows, setManualRows] = useState<Set<string>>(new Set());
+  function toggleManual(rowId: string) {
+    setManualRows((current) => {
+      const next = new Set(current);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  }
 
   return (
     <form
@@ -437,11 +452,6 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
           Per model, in your provider's currency. A model without a price shows tokens only, which
           is right for one that costs nothing per token.
         </p>
-        <datalist id={modelsListId}>
-          {listModels.data?.models.map((model) => (
-            <option key={model} value={model} />
-          ))}
-        </datalist>
         {prices.fields.length > 0 && (
           <ul className="space-y-3">
             {prices.fields.map((field, index) => {
@@ -453,7 +463,8 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
               const rowId = `${pricesId}-${index}`;
               return (
                 <li key={field.id} className="space-y-1">
-                  <div className="flex flex-wrap items-end gap-2">
+                  {/* Top-aligned: the model picker has a link below it the prices do not. */}
+                  <div className="flex flex-wrap items-start gap-2">
                     <div className="min-w-0 flex-1 basis-full space-y-1 sm:basis-40">
                       <Label
                         htmlFor={`${rowId}-model`}
@@ -461,13 +472,29 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
                       >
                         Model
                       </Label>
-                      <Input
-                        id={`${rowId}-model`}
-                        className="font-mono"
-                        list={modelsListId}
-                        autoComplete="off"
-                        aria-invalid={!!rowErrors?.model_name}
-                        {...register(`model_prices.${index}.model_name`)}
+                      <Controller
+                        control={control}
+                        name={`model_prices.${index}.model_name`}
+                        render={({ field: model }) => (
+                          <ModelPicker
+                            id={`${rowId}-model`}
+                            value={model.value}
+                            onChange={model.onChange}
+                            options={optionsWithCurrent(listModels.data?.models, model.value)}
+                            disabled={false}
+                            isPending={listModels.isPending}
+                            errorMessage={
+                              listModels.error
+                                ? listModels.error instanceof ApiError
+                                  ? listModels.error.message
+                                  : "Couldn't reach this connection."
+                                : null
+                            }
+                            onOpen={loadModels}
+                            manualMode={manualRows.has(field.id)}
+                            onToggleManual={() => toggleManual(field.id)}
+                          />
+                        )}
                       />
                     </div>
                     <div className="space-y-1">
@@ -504,6 +531,8 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
                       type="button"
                       variant="ghost"
                       size="icon"
+                      // Level with the inputs, below their labels.
+                      className="mt-5"
                       aria-label={`Remove price ${index + 1}`}
                       onClick={() => prices.remove(index)}
                     >
