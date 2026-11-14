@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { useConfigurations } from "@/hooks/useAiConfig";
 import { useStartLabRun, useTestSets } from "@/hooks/useLab";
+import { SHRINKING_SELECT_TRIGGER } from "@/lib/utils";
 import { ApiError } from "@/services/api/errors";
 
 export const MAX_RUN_CONFIGURATIONS = 6;
@@ -99,11 +100,11 @@ function NewRunForm({ testSetId, onClose }: { testSetId?: string; onClose: () =>
           first.
         </p>
       ) : (
-        <div className="space-y-4">
-          <div className="space-y-1.5">
+        <div className="min-w-0 space-y-4">
+          <div className="min-w-0 space-y-1.5">
             <Label htmlFor="run-test-set">Test set</Label>
             <Select value={setId ?? undefined} onValueChange={setChosenSet}>
-              <SelectTrigger id="run-test-set" className="w-full">
+              <SelectTrigger id="run-test-set" className={SHRINKING_SELECT_TRIGGER}>
                 <SelectValue placeholder="Choose a test set" />
               </SelectTrigger>
               <SelectContent>

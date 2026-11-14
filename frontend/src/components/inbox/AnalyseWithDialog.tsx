@@ -21,6 +21,7 @@ import {
 import { useConfigurations } from "@/hooks/useAiConfig";
 import { useAnalysisEstimate, useEndpointStatuses } from "@/hooks/useInbox";
 import { formatCost, formatTokens } from "@/lib/tokens";
+import { SHRINKING_SELECT_TRIGGER } from "@/lib/utils";
 import { ApiError } from "@/services/api/errors";
 import type { AnalysisEstimate } from "@/services/api/types";
 
@@ -128,10 +129,10 @@ export function AnalyseWithDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-1.5">
+        <div className="min-w-0 space-y-1.5">
           <Label htmlFor="analyse-configuration">Configuration</Label>
           <Select value={configurationId} onValueChange={setConfigurationId}>
-            <SelectTrigger id="analyse-configuration" className="w-full">
+            <SelectTrigger id="analyse-configuration" className={SHRINKING_SELECT_TRIGGER}>
               <SelectValue placeholder="Choose a configuration" />
             </SelectTrigger>
             <SelectContent>

@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useConfigurations } from "@/hooks/useAiConfig";
+import { SHRINKING_SELECT_TRIGGER } from "@/lib/utils";
 import type { RegenerateChoice } from "@/services/api/types";
 
 export interface RerunDialogProps {
@@ -66,10 +67,10 @@ export function RerunDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-1.5">
+        <div className="min-w-0 space-y-1.5">
           <Label htmlFor="rerun-configuration">Configuration</Label>
           <Select value={configurationId} onValueChange={setConfigurationId}>
-            <SelectTrigger id="rerun-configuration" className="w-full">
+            <SelectTrigger id="rerun-configuration" className={SHRINKING_SELECT_TRIGGER}>
               <SelectValue placeholder="Choose a configuration" />
             </SelectTrigger>
             <SelectContent>
