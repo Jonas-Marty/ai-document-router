@@ -256,6 +256,7 @@ describe("InboxPage", () => {
       prompt_tokens: 6000,
       completion_tokens: 600,
       cost: 0.0084,
+      currency: null,
       connections: ["Infomaniak"],
     });
     vi.mocked(apiClient.analyseDocuments).mockResolvedValue({ queued: 2 });

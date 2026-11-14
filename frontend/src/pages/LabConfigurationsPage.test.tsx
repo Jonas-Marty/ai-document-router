@@ -30,6 +30,7 @@ const ENDPOINT: AiEndpoint = {
   context_limit: 16384,
   json_mode: "auto",
   model_prices: [],
+  currency: "USD",
   used_by: ["Daily"],
 };
 

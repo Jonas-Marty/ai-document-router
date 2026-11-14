@@ -13,6 +13,7 @@ const USAGE: UsageSummary = {
     calls: 2,
     unreported_calls: 0,
     cost: null,
+    currency: null,
   },
   filing: {
     model_label: "Infomaniak · gpt-4o",
@@ -22,9 +23,11 @@ const USAGE: UsageSummary = {
     calls: 1,
     unreported_calls: 0,
     cost: null,
+    currency: null,
   },
   total_tokens: 4620,
   cost: null,
+  currency: null,
 };
 
 describe("TokenUsage", () => {
@@ -64,6 +67,7 @@ describe("TokenUsage", () => {
           filing: { ...(USAGE.filing as NonNullable<UsageSummary["filing"]>), unreported_calls: 1 },
           total_tokens: 1208,
           cost: null,
+          currency: null,
         }}
       />,
     );

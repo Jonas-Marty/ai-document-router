@@ -56,6 +56,7 @@ def store(
                     duration_ms=call.duration_ms,
                     timed=1,
                     cost=call.cost,
+                    currency=call.currency,
                 )
             )
 
@@ -80,6 +81,8 @@ class UsageRow:
     timed: int
     # None when no call in the row had a price, which is not the same as costing nothing.
     cost: float | None = None
+    # A row holds one currency: it is part of what rows are grouped by.
+    currency: str | None = None
 
 
 @dataclass
@@ -107,6 +110,7 @@ def report(session: Session, user_id: str, start: date, end: date) -> UsageRepor
         col(AiCall.connection),
         col(AiCall.model),
         col(AiCall.feature),
+        col(AiCall.currency),
     ]
     sums = [
         func.sum(col(column))
@@ -145,16 +149,17 @@ def report(session: Session, user_id: str, start: date, end: date) -> UsageRepor
             model=r[3],
             model_configured=(r[1], r[3]) in configured,
             feature=r[4],
-            requests=int(r[5]),
-            prompt_tokens=int(r[6]),
-            completion_tokens=int(r[7]),
-            cached_tokens=int(r[8]),
-            without_usage=int(r[9]),
-            failed=int(r[10]),
-            fallback=int(r[11]),
-            duration_ms=int(r[12]),
-            timed=int(r[13]),
-            cost=None if r[14] is None else float(r[14]),
+            currency=r[5],
+            requests=int(r[6]),
+            prompt_tokens=int(r[7]),
+            completion_tokens=int(r[8]),
+            cached_tokens=int(r[9]),
+            without_usage=int(r[10]),
+            failed=int(r[11]),
+            fallback=int(r[12]),
+            duration_ms=int(r[13]),
+            timed=int(r[14]),
+            cost=None if r[15] is None else float(r[15]),
         )
         for r in grouped
     ]

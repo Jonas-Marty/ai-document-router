@@ -33,7 +33,13 @@ import {
 } from "@/hooks/useAiConfig";
 import { useListAiModels } from "@/hooks/useSettings";
 import { ApiError } from "@/services/api/errors";
-import type { AiEndpoint, AiJsonMode, AiModelPrice } from "@/services/api/types";
+import {
+  type AiEndpoint,
+  type AiJsonMode,
+  type AiModelPrice,
+  CURRENCIES,
+  type Currency,
+} from "@/services/api/types";
 import { ModelPicker, optionsWithCurrent } from "./ModelPicker";
 import { type EndpointFormValues, endpointFormSchema, optionalNumber } from "./settingsSchemas";
 
@@ -44,11 +50,12 @@ const JSON_MODE_LABELS: Record<AiJsonMode, string> = {
   none: "None",
 };
 
-/** "gpt-4.1: 0.4 in · 1.6 out per 1M". A missing side bills nothing, as the backend counts it. */
-function priceLabel(price: AiModelPrice): string {
+/** "gpt-4.1: CHF 0.4 in · 1.6 out per 1M". A missing side bills nothing, as the backend counts
+ * it. */
+function priceLabel(price: AiModelPrice, currency: Currency): string {
   const input = price.price_input_per_million ?? 0;
   const output = price.price_output_per_million ?? 0;
-  return `${price.model_name}: ${input} in · ${output} out per 1M`;
+  return `${price.model_name}: ${currency} ${input} in · ${output} out per 1M`;
 }
 
 /** SPEC 8.7: the places the app can send a model request, each with a name of its own.
@@ -139,7 +146,7 @@ export function AiEndpointsSection({ onDirtyChange }: { onDirtyChange: (dirty: b
                       )}
                       {endpoint.model_prices.map((price) => (
                         <Badge key={price.model_name} variant="secondary" className="break-all">
-                          {priceLabel(price)}
+                          {priceLabel(price, endpoint.currency)}
                         </Badge>
                       ))}
                       {endpoint.used_by.map((name) => (
@@ -242,6 +249,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       timeout_seconds: String(endpoint?.timeout_seconds ?? 120),
       context_limit: endpoint?.context_limit?.toString() ?? "",
       json_mode: endpoint?.json_mode ?? "auto",
+      currency: endpoint?.currency ?? "USD",
       model_prices: (endpoint?.model_prices ?? []).map((price) => ({
         model_name: price.model_name,
         price_input_per_million: price.price_input_per_million?.toString() ?? "",
@@ -292,6 +300,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       timeout_seconds: Number(values.timeout_seconds),
       context_limit: optionalNumber(values.context_limit),
       json_mode: values.json_mode,
+      currency: values.currency,
       model_prices: values.model_prices.map((price) => ({
         model_name: price.model_name.trim(),
         price_input_per_million: optionalNumber(price.price_input_per_million),
@@ -323,6 +332,7 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
   const contextId = `endpoint-context-${endpoint?.id ?? "new"}`;
   const jsonModeId = `endpoint-json-${endpoint?.id ?? "new"}`;
   const pricesId = `endpoint-prices-${endpoint?.id ?? "new"}`;
+  const currencyId = `endpoint-currency-${endpoint?.id ?? "new"}`;
   const [manualRows, setManualRows] = useState<Set<string>>(new Set());
   function toggleManual(rowId: string) {
     setManualRows((current) => {
@@ -450,9 +460,33 @@ function EndpointForm({ endpoint, onDone }: { endpoint?: AiEndpoint; onDone: () 
       <fieldset className="space-y-2" aria-describedby={`${pricesId}-help`}>
         <legend className="text-sm font-medium">Prices per million tokens</legend>
         <p id={`${pricesId}-help`} className="text-sm text-muted-foreground">
-          Per model, in your provider's currency. A model without a price shows tokens only, which
-          is right for one that costs nothing per token.
+          Per model, in the currency below. A model without a price shows tokens only, which is
+          right for one that costs nothing per token.
         </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Label htmlFor={currencyId}>Currency</Label>
+          <Controller
+            control={control}
+            name="currency"
+            render={({ field }) => (
+              <Select value={field.value} onValueChange={field.onChange}>
+                <SelectTrigger id={currencyId} className="w-28">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CURRENCIES.map((currency) => (
+                    <SelectItem key={currency} value={currency}>
+                      {currency}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          />
+          <span className="text-sm text-muted-foreground">
+            what your provider bills in; costs already recorded keep theirs
+          </span>
+        </div>
         {prices.fields.length > 0 && (
           <ul className="space-y-3">
             {prices.fields.map((field, index) => {

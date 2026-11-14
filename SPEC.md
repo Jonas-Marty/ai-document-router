@@ -227,6 +227,7 @@ ai-document-router/
 | `timeout_seconds` | int, 10–900, default 120 — how long to wait for a reply |
 | `context_limit` | int \| null, 1024–2,000,000 — tokens the server holds per request, prompt and reply together; null = unknown, no check (6.3b) |
 | `json_mode` | `auto` (default) \| `json_schema` \| `json_object` \| `none` — how filing asks for JSON (6.3) |
+| `currency` | `CHF` \| `EUR` \| `USD` \| `GBP`, default `USD` — what `model_prices` are in. Costs recorded earlier keep the currency they were recorded with |
 | `model_prices` | JSON list of `{model_name, price_input_per_million, price_output_per_million}` — what a million prompt / reply tokens cost per model on this connection; a model with no entry has no price. Model names are unique within the list; each entry has at least one price |
 | `created_at` | datetime |
 
@@ -341,6 +342,7 @@ so a later revert or rename of the source does not change what a run is scored a
 | `duration_ms` | int \| null — reading and filing, as measured |
 | `prompt_tokens` / `completion_tokens` | int |
 | `cost` | float \| null — null when a call was unpriced |
+| `currency` | str \| null — the cost's currency; `mixed` when the calls' costs were in two currencies (cost then null) |
 | `verdicts` | JSON — `{ field: 0 \| 0.5 \| 1 }` as scored (6.4a) |
 | `overrides` | JSON — `{ field: 0 \| 0.5 \| 1 }` set by the owner; wins over `verdicts` |
 | `finished_at` | datetime \| null |
@@ -408,6 +410,7 @@ the analysis or comparison that made it; not subject to audit retention.
 | `without_usage` / `failed` / `fallback` | int — of `requests`: no token counts in the reply, no reply, made by a fallback step (always 0 since configurations replaced fallback chains) |
 | `duration_ms` / `timed` | int — summed duration over `timed` calls |
 | `cost` | float \| null — from reported tokens and the model's prices on that connection at the time of the call; null without a price or without token counts |
+| `currency` | str \| null — the connection's currency at the time of the call, set only with a cost; null for costs recorded before currencies |
 
 ### 4.2 Shared TypeScript types
 
@@ -479,6 +482,7 @@ export interface StageUsage {
   calls: number;
   unreported_calls: number;     // calls whose server sent no usage; totals are a minimum
   cost: number | null;          // sum over the calls whose model had a price; null = none had one
+  currency: string | null;      // ISO code; "mixed" when costs in two currencies met (cost null)
 }
 
 export interface UsageSummary {
@@ -486,6 +490,7 @@ export interface UsageSummary {
   filing: StageUsage | null;
   total_tokens: number;
   cost: number | null;          // null when no stage has a cost, and for usage stored earlier
+  currency: string | null;      // ISO code; "mixed" when costs in two currencies met (cost null)
 }
 
 export interface FolderNode {
@@ -564,6 +569,7 @@ export interface AnalysisEstimate {
   prompt_tokens: number | null; // null: no past calls with these models to go by
   completion_tokens: number | null;
   cost: number | null;          // null: a model without a price, or no tokens to go by
+  currency: string | null;      // ISO code; "mixed" when costs in two currencies met (cost null)
   connections: string[];        // names, so the dialog can say what it waits on
 }
 
@@ -612,6 +618,7 @@ export interface AiEndpoint {
   context_limit: number | null; // tokens the server holds per request; null = unknown (6.3b)
   json_mode: AiJsonMode;
   model_prices: AiModelPrice[]; // on a write, replaces the stored list whole
+  currency: "CHF" | "EUR" | "USD" | "GBP";
   used_by: string[];            // names of the configurations that use it
 }
 
@@ -631,6 +638,7 @@ export interface AiEndpointWrite {
   context_limit: number | null;
   json_mode: AiJsonMode;
   model_prices: AiModelPrice[]; // on a write, replaces the stored list whole
+  currency: "CHF" | "EUR" | "USD" | "GBP";
 }
 
 export type ReadingMethod = "text_layer" | "tesseract" | "vision";
@@ -796,6 +804,7 @@ export interface LabConfigurationSummary {
   prompt_tokens: number;
   completion_tokens: number;
   cost: number | null;          // null when nothing was priced
+  currency: string | null;      // ISO code; "mixed" when costs in two currencies met (cost null)
 }
 
 export interface LabRun {
@@ -1081,7 +1090,9 @@ up per task into a `UsageSummary`, stored on `Document.analysis_usage` whether t
 succeeded or failed, and logged in one line with the outcome. A reused extraction costs
 nothing and shows as `extraction: null`. When the model has prices on that connection, each call's cost is
 computed from its reported tokens and stored on `ai_call.cost`; a call without token counts or
-without a price has no cost, never a cost of 0.
+without a price has no cost, never a cost of 0. The connection's currency is stored with the cost
+(`ai_call.currency`). Costs in two currencies are never added up: a sum that would span them
+has no cost and the currency `mixed`; the AI usage page lists one total per currency.
 
 ### 6.3a Configurations and analysis (`services/configurations.py`, `services/analysis.py`)
 
@@ -1554,7 +1565,7 @@ filename and size shown above, muted.
 5c. **Token usage** — one muted line, `Tokens · extraction 3.4K · filing 1.2K · total 4.6K`,
     from `analysis_usage`, shown for failed analyses too. A `<details>` expands it to prompt +
     completion per task with the endpoint · model; `≥` and a note when a call didn't report
-    usage. When a model had a price, ` · cost 0.0028` ends the line (and its task's row),
+    usage. When a model had a price, ` · cost CHF 0.0028` (the bare number for a cost from before currencies) ends the line (and its task's row),
     with the same `≥`. Nothing when no model was reached.
 6. **Files already in this folder** — up to 5 siblings, filename (monospace) and date.
    Re-fetches with a 300 ms debounce whenever the target folder changes; it must always show
@@ -1641,7 +1652,7 @@ currently *typed*, not the one saved, since finding out the URL is wrong is the 
 endpoint's stored key is used when the key field is blank. Below the key and timeout: context
 limit (tokens, optional; helper text says to enter what the server is set to, and that for
 Ollama that is `OLLAMA_CONTEXT_LENGTH`, 4096 by default on GPUs under 24 GB), JSON mode
-(Automatic, JSON schema, JSON object, None), and a list of prices per model: each row a model
+(Automatic, JSON schema, JSON object, None), a currency (CHF, EUR, USD, GBP) for the prices, and a list of prices per model: each row a model
 name (suggested from the models a connection test listed), input and output price per million
 tokens (either may be blank, not both), and a remove button. The list row shows the context
 limit and one badge per priced model. Removing asks
@@ -1738,7 +1749,7 @@ modelled on the same page in cash-flow.
 
 - *Period*: This month (default), Last month, This year, or a date range.
 - *Tiles*: Requests (with analyses · comparisons), Tokens in (with how many were cached),
-  Tokens out, Total (Ø per request that reported tokens, and the period's cost when any call
+  Tokens out, Total (Ø per request that reported tokens, and the period's cost, one figure per currency joined by `+`, when any call
   had one), Failed (no reply), Without counts (replied without a usage block).
 - *Chart*: stacked bars of tokens per day — per month beyond about two months — grouped by
   Connection, Model or Feature (Reading, Filing, Comparisons). The legend toggles a group.

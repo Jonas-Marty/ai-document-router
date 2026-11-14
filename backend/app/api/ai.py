@@ -76,6 +76,7 @@ def _capabilities(payload: AiEndpointWrite) -> connections.Capabilities:
     return connections.Capabilities(
         context_limit=payload.context_limit,
         json_mode=payload.json_mode,
+        currency=payload.currency,
         model_prices=tuple(
             connections.ModelPrice(
                 price.model_name, price.price_input_per_million, price.price_output_per_million
@@ -128,5 +129,6 @@ def _read(session: SessionDep, endpoint: AiEndpoint) -> AiEndpointRead:
             )
             for price in connections.Capabilities.of(endpoint).model_prices
         ],
+        currency=connections.Capabilities.of(endpoint).currency,
         used_by=connections.endpoint_in_use(session, endpoint.id),
     )

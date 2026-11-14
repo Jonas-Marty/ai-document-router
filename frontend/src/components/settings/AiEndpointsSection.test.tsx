@@ -30,6 +30,7 @@ function endpoint(overrides: Partial<AiEndpoint> = {}): AiEndpoint {
     context_limit: null,
     json_mode: "auto",
     model_prices: [],
+    currency: "USD",
     ...overrides,
   };
 }
@@ -90,6 +91,7 @@ describe("AiEndpointsSection", () => {
       context_limit: null,
       json_mode: "auto",
       model_prices: [],
+      currency: "USD",
       api_key: "sk-secret-value",
     });
   });
@@ -251,7 +253,23 @@ describe("AiEndpointsSection", () => {
     renderSection();
 
     expect(await screen.findByText(`${(16384).toLocaleString()} tokens context`)).toBeVisible();
-    expect(screen.getByText("gpt-4.1-mini: 0.4 in · 1.6 out per 1M")).toBeVisible();
+    expect(screen.getByText("gpt-4.1-mini: USD 0.4 in · 1.6 out per 1M")).toBeVisible();
+  });
+
+  it("shows the connection's currency in the form and saves it back", async () => {
+    vi.mocked(apiClient.listAiEndpoints).mockResolvedValue([endpoint({ currency: "CHF" })]);
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole("button", { name: "Edit Workshop PC" }));
+    expect(screen.getByRole("combobox", { name: "Currency" })).toHaveTextContent("CHF");
+    vi.mocked(apiClient.updateAiEndpoint).mockResolvedValue(endpoint({ currency: "CHF" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(apiClient.updateAiEndpoint).toHaveBeenCalled());
+    expect(vi.mocked(apiClient.updateAiEndpoint).mock.calls[0]?.[1]).toMatchObject({
+      currency: "CHF",
+    });
   });
 
   it("omits a blank key from an edit, so the stored one survives a rename", async () => {
@@ -281,6 +299,7 @@ describe("AiEndpointsSection", () => {
       context_limit: null,
       json_mode: "auto",
       model_prices: [],
+      currency: "USD",
     });
     expect(body).not.toHaveProperty("api_key");
   });

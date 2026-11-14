@@ -494,6 +494,7 @@ class ConfigurationSummary:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float | None = None
+    currency: str | None = None
 
 
 @dataclass
@@ -517,6 +518,8 @@ def summarise(run: LabRun, results: Sequence[LabResult]) -> RunStatus:
     totals: dict[str, dict[str, list[float]]] = {key: {} for key in by_id}
     fully: dict[str, int] = dict.fromkeys(by_id, 0)
     timings: dict[str, list[int]] = {key: [] for key in by_id}
+    # Added up at the end: a running sum would forget that two currencies had already met.
+    costs: dict[str, list[tuple[float | None, str | None]]] = {key: [] for key in by_id}
     for result in results:
         summary = by_id.get(result.configuration_id)
         if summary is None:
@@ -528,8 +531,7 @@ def summarise(run: LabRun, results: Sequence[LabResult]) -> RunStatus:
         summary.failed += result.status == LabResultStatus.failed
         summary.prompt_tokens += result.prompt_tokens
         summary.completion_tokens += result.completion_tokens
-        if result.cost is not None:
-            summary.cost = (summary.cost or 0.0) + result.cost
+        costs[result.configuration_id].append((result.cost, result.currency))
         if result.duration_ms is not None:
             timings[result.configuration_id].append(result.duration_ms)
         verdicts = effective(result)
@@ -545,6 +547,7 @@ def summarise(run: LabRun, results: Sequence[LabResult]) -> RunStatus:
             summary.fully_correct = fully[summary.configuration_id] / summary.finished
         timed = timings[summary.configuration_id]
         summary.average_ms = sum(timed) / len(timed) if timed else None
+        summary.cost, summary.currency = ai.add_costs(costs[summary.configuration_id])
     durations = [value for timed in timings.values() for value in timed]
 
     pending = [result for result in results if result.status == LabResultStatus.pending]
@@ -792,8 +795,9 @@ def _account(
         if call.usage is not None:
             result.prompt_tokens += call.usage.prompt_tokens
             result.completion_tokens += call.usage.completion_tokens
-        if call.cost is not None:
-            result.cost = (result.cost or 0.0) + call.cost
+        result.cost, result.currency = ai.add_costs(
+            [(result.cost, result.currency), (call.cost, call.currency)]
+        )
     if meter.calls:
         ai_usage.store(session, [meter], user_id=result.user_id, document_id=case.document_id)
     if not keep_waiting:

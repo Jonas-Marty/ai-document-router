@@ -308,6 +308,8 @@ class AiEndpoint(SQLModel, table=True):
     model_prices: list[dict[str, object]] = Field(
         default_factory=list, sa_column=Column(JSON, nullable=False, server_default="[]")
     )
+    # What those prices are in (SPEC 6.3b); one of ai.CURRENCIES, checked in the service.
+    currency: str = Field(default="USD", sa_column_kwargs={"server_default": "USD"})
     created_at: datetime
 
 
@@ -485,6 +487,7 @@ class LabResult(SQLModel, table=True):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost: float | None = None
+    currency: str | None = None
     verdicts: dict[str, float] = Field(default_factory=dict, sa_column=Column(JSON))
     overrides: dict[str, float] = Field(default_factory=dict, sa_column=Column(JSON))
     finished_at: datetime | None = None
@@ -554,6 +557,8 @@ class AiCall(SQLModel, table=True):
     timed: int = 0
     # Priced at the time of the call, so a later price change does not rewrite history.
     cost: float | None = None
+    # The connection's currency then, for the same reason; None for a cost from before it.
+    currency: str | None = None
 
 
 class User(SQLModel, table=True):

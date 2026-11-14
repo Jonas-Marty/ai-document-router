@@ -21,6 +21,7 @@ function row(overrides: Partial<AiUsageRow> = {}): AiUsageRow {
     duration_ms: 1000,
     timed: 1,
     cost: null,
+    currency: null,
     ...overrides,
   };
 }
@@ -41,9 +42,19 @@ describe("totals", () => {
     expect(sum.avgMs).toBeNull();
   });
 
-  it("adds up the priced rows and has no cost when none was priced", () => {
-    expect(totals([row({ cost: 0.25 }), row({ cost: null }), row({ cost: 1 })]).cost).toBe(1.25);
-    expect(totals([row({ cost: null })]).cost).toBeNull();
+  it("adds up the priced rows per currency and has no cost when none was priced", () => {
+    expect(
+      totals([
+        row({ cost: 0.25, currency: "CHF" }),
+        row({ cost: null }),
+        row({ cost: 1, currency: "CHF" }),
+        row({ cost: 2, currency: "USD" }),
+      ]).costs,
+    ).toEqual([
+      { currency: "CHF", amount: 1.25 },
+      { currency: "USD", amount: 2 },
+    ]);
+    expect(totals([row({ cost: null })]).costs).toEqual([]);
   });
 });
 

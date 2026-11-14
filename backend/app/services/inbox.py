@@ -575,6 +575,7 @@ class Estimate:
     prompt_tokens: int | None
     completion_tokens: int | None
     cost: float | None
+    currency: str | None
     connections: list[str]
 
 
@@ -627,12 +628,17 @@ def estimate(
     connections = sorted(
         {step.endpoint_name for step in (plan.reading_step, plan.filing_step) if step is not None}
     )
+    # Only the steps that will run count: a reading every document already has costs nothing.
+    currencies = {step.currency for _, step, count in stages if step is not None and count}
+    if len(currencies) > 1:
+        cost = None
     return Estimate(
         documents=len(chosen),
         readings_needed=readings_needed,
         prompt_tokens=prompt if known else None,
         completion_tokens=completion if known else None,
         cost=round(cost, 4) if known and cost is not None else None,
+        currency=currencies.pop() if known and cost is not None and currencies else None,
         connections=connections,
     )
 

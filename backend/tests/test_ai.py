@@ -609,6 +609,25 @@ class TestUsage:
         assert stored["cost"] == pytest.approx(2.8)
         assert UsageSummaryRead.model_validate(stored).filing.cost == pytest.approx(2.8)  # type: ignore[union-attr]
 
+    def test_the_summary_names_one_currency_and_will_not_add_two(self) -> None:
+        meter = ai.UsageMeter()
+        reading = meter.scope("extraction", "A · v", price_output=1.0, currency="CHF")
+        reading.record(ai.TokenUsage(0, 1_000_000), 10)
+        filing = meter.scope("filing", "B · f", price_output=1.0, currency="CHF")
+        filing.record(ai.TokenUsage(0, 1_000_000), 10)
+
+        same = meter.summary()
+        assert same is not None
+        assert (same.cost, same.currency) == (pytest.approx(2.0), "CHF")
+
+        meter.scope("filing", "C · g", price_output=1.0, currency="EUR").record(
+            ai.TokenUsage(0, 1_000_000), 10
+        )
+        mixed = meter.summary()
+        assert mixed is not None and mixed.extraction is not None
+        assert (mixed.cost, mixed.currency) == (None, ai.MIXED)
+        assert mixed.extraction.currency == "CHF"
+
     def test_usage_stored_before_costs_reads_as_unpriced(self) -> None:
         stored = {
             "extraction": None,

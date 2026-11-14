@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_serializer
 
@@ -57,8 +58,9 @@ class StageUsageRead(BaseModel):
     total_tokens: int
     calls: int
     unreported_calls: int
-    # Usage stored before costs were kept has none.
+    # Usage stored before costs, or their currency, were kept has none.
     cost: float | None = None
+    currency: str | None = None
 
 
 class UsageSummaryRead(BaseModel):
@@ -68,6 +70,7 @@ class UsageSummaryRead(BaseModel):
     filing: StageUsageRead | None
     total_tokens: int
     cost: float | None = None
+    currency: str | None = None
 
     @classmethod
     def from_summary(cls, summary: UsageSummary | None) -> "UsageSummaryRead | None":
@@ -247,6 +250,7 @@ class AnalysisEstimateRead(BaseModel):
     prompt_tokens: int | None
     completion_tokens: int | None
     cost: float | None
+    currency: str | None
     connections: list[str]
 
 
@@ -324,6 +328,10 @@ class NextcloudWrite(BaseModel):
     password: str | None = None
 
 
+# ai.CURRENCIES as a type, so a currency outside it is refused before the service sees it.
+Currency = Literal["CHF", "EUR", "USD", "GBP"]
+
+
 class AiModelPrice(BaseModel):
     model_name: str
     price_input_per_million: float | None = None
@@ -341,6 +349,7 @@ class AiEndpointRead(BaseModel):
     context_limit: int | None
     json_mode: AiJsonMode
     model_prices: list[AiModelPrice]
+    currency: Currency
     # Names of the configurations that use it; it cannot be removed while any do.
     used_by: list[str]
 
@@ -358,6 +367,7 @@ class AiEndpointWrite(BaseModel):
     context_limit: int | None = None
     json_mode: AiJsonMode = AiJsonMode.auto
     model_prices: list[AiModelPrice] = []
+    currency: Currency = "USD"
 
 
 class AiModelsRequest(BaseModel):
@@ -575,6 +585,7 @@ class AiUsageRowRead(BaseModel):
     duration_ms: int
     timed: int
     cost: float | None
+    currency: str | None
 
 
 class AiUsageRead(BaseModel):
@@ -689,6 +700,7 @@ class LabConfigurationSummaryRead(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     cost: float | None
+    currency: str | None
 
 
 class LabRunRead(BaseModel):

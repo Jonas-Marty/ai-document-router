@@ -4,7 +4,7 @@ CLAUDE.md rule 5 is the one that most needs holding here: an endpoint's key goes
 never handed back, only the fact that one is set.
 """
 
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +13,9 @@ from sqlmodel import Session, select
 from app import db
 from app.config import settings as app_config
 from app.models import AiConfiguration, AiEndpoint
-from app.services import ai, configurations, crypto
+from app.schemas import Currency
+from app.services import ai, configurations, connections, crypto
+from app.services.errors import ValidationError
 
 
 def add(client: TestClient, name: str = "Local", **overrides: Any) -> dict[str, Any]:
@@ -301,6 +303,27 @@ class TestCapabilities:
         assert created["context_limit"] is None
         assert created["json_mode"] == "auto"
         assert created["model_prices"] == []
+        assert created["currency"] == "USD"
+
+    def test_the_currency_is_saved_and_one_outside_the_list_refused(
+        self, client: TestClient
+    ) -> None:
+        created = add(client, currency="CHF")
+        assert created["currency"] == "CHF"
+
+        response = client.put(
+            f"/api/v1/ai/endpoints/{created['id']}",
+            json={"name": "Local", "base_url": created["base_url"], "currency": "XYZ"},
+        )
+
+        assert response.status_code == 422
+
+    def test_the_service_refuses_a_currency_outside_the_list(self) -> None:
+        with pytest.raises(ValidationError, match="currency"):
+            connections.Capabilities(currency="XYZ").validated()
+
+    def test_the_schema_offers_exactly_the_services_currencies(self) -> None:
+        assert get_args(Currency) == ai.CURRENCIES
 
     def test_null_on_update_clears_a_limit(self, client: TestClient) -> None:
         created = add(client, context_limit=16384)

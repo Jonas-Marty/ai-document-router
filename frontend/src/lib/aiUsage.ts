@@ -15,8 +15,9 @@ export interface UsageTotals {
   avgMs: number | null;
   /** Mean tokens per call that reported tokens; null when none did. */
   avgTokens: number | null;
-  /** What the priced calls cost; null when none was priced. */
-  cost: number | null;
+  /** What the priced calls cost, one entry per currency since those cannot be added; empty
+   * when none was priced. */
+  costs: { amount: number; currency: string | null }[];
 }
 
 export function totals(rows: AiUsageRow[]): UsageTotals {
@@ -29,9 +30,9 @@ export function totals(rows: AiUsageRow[]): UsageTotals {
   let fallback = 0;
   let duration = 0;
   let timed = 0;
-  let cost: number | null = null;
+  const costs = new Map<string | null, number>();
   for (const row of rows) {
-    if (row.cost !== null) cost = (cost ?? 0) + row.cost;
+    if (row.cost !== null) costs.set(row.currency, (costs.get(row.currency) ?? 0) + row.cost);
     requests += row.requests;
     prompt += row.prompt_tokens;
     completion += row.completion_tokens;
@@ -56,7 +57,7 @@ export function totals(rows: AiUsageRow[]): UsageTotals {
     fallback,
     avgMs: timed > 0 ? duration / timed : null,
     avgTokens: counted > 0 ? total / counted : null,
-    cost,
+    costs: [...costs].map(([currency, amount]) => ({ currency, amount })),
   };
 }
 

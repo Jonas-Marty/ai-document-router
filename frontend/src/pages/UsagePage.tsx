@@ -23,7 +23,7 @@ import {
   type UsageGroup,
   type UsageTotals,
 } from "@/lib/aiUsage";
-import { formatCost } from "@/lib/tokens";
+import { formatCosts } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 import { ApiError } from "@/services/api/errors";
 import type { AiUsageRow } from "@/services/api/types";
@@ -174,7 +174,7 @@ export default function UsagePage() {
               sub={
                 [
                   sum.avgTokens !== null ? `Ø ${fmt(sum.avgTokens)} / request` : null,
-                  sum.cost !== null ? `cost ${formatCost(sum.cost)}` : null,
+                  sum.costs.length > 0 ? `cost ${formatCosts(sum.costs)}` : null,
                 ]
                   .filter(Boolean)
                   .join(" · ") || undefined
@@ -317,8 +317,6 @@ function Segmented({
   );
 }
 
-/** Prices carry no currency (SPEC 4.1), so neither does the cost; four places keep a
- * month of a cheap model from reading as 0.00. */
 function Tile({
   label,
   value,

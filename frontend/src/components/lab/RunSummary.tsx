@@ -16,7 +16,7 @@ interface Column {
   key: string;
   label: string;
   value: (summary: LabConfigurationSummary) => number | null | undefined;
-  format: (value: number | null | undefined) => string;
+  format: (value: number | null | undefined, summary: LabConfigurationSummary) => string;
   better: "higher" | "lower";
 }
 
@@ -61,7 +61,7 @@ function columnsFor(fields: LabField[]): Column[] {
       key: "cost",
       label: "Cost",
       value: (summary) => summary.cost,
-      format: (value) => (value == null ? "–" : formatCost(value)),
+      format: (value, summary) => (value == null ? "–" : formatCost(value, summary.currency)),
       better: "lower",
     },
   ];
@@ -71,8 +71,12 @@ function columnsFor(fields: LabField[]): Column[] {
  * row is not the cheapest. Nothing is best when only one configuration ran. */
 function bestOf(column: Column, summaries: LabConfigurationSummary[]): number | null {
   if (summaries.length < 2) return null;
-  const values = summaries
-    .filter((summary) => summary.finished > 0)
+  const finished = summaries.filter((summary) => summary.finished > 0);
+  // Costs in two currencies cannot be ranked without a rate.
+  if (column.key === "cost" && new Set(finished.map((summary) => summary.currency)).size > 1) {
+    return null;
+  }
+  const values = finished
     .map(column.value)
     .filter((value): value is number => typeof value === "number");
   if (!values.length) return null;
@@ -103,7 +107,7 @@ export function RunSummary({ summaries }: { summaries: LabConfigurationSummary[]
                 <div key={column.key} className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">{column.label}</dt>
                   <dd className={cn("tabular-nums", isBest(column, summary) && "font-semibold")}>
-                    {column.format(column.value(summary))}
+                    {column.format(column.value(summary), summary)}
                   </dd>
                 </div>
               ))}
@@ -143,7 +147,7 @@ export function RunSummary({ summaries }: { summaries: LabConfigurationSummary[]
                   isBest(column, summary) && "font-semibold",
                 )}
               >
-                {column.format(column.value(summary))}
+                {column.format(column.value(summary), summary)}
               </TableCell>
             ))}
           </TableRow>

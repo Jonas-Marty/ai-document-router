@@ -38,7 +38,7 @@ export function TokenUsage({ usage }: { usage: UsageSummary | null }) {
           <span>
             {" · cost "}
             {atLeast}
-            {formatCost(usage.cost)}
+            {formatCost(usage.cost, usage.currency)}
           </span>
         )}
       </summary>
@@ -70,7 +70,7 @@ function StageRow({ label, stage }: { label: string; stage: StageUsage }) {
         {stage.completion_tokens.toLocaleString("en")} completion ={" "}
         {stage.total_tokens.toLocaleString("en")}
         {stage.calls > 1 && ` · ${stage.calls} calls`}
-        {stage.cost !== null && ` · cost ${formatCost(stage.cost)}`}
+        {stage.cost !== null && ` · cost ${formatCost(stage.cost, stage.currency)}`}
       </dd>
     </div>
   );

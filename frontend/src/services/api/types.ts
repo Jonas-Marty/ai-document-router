@@ -75,6 +75,7 @@ export interface StageUsage {
   calls: number;
   unreported_calls: number; // calls whose server sent no usage -- the totals are "at least"
   cost: number | null; // of the calls whose model had a price; null when none had one
+  currency: string | null; // ISO code, "mixed" when costs in two currencies met; null before currencies were kept
 }
 
 /** A task that made no calls this time (unconfigured, or its reading was reused) is null. */
@@ -83,6 +84,7 @@ export interface UsageSummary {
   filing: StageUsage | null;
   total_tokens: number;
   cost: number | null;
+  currency: string | null; // ISO code, "mixed" when costs in two currencies met; null before currencies were kept
 }
 
 export interface RetriedResponse {
@@ -152,6 +154,7 @@ export interface AnalysisEstimate {
   prompt_tokens: number | null;
   completion_tokens: number | null;
   cost: number | null;
+  currency: string | null; // ISO code, "mixed" when costs in two currencies met; null before currencies were kept
   connections: string[];
 }
 
@@ -251,8 +254,13 @@ export interface AiEndpoint {
   context_limit: number | null; // tokens the server holds per request; null = unknown (SPEC 6.3b)
   json_mode: AiJsonMode;
   model_prices: AiModelPrice[]; // a model without an entry shows no cost (SPEC 6.3b)
+  currency: Currency; // what model_prices are in
   used_by: string[]; // names of the configurations using it; it can't be deleted while any do
 }
+
+/** What a connection's prices can be in (SPEC 6.3b); the backend refuses any other. */
+export const CURRENCIES = ["CHF", "EUR", "USD", "GBP"] as const;
+export type Currency = (typeof CURRENCIES)[number];
 
 /** How filing asks the endpoint for JSON (SPEC 6.3). */
 export type AiJsonMode = "auto" | "json_schema" | "json_object" | "none";
@@ -265,6 +273,7 @@ export interface AiEndpointWrite {
   context_limit: number | null;
   json_mode: AiJsonMode;
   model_prices: AiModelPrice[]; // replaces the stored list whole
+  currency: Currency;
 }
 
 /** SPEC 6.3c. The parts a name is assembled from, in the order a template may give. */
@@ -447,6 +456,7 @@ export interface AiUsageRow {
   duration_ms: number; // summed over `timed`
   timed: number;
   cost: number | null; // from the connection's prices; null when no call in the row had one
+  currency: string | null; // ISO code, "mixed" when costs in two currencies met; null before currencies were kept
 }
 
 export interface AiUsageReport {
@@ -545,6 +555,7 @@ export interface LabConfigurationSummary {
   prompt_tokens: number;
   completion_tokens: number;
   cost: number | null;
+  currency: string | null; // ISO code, "mixed" when costs in two currencies met; null before currencies were kept
 }
 
 export interface LabRun {

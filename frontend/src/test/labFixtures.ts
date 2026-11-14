@@ -22,6 +22,7 @@ export function summary(
     prompt_tokens: 3000,
     completion_tokens: 400,
     cost: null,
+    currency: null,
     ...overrides,
   };
 }

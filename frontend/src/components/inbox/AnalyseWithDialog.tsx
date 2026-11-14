@@ -38,7 +38,7 @@ function EstimateSummary({ estimate }: { estimate: AnalysisEstimate }) {
       : `About ${formatTokens(estimate.prompt_tokens)} in · ${formatTokens(estimate.completion_tokens)} out.`;
   const cost =
     estimate.cost !== null
-      ? `Roughly ${formatCost(estimate.cost)}.`
+      ? `Roughly ${formatCost(estimate.cost, estimate.currency)}.`
       : estimate.prompt_tokens !== null
         ? "No price set for these models."
         : null;

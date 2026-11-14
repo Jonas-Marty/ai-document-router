@@ -109,9 +109,11 @@ describe("ProducedBy", () => {
           calls: 1,
           unreported_calls: 0,
           cost: null,
+          currency: null,
         },
         total_tokens: 1208,
         cost: null,
+        currency: null,
       },
     });
 

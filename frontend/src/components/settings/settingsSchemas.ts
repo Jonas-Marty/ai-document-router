@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normalizeFolderPath } from "@/lib/naming";
+import { CURRENCIES } from "@/services/api/types";
 
 function isAbsolutePath(value: string): boolean {
   return value.trim().startsWith("/");
@@ -184,6 +185,7 @@ export const endpointFormSchema = z.object({
     return Number.isInteger(tokens) && tokens >= 1024 && tokens <= 2_000_000;
   }, "Between 1,024 and 2,000,000 tokens, or blank."),
   json_mode: z.enum(["auto", "json_schema", "json_object", "none"]),
+  currency: z.enum(CURRENCIES),
   // Mirrors Capabilities.validated in services/connections.py.
   model_prices: z
     .array(

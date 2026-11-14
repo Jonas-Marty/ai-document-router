@@ -7,10 +7,21 @@ export function formatTokens(count: number): string {
   return `${(count / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
 }
 
-/** A cost in the connection's own currency: four decimals below one, two above. */
-export function formatCost(value: number): string {
-  return value.toLocaleString(undefined, {
+/** The currency of a cost that spans two currencies and so could not be added up. */
+export const MIXED_CURRENCY = "mixed";
+
+/** A cost in the connection's own currency, "CHF 0.0123": four decimals below one, two above,
+ * so a month of a cheap model does not read as 0.00. A cost recorded before currencies were
+ * kept has none and shows as the bare number. */
+export function formatCost(value: number, currency: string | null): string {
+  const amount = value.toLocaleString(undefined, {
     minimumFractionDigits: value < 1 ? 4 : 2,
     maximumFractionDigits: value < 1 ? 4 : 2,
   });
+  return currency && currency !== MIXED_CURRENCY ? `${currency} ${amount}` : amount;
+}
+
+/** Costs in several currencies side by side, since they cannot be added: "CHF 1.20 + USD 0.40". */
+export function formatCosts(costs: { amount: number; currency: string | null }[]): string {
+  return costs.map((cost) => formatCost(cost.amount, cost.currency)).join(" + ");
 }

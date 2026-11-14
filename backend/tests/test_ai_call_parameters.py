@@ -318,3 +318,47 @@ class TestCost:
             session, "owner", today - timedelta(days=1), today + timedelta(days=1)
         )
         assert sum(row.cost or 0 for row in report.rows) == pytest.approx(3.0)
+
+    def test_the_connections_currency_is_stored_with_a_priced_call_only(
+        self, session: Session
+    ) -> None:
+        step = ResolvedStep(
+            endpoint_name="Hosted",
+            endpoint_url="https://h/v1",
+            api_key=None,
+            model_name="big",
+            endpoint_id="hosted",
+            price_output=4.0,
+            currency="CHF",
+        )
+        meter = ai.UsageMeter()
+        recorder = step.usage(meter, AiTask.filing)
+        recorder.record(ai.TokenUsage(0, 250_000), 900)
+        recorder.record(None, 900)
+
+        ai_usage.store(session, [meter], user_id="owner", document_id="doc")
+        session.commit()
+
+        today = datetime.now(UTC).date()
+        report = ai_usage.report(session, "owner", today, today)
+        assert sorted((row.currency or "", row.cost) for row in report.rows) == [
+            ("", None),
+            ("CHF", pytest.approx(1.0)),
+        ]
+
+
+class TestAddCosts:
+    def test_one_currency_adds_up_and_skips_the_unpriced(self) -> None:
+        assert ai.add_costs([(1.0, "CHF"), (None, None), (0.5, "CHF")]) == (1.5, "CHF")
+
+    def test_nothing_priced_is_no_cost(self) -> None:
+        assert ai.add_costs([(None, None)]) == (None, None)
+
+    def test_two_currencies_are_not_added(self) -> None:
+        assert ai.add_costs([(1.0, "CHF"), (1.0, "USD")]) == (None, ai.MIXED)
+
+    def test_a_mix_stays_mixed_when_added_to(self) -> None:
+        assert ai.add_costs([(None, ai.MIXED), (1.0, "USD")]) == (None, ai.MIXED)
+
+    def test_a_cost_from_before_currencies_does_not_join_a_known_one(self) -> None:
+        assert ai.add_costs([(1.0, None), (1.0, "USD")]) == (None, ai.MIXED)

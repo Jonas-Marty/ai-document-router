@@ -41,6 +41,7 @@ class ResolvedStep:
     json_mode: AiJsonMode = AiJsonMode.auto
     price_input: float | None = None
     price_output: float | None = None
+    currency: str = ai.DEFAULT_CURRENCY
 
     @classmethod
     def of(cls, endpoint: AiEndpoint, model_name: str) -> "ResolvedStep":
@@ -56,6 +57,7 @@ class ResolvedStep:
             json_mode=endpoint.json_mode,
             price_input=price.price_input_per_million if price else None,
             price_output=price.price_output_per_million if price else None,
+            currency=endpoint.currency,
         )
 
     @property
@@ -73,6 +75,7 @@ class ResolvedStep:
             model=self.model_name,
             price_input=self.price_input,
             price_output=self.price_output,
+            currency=self.currency,
         )
 
 
@@ -349,10 +352,13 @@ class Capabilities:
     context_limit: int | None = None
     json_mode: AiJsonMode = AiJsonMode.auto
     model_prices: tuple[ModelPrice, ...] = ()
+    # What the prices are in. One per connection: a provider bills in one currency.
+    currency: str = ai.DEFAULT_CURRENCY
 
     @classmethod
     def of(cls, endpoint: AiEndpoint) -> "Capabilities":
         return cls(
+            currency=endpoint.currency,
             context_limit=endpoint.context_limit,
             json_mode=endpoint.json_mode,
             model_prices=tuple(
@@ -396,11 +402,14 @@ class Capabilities:
             prices.append(
                 ModelPrice(name, entry.price_input_per_million, entry.price_output_per_million)
             )
-        return Capabilities(self.context_limit, self.json_mode, tuple(prices))
+        if self.currency not in ai.CURRENCIES:
+            raise ValidationError(f"Choose the currency from {', '.join(ai.CURRENCIES)}.")
+        return Capabilities(self.context_limit, self.json_mode, tuple(prices), self.currency)
 
     def apply(self, endpoint: AiEndpoint) -> None:
         endpoint.context_limit = self.context_limit
         endpoint.json_mode = self.json_mode
+        endpoint.currency = self.currency
         endpoint.model_prices = [price.describe() for price in self.model_prices]
 
     def describe(self) -> dict[str, object]:
@@ -409,6 +418,7 @@ class Capabilities:
             "context_limit": self.context_limit,
             "json_mode": str(self.json_mode),
             "model_prices": [price.describe() for price in self.model_prices],
+            "currency": self.currency,
         }
 
 

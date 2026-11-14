@@ -11,7 +11,7 @@ import logging
 import math
 import mimetypes
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from typing import TypeGuard
@@ -227,6 +227,37 @@ def reply_budget(estimate: int, parameters: TaskParameters, context_limit: int |
     return min(parameters.max_tokens, room)
 
 
+# What a connection's prices can be in (SPEC 6.3b). A short fixed list rather than every ISO
+# code: it is a select in the form, and these are what the providers in use bill in.
+CURRENCIES = ("CHF", "EUR", "USD", "GBP")
+DEFAULT_CURRENCY = "USD"
+
+
+# The currency of a cost that could not be added up because it spans two currencies. Kept
+# rather than dropped to None, so a sum that includes it stays mixed instead of passing off
+# the rest as the whole.
+MIXED = "mixed"
+
+
+def add_costs(
+    costs: Iterable[tuple[float | None, str | None]],
+) -> tuple[float | None, str | None]:
+    """The sum of the priced costs and their currency; (None, None) when none is priced.
+
+    Costs in different currencies cannot be added without a rate, so a mix gives
+    (None, MIXED) rather than a number that is wrong in every currency. A cost recorded before
+    currencies were kept has None as its currency, and counts as one of its own.
+    """
+    entries = list(costs)
+    priced = [(cost, currency) for cost, currency in entries if cost is not None]
+    currencies = {currency for _, currency in priced}
+    if any(currency == MIXED for _, currency in entries) or len(currencies) > 1:
+        return None, MIXED
+    if not priced:
+        return None, None
+    return sum(cost for cost, _ in priced), currencies.pop()
+
+
 def call_cost(
     usage: "TokenUsage | None", price_input: float | None, price_output: float | None
 ) -> float | None:
@@ -285,6 +316,8 @@ class CallRecord:
     fallback: bool = False
     # From the connection's prices at the time of the call; None without a price or usage.
     cost: float | None = None
+    # The connection's currency at the time of the call; None when there is no cost.
+    currency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +335,7 @@ class StageUsage:
     # Only the calls that had a price; None when none did. An unpriced call is usually a
     # local model, so the sum stands as the cost rather than being thrown away as unknown.
     cost: float | None = None
+    currency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -313,10 +347,16 @@ class UsageSummary:
     def total_tokens(self) -> int:
         return sum(stage.total_tokens for stage in (self.extraction, self.filing) if stage)
 
+    def priced(self) -> tuple[float | None, str | None]:
+        return add_costs((s.cost, s.currency) for s in (self.extraction, self.filing) if s)
+
     @property
     def cost(self) -> float | None:
-        costs = [s.cost for s in (self.extraction, self.filing) if s and s.cost is not None]
-        return sum(costs) if costs else None
+        return self.priced()[0]
+
+    @property
+    def currency(self) -> str | None:
+        return self.priced()[1]
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -324,6 +364,7 @@ class UsageSummary:
             "filing": asdict(self.filing) if self.filing else None,
             "total_tokens": self.total_tokens,
             "cost": self.cost,
+            "currency": self.currency,
         }
 
     def describe(self) -> str:
@@ -369,6 +410,7 @@ class UsageMeter:
         fallback: bool = False,
         price_input: float | None = None,
         price_output: float | None = None,
+        currency: str = DEFAULT_CURRENCY,
     ) -> "UsageRecorder":
         return UsageRecorder(
             self,
@@ -380,6 +422,7 @@ class UsageMeter:
             fallback,
             price_input,
             price_output,
+            currency,
         )
 
     def summary(self) -> UsageSummary | None:
@@ -396,7 +439,7 @@ class UsageMeter:
         reported = [call.usage for call in calls if call.usage is not None]
         prompt = sum(usage.prompt_tokens for usage in reported)
         completion = sum(usage.completion_tokens for usage in reported)
-        costs = [call.cost for call in calls if call.cost is not None]
+        cost, currency = add_costs((call.cost, call.currency) for call in calls)
         return StageUsage(
             model_label=calls[-1].label,
             prompt_tokens=prompt,
@@ -404,7 +447,8 @@ class UsageMeter:
             total_tokens=prompt + completion,
             calls=len(calls),
             unreported_calls=len(calls) - len(reported),
-            cost=sum(costs) if costs else None,
+            cost=cost,
+            currency=currency,
         )
 
 
@@ -419,8 +463,10 @@ class UsageRecorder:
     fallback: bool = False
     price_input: float | None = None
     price_output: float | None = None
+    currency: str = DEFAULT_CURRENCY
 
     def _call(self, usage: TokenUsage | None, duration_ms: int, failed: bool) -> CallRecord:
+        cost = call_cost(usage, self.price_input, self.price_output)
         return CallRecord(
             task=self.task,
             label=self.label,
@@ -431,7 +477,8 @@ class UsageRecorder:
             model=self.model,
             failed=failed,
             fallback=self.fallback,
-            cost=call_cost(usage, self.price_input, self.price_output),
+            cost=cost,
+            currency=self.currency if cost is not None else None,
         )
 
     def record_failure(self, duration_ms: int) -> None:

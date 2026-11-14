@@ -1255,3 +1255,17 @@ meaningful. One line of "why" each; not a full ADR log.
 - Configurations moved to `/lab/configurations`; `/lab` is the runs list. The editor's
   routes did not change. "Re-analyse with…" stays on the review screen: it is how one
   document gets another configuration, which the Lab does not replace.
+
+## Currency per connection (2026-11-14)
+
+- **Supersedes "Prices have no currency".** Each connection has a currency, one of CHF, EUR,
+  USD, GBP (a select, not every ISO code: these are what the providers in use bill in).
+  Existing connections start in USD and can be switched.
+- **The currency is stored with each cost** (`ai_call`, `lab_result`, the stored analysis
+  usage), so switching a connection's currency does not relabel history. Costs from before
+  this have no currency and show as the bare number.
+- **Two currencies are never added.** There is no exchange rate in the app, and a sum in no
+  one currency is wrong in all of them. A sum that would span two is null with the currency
+  `mixed`, which sticks when added to further; the AI usage page instead lists one total per
+  currency ("CHF 1.20 + USD 0.40"), and the Lab bolds no cheapest configuration when their
+  currencies differ.

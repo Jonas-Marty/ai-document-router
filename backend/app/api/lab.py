@@ -179,6 +179,7 @@ def _run(run: LabRun, results: list[LabResult]) -> LabRunRead:
                 prompt_tokens=item.prompt_tokens,
                 completion_tokens=item.completion_tokens,
                 cost=item.cost,
+                currency=item.currency,
             )
             for item in summary.summaries
         ],
