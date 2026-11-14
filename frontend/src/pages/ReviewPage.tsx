@@ -280,21 +280,18 @@ function DocumentReview({
     });
   }
 
-  /** SPEC 8.8: the document goes back to To analyse and the next row becomes current. One
-   * opened from outside the list -- a failed analysis, from To analyse -- stays on screen
-   * instead: the person came to watch that one. */
+  /** SPEC 8.8: the document stays current while it is analysed again -- the person asked
+   * for this one and wants to see what comes back. It leaves the Ready list meanwhile, and the
+   * pending view stands in for the form and the action bar, so nothing can be approved on
+   * the proposal being replaced. */
   function reanalyse(configurationId?: string) {
-    const moveOn = review.inList(document.id) ? moveOnFrom(document.id) : null;
     regenerateMutation.mutate(
       {
         id: document.id,
         choice: configurationId ? { configuration_id: configurationId } : undefined,
       },
       {
-        onSuccess: () => {
-          setRerunOpen(false);
-          moveOn?.();
-        },
+        onSuccess: () => setRerunOpen(false),
         onError: (error) => {
           toast.error(
             error instanceof ApiError ? error.message : "Couldn't ask for a new analysis.",

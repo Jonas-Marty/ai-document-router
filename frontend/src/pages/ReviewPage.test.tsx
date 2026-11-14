@@ -323,7 +323,7 @@ describe("ReviewPage", () => {
     expect(await screen.findByDisplayValue("2026.05.18 Swisscom Rechnung")).toBeInTheDocument();
   });
 
-  it("re-analyses with the document's own configuration and moves on", async () => {
+  it("re-analyses with the document's own configuration and stays to show the result", async () => {
     renderReview([SWISSCOM, SAC]);
     vi.mocked(apiClient.regenerateDocument).mockResolvedValue({
       ...SWISSCOM,
@@ -338,7 +338,10 @@ describe("ReviewPage", () => {
     await user.click(within(producedBy).getByRole("button", { name: "Re-analyse" }));
 
     await waitFor(() => expect(apiClient.regenerateDocument).toHaveBeenCalledWith("1", undefined));
-    await waitFor(() => expect(location()).toHaveTextContent("/review/2"));
+    // The person asked for this one again and waits for it here; nothing to approve meanwhile.
+    expect(await screen.findByText("Waiting for the AI proposal…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+    expect(location()).toHaveTextContent("/review/1");
   });
 
   it("stays on a failed document opened from To analyse when it is tried again", async () => {

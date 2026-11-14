@@ -1669,8 +1669,9 @@ fetch. An endpoint that answers but lists nothing is not an error.
 - Later → the document stays in Ready, marked; the next row becomes current.
 - Trash → confirm → the next row.
 - Re-analyse and Re-analyse with… → the document goes back to To analyse with its proposal
-  replaced when the new one arrives; edits made here are not kept. The next row becomes
-  current. Re-analyse with… asks which configuration to use, the one that produced the
+  replaced when the new one arrives; edits made here are not kept. It stays current: the
+  analysis stage shows in place of the form and the action bar, so nothing can be approved
+  meanwhile, and the new proposal (or failure) appears there. Re-analyse with… asks which configuration to use, the one that produced the
   proposal preselected; that choice stays with the document (6.3a).
 - With nothing left: "Nothing to review. New scans appear in the Inbox automatically." plus
   a `Back to the Inbox` button.
