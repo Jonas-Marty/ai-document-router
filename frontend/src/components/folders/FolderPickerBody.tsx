@@ -308,7 +308,13 @@ export function FolderPickerBody({
       )}
 
       {rootsQuery.data && rootsQuery.data.length > 0 && (
-        <FolderFilesPanel selectedPath={selectedPath} node={selectedNode} />
+        <FolderFilesPanel
+          // Keyed so "show all" is asked again for each folder rather than carried over.
+          key={selectedPath}
+          selectedPath={selectedPath}
+          node={selectedNode}
+          canLoadAll={scope === "allowed"}
+        />
       )}
 
       {creatingUnder && (

@@ -1,12 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FolderNode } from "@/services/api/types";
 import { FolderPickerBody } from "./FolderPickerBody";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getFolderTree: vi.fn(), browseFolders: vi.fn(), createFolder: vi.fn() },
+  apiClient: {
+    getFolderTree: vi.fn(),
+    browseFolders: vi.fn(),
+    createFolder: vi.fn(),
+    getFolderFiles: vi.fn(),
+  },
 }));
 
 import { apiClient } from "@/services/api/client";
@@ -261,6 +266,44 @@ describe("FolderPickerBody files panel", () => {
     expect(panel).toHaveTextContent("new.pdf");
     expect(panel).toHaveTextContent("+ 20 more");
     expect(screen.queryByRole("treeitem", { name: /new\.pdf/ })).not.toBeInTheDocument();
+  });
+
+  it("loads the remaining files when the count is pressed", async () => {
+    mockTree({
+      ROOT: [node("/Scans", { file_count: 4, recent_files: ["d.pdf", "c.pdf"] })],
+    });
+    vi.mocked(apiClient.getFolderFiles).mockResolvedValue({
+      path: "/Scans",
+      exists: true,
+      siblings: ["d.pdf", "c.pdf", "b.pdf", "a.pdf"].map((filename) => ({
+        filename,
+        created_at: null,
+        size_bytes: 1,
+      })),
+      total_file_count: 4,
+      filename_collision: false,
+    });
+    const user = userEvent.setup();
+    renderBody({ value: "/Scans" });
+
+    const panel = await screen.findByRole("region", { name: "Files in folder" });
+    expect(apiClient.getFolderFiles).not.toHaveBeenCalled();
+    await user.click(await within(panel).findByRole("button", { name: "+ 2 more" }));
+
+    await waitFor(() => expect(panel).toHaveTextContent("a.pdf"));
+    expect(apiClient.getFolderFiles).toHaveBeenCalledWith("/Scans");
+    expect(panel).not.toHaveTextContent("more");
+  });
+
+  it("only counts the rest when browsing beyond the allowed folders", async () => {
+    vi.mocked(apiClient.browseFolders).mockResolvedValue([
+      node("/Archive", { file_count: 3, recent_files: ["a.pdf"] }),
+    ]);
+    renderBody({ scope: "all", value: "/Archive" });
+
+    const panel = await screen.findByRole("region", { name: "Files in folder" });
+    await waitFor(() => expect(panel).toHaveTextContent("+ 2 more"));
+    expect(within(panel).queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("says when the folder is empty", async () => {

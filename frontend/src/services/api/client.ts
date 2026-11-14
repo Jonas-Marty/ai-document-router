@@ -77,6 +77,7 @@ export interface ApiClient {
   browseFolders(path?: string): Promise<FolderNode[]>;
   createFolder(body: CreateFolderRequest): Promise<FolderNode>;
   getFolderContext(path: string, filename?: string): Promise<FolderContext>;
+  getFolderFiles(path: string): Promise<FolderContext>;
 
   getAudit(limit?: number, cursor?: string, category?: AuditCategory): Promise<AuditPage>;
   getAuditUsage(days?: number): Promise<AuditUsage>;
@@ -192,6 +193,10 @@ export class HttpApiClient implements ApiClient {
 
   getFolderContext(path: string, filename?: string): Promise<FolderContext> {
     return this.request<FolderContext>("GET", `/folders/context${query({ path, filename })}`);
+  }
+
+  getFolderFiles(path: string): Promise<FolderContext> {
+    return this.request<FolderContext>("GET", `/folders/context${query({ path, all: "true" })}`);
   }
 
   getInbox(params: InboxQuery): Promise<InboxPage> {

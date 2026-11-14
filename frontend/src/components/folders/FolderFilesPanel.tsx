@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useFolderFiles } from "@/hooks/useFolders";
 import type { FolderNode } from "@/services/api/types";
 
 /** Shows what is already in the highlighted folder, so the user can judge a destination
@@ -7,11 +8,16 @@ import type { FolderNode } from "@/services/api/types";
 export function FolderFilesPanel({
   selectedPath,
   node,
+  canLoadAll = false,
 }: {
   selectedPath: string;
   /** Undefined while the highlighted folder's level of the tree is still loading. */
   node: FolderNode | undefined;
+  /** Only inside the allowed folders: the full listing is checked against them. */
+  canLoadAll?: boolean;
 }) {
+  const [showAll, setShowAll] = useState(false);
+  const all = useFolderFiles(selectedPath, showAll);
   let body: ReactNode;
   if (!selectedPath) {
     body = <p className="text-muted-foreground">Select a folder to see its files.</p>;
@@ -25,15 +31,34 @@ export function FolderFilesPanel({
   } else if (node.file_count === 0) {
     body = <p className="text-muted-foreground">No files in this folder.</p>;
   } else {
-    const more = node.file_count - node.recent_files.length;
+    const names = all.data ? all.data.siblings.map((file) => file.filename) : node.recent_files;
+    const more = (all.data?.total_file_count ?? node.file_count) - names.length;
     body = (
       <ul className="space-y-0.5">
-        {node.recent_files.map((name) => (
+        {names.map((name) => (
           <li key={name} className="truncate font-mono text-muted-foreground" title={name}>
             {name}
           </li>
         ))}
-        {more > 0 && <li className="text-muted-foreground">+ {more} more</li>}
+        {more > 0 && (
+          <li className="text-muted-foreground">
+            {canLoadAll && !showAll ? (
+              <button
+                type="button"
+                className="rounded-sm underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                onClick={() => setShowAll(true)}
+              >
+                + {more} more
+              </button>
+            ) : all.isFetching ? (
+              "Loading…"
+            ) : all.isError ? (
+              "Couldn't load the other files."
+            ) : (
+              `+ ${more} more`
+            )}
+          </li>
+        )}
       </ul>
     );
   }

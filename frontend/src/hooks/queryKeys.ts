@@ -9,6 +9,7 @@ export const queryKeys = {
   folderBrowse: (path?: string) => ["folders", "browse", path ?? null] as const,
   folderContext: (path: string, filename?: string) =>
     ["folders", "context", path, filename ?? null] as const,
+  folderFiles: (path: string) => ["folders", "files", path] as const,
   // Prefix of every Inbox page, for invalidating them all after anything moves a document.
   inbox: ["inbox"] as const,
   inboxPage: (params: InboxQuery) => ["inbox", params] as const,

@@ -43,5 +43,6 @@ def read_context(
     app_settings: AppSettingsDep,
     path: str = Query(...),
     filename: str | None = Query(None),
+    all: bool = Query(False),
 ) -> FolderContext:
-    return folders_service.context(webdav, app_settings, path, filename)
+    return folders_service.context(webdav, app_settings, path, filename, every_file=all)

@@ -859,7 +859,7 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/documents/{id}/regenerate` | `{ configuration_id? }` | `{ document }` — re-runs the analysis; with `configuration_id`, with that configuration from now on (the default's id clears the pick) |
 | GET | `/folders/tree?path=/&depth=1` | — | `FolderNode[]` |
 | POST | `/folders` | `{ parent_path, name }` | `FolderNode` |
-| GET | `/folders/context?path=..&filename=..` | — | `FolderContext` |
+| GET | `/folders/context?path=..&filename=..&all=` | — | `FolderContext` — the 5 newest files; with `all=true` every file, newest first, at most 2000 |
 | POST | `/history/{id}/revert` | — | `{ history_entry, document }` |
 | GET | `/audit?limit=50&cursor=..&category=..` | — | `AuditPage`, newest first — the caller's own events; `category` is `documents` \| `ai` \| `settings` \| `auth` |
 | GET | `/audit/usage?days=30` | — | `AuditUsage` — tokens spent in the window, the caller's own |
@@ -1572,7 +1572,10 @@ Lazy tree, one level per `/folders/tree` call. Roots are `allowed_root_folders` 
 outside is reachable or selectable. Auto-expands to and highlights the current selection.
 Type-to-filter over loaded nodes. `New folder` creates under the selected node. Footer shows
 the selected path with Cancel / Select. Desktop: dialog with arrow-key navigation and Enter
-to select. Mobile: full-screen sheet, tap to select.
+to select. Mobile: full-screen sheet, tap to select. Below the tree, the highlighted
+folder's newest 20 files and `+ N more`; pressing it loads the rest of that folder, newest
+first (`/folders/context?all=true`). Browsing beyond the allowed folders (Settings) only
+counts them.
 
 ### 8.6 Inbox
 

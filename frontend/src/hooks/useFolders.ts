@@ -25,6 +25,15 @@ export function useFolderContext(path: string, filename?: string) {
   });
 }
 
+/** Every file of a folder, newest first: only fetched once someone asks for the rest. */
+export function useFolderFiles(path: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.folderFiles(path),
+    queryFn: () => apiClient.getFolderFiles(path),
+    enabled: enabled && path.length > 0,
+  });
+}
+
 export function useCreateFolder() {
   const queryClient = useQueryClient();
   return useMutation({

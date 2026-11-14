@@ -20,6 +20,8 @@ from app.services.webdav import WebDavEntry, WebDavService
 logger = logging.getLogger(__name__)
 
 MAX_SIBLINGS = 5
+# "+N more" in the picker loads the rest; a bound so one huge folder stays one response.
+MAX_ALL_SIBLINGS = 2000
 # The picker's file panel shows this many of a folder's newest files, then "+N more".
 MAX_RECENT_FILES = 20
 
@@ -81,6 +83,8 @@ def context(
     app_settings: AppSettings,
     path: str,
     filename: str | None = None,
+    *,
+    every_file: bool = False,
 ) -> FolderContext:
     """What is already in a folder, and whether a name would collide.
 
@@ -104,7 +108,8 @@ def context(
         )
 
     files = [entry for entry in entries if not entry.is_dir]
-    newest = sorted(files, key=_sort_key, reverse=True)[:MAX_SIBLINGS]
+    limit = MAX_ALL_SIBLINGS if every_file else MAX_SIBLINGS
+    newest = sorted(files, key=_sort_key, reverse=True)[:limit]
 
     collision = False
     if filename:

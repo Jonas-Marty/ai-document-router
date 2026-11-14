@@ -254,6 +254,31 @@ class TestFolderContext:
             "f3.pdf",
         ]
 
+    def test_lists_every_file_when_asked_for_all(
+        self, configured: TestClient, fake: FakeWebDav
+    ) -> None:
+        """The picker's "+N more" loads the rest of the folder, still newest first."""
+        from datetime import UTC
+
+        fake.listings[ROOT] = [
+            file_entry(f"{ROOT}/f{i}.pdf", modified=datetime(2026, 1, i + 1, tzinfo=UTC))
+            for i in range(30)
+        ]
+
+        body = configured.get(f"/api/v1/folders/context?path={ROOT}&all=true").json()
+
+        assert body["total_file_count"] == 30
+        assert len(body["siblings"]) == 30
+        assert body["siblings"][0]["filename"] == "f29.pdf"
+        assert body["siblings"][-1]["filename"] == "f0.pdf"
+
+    def test_all_files_stay_inside_the_allowed_folders(
+        self, configured: TestClient, fake: FakeWebDav
+    ) -> None:
+        response = configured.get("/api/v1/folders/context?path=/Elsewhere&all=true")
+
+        assert response.status_code == 403
+
     def test_flags_a_filename_collision(self, configured: TestClient, fake: FakeWebDav) -> None:
         fake.listings[ROOT] = [file_entry(f"{ROOT}/taken.pdf")]
 
