@@ -1269,3 +1269,26 @@ meaningful. One line of "why" each; not a full ADR log.
   `mixed`, which sticks when added to further; the AI usage page instead lists one total per
   currency ("CHF 1.20 + USD 0.40"), and the Lab bolds no cheapest configuration when their
   currencies differ.
+
+## The cost of an analysis on Activity (2026-11-15)
+
+- **Mockup D** (B's spending panel and C's per-document view together) was chosen; A was
+  dropped. The cost section leads the page; token tiles and events follow unchanged.
+- **Per-run facts are columns on `ai_call`** (`source`, `outcome`, `configuration_id`,
+  `configuration_name`), repeated on each call of a run, rather than a new run table: the
+  calls already carry `run_id`, and one table keeps "what was spent" and "what an analysis
+  cost" from the same rows.
+- **First vs re-analysis is worked out when the page asks**, not stored: a document's
+  earlier analyses decide it, so earlier ones are loaded even when they fall before the
+  period.
+- **A run that stopped to wait belongs to the analysis it went into**: its reading was paid
+  for once and used by the next run.
+- **The backfill matches older calls to the `document.analyzed` audit event** written in the
+  same transaction (same document, within ten seconds). Unmatched calls (Lab runs, waiting
+  halves, events lost to retention) keep a null source and count as "other". Failed events
+  never named their configuration, so those analyses show under "Not recorded".
+- **Approval rate per configuration** uses the history entry's snapshot, which now records the
+  proposal's configuration; older entries fall back to the document's proposal.
+- **The figures use the period's main currency** (most priced calls); other currencies are
+  listed as totals beneath. Converting would need exchange rates the app does not have.
+- **Forecast** is only for This month: spend so far ÷ days elapsed × days in the month.

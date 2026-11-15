@@ -20,6 +20,8 @@ from app.services.errors import ValidationError
 from app.services.times import to_storage, utc_now
 
 COMPARISON = "comparison"
+ANALYSIS = "analysis"
+LAB = "lab"
 MAX_DAYS = 3 * 366
 
 
@@ -30,6 +32,8 @@ def store(
     user_id: str,
     document_id: str | None,
     comparison: bool = False,
+    source: str = ANALYSIS,
+    outcome: str | None = None,
 ) -> None:
     """Add one row per call to the session; the caller's commit makes them real."""
     run_id = str(uuid4())
@@ -57,6 +61,10 @@ def store(
                     timed=1,
                     cost=call.cost,
                     currency=call.currency,
+                    source=COMPARISON if comparison else source,
+                    outcome=outcome,
+                    configuration_id=meter.configuration_id,
+                    configuration_name=meter.configuration_name,
                 )
             )
 

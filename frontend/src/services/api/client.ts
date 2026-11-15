@@ -9,6 +9,7 @@ import type {
   AiModelsResponse,
   AiUsageReport,
   AnalyseRequest,
+  AnalysisCostPage,
   AnalysisEstimate,
   ApiErrorBody,
   ApproveRequest,
@@ -23,6 +24,7 @@ import type {
   Configuration,
   ConfigurationPreviewCall,
   ConfigurationWrite,
+  CostReport,
   CreateFolderRequest,
   Credentials,
   Document,
@@ -90,6 +92,13 @@ export interface ApiClient {
   testNextcloud(body: NextcloudWrite): Promise<void>;
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse>;
   getAiUsage(start: string, end: string): Promise<AiUsageReport>;
+  getAiCosts(start: string, end: string): Promise<CostReport>;
+  getAiCostAnalyses(
+    start: string,
+    end: string,
+    offset: number,
+    limit: number,
+  ): Promise<AnalysisCostPage>;
   listAiEndpoints(): Promise<AiEndpoint[]>;
   getEndpointStatuses(): Promise<EndpointStatus[]>;
   createAiEndpoint(body: AiEndpointWrite): Promise<AiEndpoint>;
@@ -256,6 +265,22 @@ export class HttpApiClient implements ApiClient {
 
   getAiUsage(start: string, end: string): Promise<AiUsageReport> {
     return this.request<AiUsageReport>("GET", `/ai/usage${query({ start, end })}`);
+  }
+
+  getAiCosts(start: string, end: string): Promise<CostReport> {
+    return this.request<CostReport>("GET", `/ai/costs${query({ start, end })}`);
+  }
+
+  getAiCostAnalyses(
+    start: string,
+    end: string,
+    offset: number,
+    limit: number,
+  ): Promise<AnalysisCostPage> {
+    return this.request<AnalysisCostPage>(
+      "GET",
+      `/ai/costs/analyses${query({ start, end, offset, limit })}`,
+    );
   }
 
   listAiModels(body: AiModelsRequest): Promise<AiModelsResponse> {

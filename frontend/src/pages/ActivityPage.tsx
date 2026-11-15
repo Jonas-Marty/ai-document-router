@@ -2,6 +2,7 @@ import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { AuditCards } from "@/components/activity/AuditCards";
 import { AuditTable } from "@/components/activity/AuditTable";
+import { CostSection } from "@/components/activity/CostSection";
 import { UsageSummary } from "@/components/activity/UsageSummary";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { ErrorState } from "@/components/shared/ErrorState";
@@ -9,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuditEvents, useAuditUsage } from "@/hooks/useAudit";
 import { useIsDesktop } from "@/hooks/useBreakpoint";
+import { COST_PERIODS, type CostPeriodKind, costPeriod } from "@/lib/aiCosts";
+import { cn } from "@/lib/utils";
 import { ApiError } from "@/services/api/errors";
 import type { AuditCategory } from "@/services/api/types";
 
@@ -24,6 +27,7 @@ const FILTERS: { value: AuditCategory | undefined; label: string }[] = [
  * its settings, its sign-ins -- never anyone else's, admins included. */
 export default function ActivityPage() {
   const [category, setCategory] = useState<AuditCategory | undefined>(undefined);
+  const [periodKind, setPeriodKind] = useState<CostPeriodKind>("month");
   const events = useAuditEvents(category);
   const usage = useAuditUsage();
   const isDesktop = useIsDesktop();
@@ -32,7 +36,30 @@ export default function ActivityPage() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-4">
-      <h1 className="text-lg font-semibold">Activity</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-lg font-semibold">Activity</h1>
+        <fieldset className="flex flex-wrap gap-0.5 rounded-lg bg-muted p-0.5">
+          <legend className="sr-only">Period for costs</legend>
+          {COST_PERIODS.map(({ kind, label }) => (
+            <button
+              key={kind}
+              type="button"
+              aria-pressed={periodKind === kind}
+              onClick={() => setPeriodKind(kind)}
+              className={cn(
+                "min-h-9 rounded-md px-3 text-sm",
+                periodKind === kind
+                  ? "bg-background font-medium shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </fieldset>
+      </div>
+
+      <CostSection period={costPeriod(periodKind)} />
 
       {usage.isLoading ? (
         <Skeleton className="h-24 w-full" />

@@ -678,7 +678,7 @@ def _run_one(
     reachability: analysis.Reachability,
     template: Sequence[str],
 ) -> None:
-    meter = ai.UsageMeter()
+    meter = ai.UsageMeter(plan.configuration_id, plan.configuration_name)
     with progress.tracking(result.id):
         try:
             progress.report(f"Reading {case.original_filename}…")
@@ -799,7 +799,13 @@ def _account(
             [(result.cost, result.currency), (call.cost, call.currency)]
         )
     if meter.calls:
-        ai_usage.store(session, [meter], user_id=result.user_id, document_id=case.document_id)
+        ai_usage.store(
+            session,
+            [meter],
+            user_id=result.user_id,
+            document_id=case.document_id,
+            source=ai_usage.LAB,
+        )
     if not keep_waiting:
         result.duration_ms = (result.duration_ms or 0) + meter.elapsed_ms()
 

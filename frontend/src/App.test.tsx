@@ -73,6 +73,27 @@ function mockApi(health: () => Response, auth: unknown = SIGNED_IN, authStatus =
         }),
       );
     }
+    if (url.includes("/ai/costs/analyses")) {
+      return Promise.resolve(healthResponse({ items: [], total: 0 }));
+    }
+    if (url.includes("/ai/costs")) {
+      const none = { count: 0, priced: 0, average: null, minimum: null, maximum: null };
+      return Promise.resolve(
+        healthResponse({
+          currency: null,
+          priced: false,
+          spent: 0,
+          split: { first: 0, reanalysis: 0, failed: 0, other: 0 },
+          days: [],
+          others: [],
+          analyses: none,
+          filed_documents: 0,
+          filed: none,
+          configurations: [],
+          expensive: [],
+        }),
+      );
+    }
     if (url.includes("/audit/usage")) {
       return Promise.resolve(
         healthResponse({

@@ -3,11 +3,17 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuditEvent, AuditPage, AuditUsage } from "@/services/api/types";
+import type { AuditEvent, AuditPage, AuditUsage, CostReport } from "@/services/api/types";
 import ActivityPage from "./ActivityPage";
 
 vi.mock("@/services/api/client", () => ({
-  apiClient: { getCurrentUser: vi.fn(), getAudit: vi.fn(), getAuditUsage: vi.fn() },
+  apiClient: {
+    getCurrentUser: vi.fn(),
+    getAudit: vi.fn(),
+    getAuditUsage: vi.fn(),
+    getAiCosts: vi.fn(),
+    getAiCostAnalyses: vi.fn(),
+  },
 }));
 
 import { apiClient } from "@/services/api/client";
@@ -56,6 +62,21 @@ const USAGE: AuditUsage = {
   ],
 };
 
+const NONE = { count: 0, priced: 0, average: null, minimum: null, maximum: null };
+const NO_COSTS: CostReport = {
+  currency: null,
+  priced: false,
+  spent: 0,
+  split: { first: 0, reanalysis: 0, failed: 0, other: 0 },
+  days: [],
+  others: [],
+  analyses: NONE,
+  filed_documents: 0,
+  filed: NONE,
+  configurations: [],
+  expensive: [],
+};
+
 function setMatchMedia(matches: boolean): void {
   window.matchMedia = (query: string) =>
     ({
@@ -81,6 +102,29 @@ describe("ActivityPage", () => {
   beforeEach(() => {
     vi.mocked(apiClient.getCurrentUser).mockResolvedValue(ADMIN);
     vi.mocked(apiClient.getAuditUsage).mockResolvedValue(USAGE);
+    vi.mocked(apiClient.getAiCosts).mockResolvedValue(NO_COSTS);
+    vi.mocked(apiClient.getAiCostAnalyses).mockResolvedValue({ items: [], total: 0 });
+  });
+
+  it("asks for the costs of the period chosen above them", async () => {
+    vi.mocked(apiClient.getAudit).mockResolvedValue(page([]));
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: "This month" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await user.click(screen.getByRole("button", { name: "Last 30 days" }));
+
+    expect(screen.getByRole("button", { name: "Last 30 days" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await waitFor(() => {
+      const [start, end] = vi.mocked(apiClient.getAiCosts).mock.calls.at(-1) ?? [];
+      expect(Date.parse(end ?? "") - Date.parse(start ?? "")).toBe(29 * 86_400_000);
+    });
   });
 
   afterEach(() => {

@@ -400,6 +400,10 @@ def _record_history(
             "reasoning_text": proposal.reasoning_text,
             "model_name": proposal.model_name,
             "fields": proposal_fields(proposal),
+            # What produced it, so the cost page can say how often each configuration's
+            # proposals were approved unchanged (SPEC 8.11).
+            "configuration_id": proposal.configuration_id,
+            "configuration_name": proposal.configuration_name,
         }
         if action is HistoryAction.moved:
             proposed_name = f"{proposal.suggested_name}{extension_of(document.original_filename)}"

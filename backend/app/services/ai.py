@@ -391,9 +391,15 @@ class UsageMeter:
     reply that turns out to be unusable was still paid for.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self, configuration_id: str | None = None, configuration_name: str | None = None
+    ) -> None:
         self.calls: list[CallRecord] = []
         self.started = time.monotonic()
+        # Which configuration the calls were made for, stored with them so the cost of an
+        # analysis can be put down to the configuration that ran it (SPEC 8.11).
+        self.configuration_id = configuration_id
+        self.configuration_name = configuration_name
 
     def elapsed_ms(self) -> int:
         """Wall time since the analysis began -- reading, waiting and retrying included."""

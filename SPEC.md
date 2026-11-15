@@ -411,6 +411,9 @@ the analysis or comparison that made it; not subject to audit retention.
 | `duration_ms` / `timed` | int — summed duration over `timed` calls |
 | `cost` | float \| null — from reported tokens and the model's prices on that connection at the time of the call; null without a price or without token counts |
 | `currency` | str \| null — the connection's currency at the time of the call, set only with a cost; null for costs recorded before currencies |
+| `source` | `analysis` \| `lab` \| `comparison` \| null — null for a call recorded before sources were kept that matched no analysis's audit event |
+| `outcome` | `ready` \| `failed` \| `waiting` \| null — how an analysis run ended; `waiting` when a connection went away mid-way |
+| `configuration_id` / `configuration_name` | str \| null — the configuration that ran it; the name is a copy |
 
 ### 4.2 Shared TypeScript types
 
@@ -886,6 +889,8 @@ Base path `/api/v1`. JSON in, JSON out.
 | POST | `/ai/endpoints` | `AiEndpointWrite` | `AiEndpoint` |
 | PUT | `/ai/endpoints/{id}` | `AiEndpointWrite` | `AiEndpoint` |
 | DELETE | `/ai/endpoints/{id}` | — | 200; 422 while a configuration uses it |
+| GET | `/ai/costs?start=YYYY-MM-DD&end=YYYY-MM-DD` | — | `CostReport` (8.11): what an analysis cost over the period, in its main currency |
+| GET | `/ai/costs/analyses?start&end&offset=0&limit=20` | — | `{ items: AnalysisCost[], total }` — the period's analyses, newest first, each in its own currency; `limit` 1–100 |
 | GET | `/ai/usage?start=YYYY-MM-DD&end=YYYY-MM-DD` | — | `{ rows, analyses, comparisons }` — the caller's calls summed per UTC day, connection, model and feature, both ends inclusive, at most three years |
 | GET | `/configurations` | — | `AiConfiguration[]`, default first, then by name |
 | POST | `/configurations` | `AiConfigurationWrite` | `AiConfiguration`, 201 — the first one becomes the default |
@@ -1729,6 +1734,34 @@ persistent banner in the top bar driven by `/health`, not just per-request error
 ### 8.11 Activity
 
 The signed-in user's own audit log (6.7). Every account has the link.
+
+*Costs.* First, answering "what does one analysis cost me". A period switch beside the title
+— This month (default), Last month, Last 30 days, This year — governs this part only.
+
+- **What an analysis costs** (a bordered panel): the average cost of one analysis with the
+  cheapest and dearest and how many there were; one filed document — every analysis it took,
+  re-analyses and failed attempts included, for the documents filed in the period; spent,
+  with the change against the same days last month (Last month: the month before; Last 30
+  days: the 30 before; a year: none); for This month, the month's total at the pace so far.
+  Then cost per day (per month beyond about two months) stacked by kind, and four totals with
+  their share: First analyses, Re-analyses, Failed (no proposal), Lab and other. Amounts are
+  in the currency most of the period's priced calls were billed in; any other currency's
+  total is listed beneath, never added. Without any price: how many analyses ran and a link
+  to Settings to add prices.
+- **Recent analyses**: each analysis of the period, newest first, 20 at a time with `Show
+  more` — when, the document (a link while it awaits review; its filed name once filed), a
+  `re-analysis` or `failed` badge, the configuration, reading · filing cost, and the total in
+  its own currency (tokens and "no price" for an unpriced model). Desktop: a table; phone:
+  cards.
+- **By configuration**: cost per analysis, a bar of its share, then analyses · cost · failed
+  · how many of the period's filed proposals from it were approved unchanged. `Compare in the
+  Lab →`. Beside it (stacked on a phone), **Most expensive documents**: the five dearest in
+  the period with attempts, failures and pages.
+
+An analysis is a finished run (ready or failed) together with the runs before it that
+stopped to wait, whose reading it used. A document's first finished analysis is its first;
+any later one is a re-analysis unless it failed. Lab runs, comparisons and calls recorded
+before sources were kept count as "other" and are not analyses.
 
 *Usage.* "AI usage · last 30 days": four stat tiles — Analyses, Comparisons, Tokens,
 Prompt · completion — in compact figures (`128K`) with the exact count on hover, two per row

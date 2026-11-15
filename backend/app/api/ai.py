@@ -3,7 +3,7 @@
 from dataclasses import asdict
 from datetime import date
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.deps import CurrentUserDep, SessionDep
 from app.models import AiEndpoint
@@ -15,9 +15,11 @@ from app.schemas import (
     AiModelsResponse,
     AiUsageRead,
     AiUsageRowRead,
+    AnalysisCostPageRead,
+    CostReportRead,
     EndpointStatusRead,
 )
-from app.services import ai_usage, connections
+from app.services import ai_costs, ai_usage, connections
 from app.services.audit import Actor
 
 router = APIRouter()
@@ -110,6 +112,26 @@ def read_usage(session: SessionDep, user: CurrentUserDep, start: date, end: date
         analyses=report.analyses,
         comparisons=report.comparisons,
     )
+
+
+@router.get("/ai/costs")
+def read_costs(session: SessionDep, user: CurrentUserDep, start: date, end: date) -> CostReportRead:
+    """What an analysis cost from `start` to `end`, inclusive (SPEC 8.11)."""
+    return CostReportRead.model_validate(asdict(ai_costs.report(session, user.id, start, end)))
+
+
+@router.get("/ai/costs/analyses")
+def read_cost_analyses(
+    session: SessionDep,
+    user: CurrentUserDep,
+    start: date,
+    end: date,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> AnalysisCostPageRead:
+    """The period's analyses, newest first, each with its cost."""
+    page = ai_costs.analyses_page(session, user.id, start, end, offset, limit)
+    return AnalysisCostPageRead.model_validate(asdict(page))
 
 
 def _read(session: SessionDep, endpoint: AiEndpoint) -> AiEndpointRead:

@@ -559,6 +559,15 @@ class AiCall(SQLModel, table=True):
     cost: float | None = None
     # The connection's currency then, for the same reason; None for a cost from before it.
     currency: str | None = None
+    # What the run was (SPEC 8.11): "analysis" (the Inbox), "lab" or "comparison". None for a
+    # call recorded before this was kept that could not be matched to an analysis.
+    source: str | None = None
+    # How an analysis run ended: "ready", "failed", or "waiting" when a connection went away
+    # mid-way and the document stayed pending. None for the Lab and for older calls.
+    outcome: str | None = None
+    # The configuration that ran it. The name is a copy: it outlives a rename or a delete.
+    configuration_id: str | None = None
+    configuration_name: str | None = None
 
 
 class User(SQLModel, table=True):

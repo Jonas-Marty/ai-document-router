@@ -459,6 +459,86 @@ export interface AiUsageRow {
   currency: string | null; // ISO code, "mixed" when costs in two currencies met; null before currencies were kept
 }
 
+/** SPEC 8.11: how an analysis's cost is counted. "other" is the Lab, comparisons, and calls
+ * recorded before the source of a call was kept. */
+export type CostKind = "first" | "reanalysis" | "failed" | "other";
+
+export interface CostSpread {
+  count: number; // analyses (or filed documents) in the period
+  priced: number; // of them, how many had a cost in the report's currency
+  average: number | null;
+  minimum: number | null;
+  maximum: number | null;
+}
+
+export interface DayCost {
+  day: string; // YYYY-MM-DD, UTC; only days with a cost
+  first: number;
+  reanalysis: number;
+  failed: number;
+  other: number;
+}
+
+export interface ConfigurationCost {
+  configuration_id: string | null;
+  name: string; // the current name, else the one stored with the calls
+  is_default: boolean;
+  analyses: number;
+  failed: number;
+  priced: number;
+  cost: number | null;
+  average: number | null; // per priced analysis
+  tokens: number;
+  approvals: number; // proposals from it filed in the period
+  approved_unchanged: number;
+}
+
+export interface DocumentCost {
+  document_id: string;
+  name: string; // as filed, else as scanned
+  open: boolean; // still waiting for review
+  attempts: number;
+  failed: number;
+  page_count: number | null;
+  cost: number;
+}
+
+/** Every amount is in `currency`, the one most of the period's priced calls were billed in;
+ * `others` holds what was spent in any other, since currencies are never added. */
+export interface CostReport {
+  currency: string | null; // null also for costs from before currencies were kept
+  priced: boolean; // any call in the period had a cost
+  spent: number;
+  split: Record<CostKind, number>;
+  days: DayCost[];
+  others: { currency: string | null; amount: number }[];
+  analyses: CostSpread;
+  filed_documents: number;
+  filed: CostSpread; // per filed document, all its analyses included
+  configurations: ConfigurationCost[];
+  expensive: DocumentCost[];
+}
+
+export interface AnalysisCost {
+  run_id: string;
+  occurred_at: string;
+  document_id: string | null;
+  document_name: string;
+  document_open: boolean;
+  kind: Exclude<CostKind, "other">;
+  configuration_name: string | null;
+  reading_cost: number | null;
+  filing_cost: number | null;
+  cost: number | null;
+  currency: string | null; // this analysis's own
+  tokens: number;
+}
+
+export interface AnalysisCostPage {
+  items: AnalysisCost[];
+  total: number;
+}
+
 export interface AiUsageReport {
   rows: AiUsageRow[];
   analyses: number;

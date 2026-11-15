@@ -594,6 +594,91 @@ class AiUsageRead(BaseModel):
     comparisons: int
 
 
+class CostSpreadRead(BaseModel):
+    count: int  # analyses (or filed documents) in the period
+    priced: int  # of them, how many had a cost in the report's currency
+    average: float | None
+    minimum: float | None
+    maximum: float | None
+
+
+class DayCostRead(BaseModel):
+    day: str
+    first: float
+    reanalysis: float
+    failed: float
+    other: float
+
+
+class ConfigurationCostRead(BaseModel):
+    configuration_id: str | None
+    name: str
+    is_default: bool
+    analyses: int
+    failed: int
+    priced: int
+    cost: float | None
+    average: float | None
+    tokens: int
+    approvals: int
+    approved_unchanged: int
+
+
+class DocumentCostRead(BaseModel):
+    document_id: str
+    name: str
+    open: bool
+    attempts: int
+    failed: int
+    page_count: int | None
+    cost: float
+
+
+class OtherCurrencyRead(BaseModel):
+    currency: str | None
+    amount: float
+
+
+class CostReportRead(BaseModel):
+    """SPEC 8.11: what an analysis costs over a period, in the period's main currency."""
+
+    currency: str | None
+    priced: bool
+    spent: float
+    split: dict[str, float]
+    days: list[DayCostRead]
+    others: list[OtherCurrencyRead]
+    analyses: CostSpreadRead
+    filed_documents: int
+    filed: CostSpreadRead
+    configurations: list[ConfigurationCostRead]
+    expensive: list[DocumentCostRead]
+
+
+class AnalysisCostRead(BaseModel):
+    run_id: str
+    occurred_at: datetime
+    document_id: str | None
+    document_name: str
+    document_open: bool
+    kind: str
+    configuration_name: str | None
+    reading_cost: float | None
+    filing_cost: float | None
+    cost: float | None
+    currency: str | None
+    tokens: int
+
+    @field_serializer("occurred_at")
+    def _aware(self, value: datetime) -> str:
+        return from_storage(value).isoformat()
+
+
+class AnalysisCostPageRead(BaseModel):
+    items: list[AnalysisCostRead]
+    total: int
+
+
 class RevertResponse(BaseModel):
     history_entry: HistoryEntryRead
     document: DocumentRead

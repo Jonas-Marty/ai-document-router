@@ -71,6 +71,10 @@ class _Job:
     meter: ai.UsageMeter = field(default_factory=ai.UsageMeter)
     reading: Reading | None = None
 
+    def __post_init__(self) -> None:
+        self.meter.configuration_id = self.plan.configuration_id
+        self.meter.configuration_name = self.plan.configuration_name
+
 
 class Reachability:
     """Which connections answered this tick. Each is probed at most once per batch."""
@@ -595,7 +599,9 @@ def _store(
         },
         usage=[usage],
     )
-    ai_usage.store(session, [meter], user_id=document.user_id, document_id=document.id)
+    ai_usage.store(
+        session, [meter], user_id=document.user_id, document_id=document.id, outcome="ready"
+    )
     session.commit()
     metrics.analyses.labels("ready").inc()
     logger.info(
@@ -640,7 +646,9 @@ def _fail(
         usage=[usage],
     )
     if meter is not None:
-        ai_usage.store(session, [meter], user_id=document.user_id, document_id=document.id)
+        ai_usage.store(
+            session, [meter], user_id=document.user_id, document_id=document.id, outcome="failed"
+        )
     session.commit()
     metrics.analyses.labels("failed").inc()
     logger.info("Proposal failed for %s: %s%s", document.webdav_path, reason, _usage_suffix(usage))
@@ -658,7 +666,9 @@ def _wait(
     if meter is not None and meter.calls:
         usage = meter.summary()
         document.analysis_usage = usage.to_json() if usage else None
-        ai_usage.store(session, [meter], user_id=document.user_id, document_id=document.id)
+        ai_usage.store(
+            session, [meter], user_id=document.user_id, document_id=document.id, outcome="waiting"
+        )
     if document.waiting_reason != reason:
         logger.info("%s is waiting: %s", document.webdav_path, reason)
     document.waiting_reason = reason

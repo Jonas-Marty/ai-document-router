@@ -16,6 +16,8 @@ export const queryKeys = {
   audit: (category?: string) => ["audit", "events", category ?? "all"] as const,
   auditUsage: ["audit", "usage"] as const,
   aiUsage: (start: string, end: string) => ["ai", "usage", start, end] as const,
+  aiCosts: (start: string, end: string) => ["ai", "costs", start, end] as const,
+  aiCostAnalyses: (start: string, end: string) => ["ai", "costs", start, end, "analyses"] as const,
   settings: ["settings"] as const,
   nextcloud: ["settings", "nextcloud"] as const,
   aiEndpoints: ["ai", "endpoints"] as const,
