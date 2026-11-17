@@ -1292,3 +1292,7 @@ meaningful. One line of "why" each; not a full ADR log.
 - **The figures use the period's main currency** (most priced calls); other currencies are
   listed as totals beneath. Converting would need exchange rates the app does not have.
 - **Forecast** is only for This month: spend so far ÷ days elapsed × days in the month.
+- **2026-11-17: every cost so far relabelled CHF** (migration `c7e1a9d3f5b2`), at the owner's
+  request: the only provider billed so far bills in CHF. Costs without a currency and those
+  that read USD (connections started there) became CHF, as did every connection. Amounts are
+  unchanged; nothing is converted at a rate.
